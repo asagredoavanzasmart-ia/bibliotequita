@@ -2,8 +2,8 @@ import { BookOpen } from 'lucide-react';
 
 export function LoginScreen({ error }: { error?: string }) {
   return (
-    <div style={{ minHeight: '100dvh', backgroundColor: '#f1f5f9' }} className="flex items-center justify-center p-4">
-      <div className="flex flex-col items-center gap-8 p-8 bg-white rounded-2xl shadow-2xl w-full max-w-sm border border-slate-200">
+    <div style={{ minHeight: '100dvh', backgroundColor: 'var(--bg-app)' }} className="flex items-center justify-center p-4">
+      <div style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-card)' }} className="flex flex-col items-center gap-8 p-8 rounded-2xl shadow-2xl w-full max-w-sm border">
 
         {/* Logo */}
         <div className="flex flex-col items-center gap-3">

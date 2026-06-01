@@ -763,7 +763,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   return (
     <div 
-      className={cn("flex flex-col h-screen bg-white overflow-hidden relative", isFullscreen ? "fixed inset-0 z-[100] bg-black" : "")}
+      className={cn("flex flex-col h-screen bg-[var(--bg-app)] overflow-hidden relative", isFullscreen ? "fixed inset-0 z-[100] bg-black" : "")}
       style={{ filter: `brightness(${brightness}%)` }}
     >
       

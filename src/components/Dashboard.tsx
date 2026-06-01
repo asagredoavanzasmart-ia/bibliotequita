@@ -87,11 +87,11 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-      <div className="flex h-screen bg-[#f1f5f9] font-sans text-slate-800 overflow-hidden relative">
+      <div className="flex h-screen bg-[var(--bg-app)] font-sans text-[var(--text-main)] overflow-hidden relative">
         <div className={cn(
           "fixed inset-0 bg-slate-900/50 z-20 lg:hidden transition-opacity",
-        sidebarOpen ? "opacity-100" : "opacity-0 pointer-events-none"
-      )} onClick={() => setSidebarOpen(false)} />
+          sidebarOpen ? "opacity-100" : "opacity-0 pointer-events-none"
+        )} onClick={() => setSidebarOpen(false)} />
       
       <div className={cn(
         "fixed lg:relative top-0 left-0 z-30 h-screen transition-all duration-300 shrink-0 shadow-2xl lg:shadow-none",
