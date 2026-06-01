@@ -1,0 +1,17 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Archivos subidos por usuarios (PDF/EPUB/portadas)
+uploads/
+
+# Credenciales de servicios (nunca versionar)
+*credentials*.json
+*service-account*.json
+google-tts-credentials.json
+google-oauth-credentials.json
