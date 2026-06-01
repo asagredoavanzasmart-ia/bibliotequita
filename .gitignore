@@ -14,3 +14,4 @@ uploads/
 *credentials*.json
 *service-account*.json
 google-tts-credentials.json
+google-oauth-credentials.json

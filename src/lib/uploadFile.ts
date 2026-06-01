@@ -38,6 +38,21 @@ export async function uploadFile(
   return res.json();
 }
 
+// Token interno para DELETE — se obtiene del servidor al primer uso y se cachea.
+let _deleteToken: string | null | undefined = undefined;
+async function getDeleteToken(): Promise<string | null> {
+  if (_deleteToken !== undefined) return _deleteToken;
+  try {
+    const res = await fetch("/api/config");
+    if (!res.ok) { _deleteToken = null; return null; }
+    const data = await res.json();
+    _deleteToken = data.deleteToken ?? null;
+  } catch {
+    _deleteToken = null;
+  }
+  return _deleteToken;
+}
+
 // Borra un archivo del servidor a partir de su URL pública o de su nombre.
 // Tolerante: nunca lanza, solo devuelve true/false.
 export async function deleteUploadedFile(urlOrName: string): Promise<boolean> {
@@ -46,7 +61,10 @@ export async function deleteUploadedFile(urlOrName: string): Promise<boolean> {
   if (!urlOrName.startsWith("/api/files/")) return false;
   const name = urlOrName.replace(/^\/api\/files\//, "");
   try {
-    const res = await fetch(`/api/files/${encodeURIComponent(name)}`, { method: "DELETE" });
+    const token = await getDeleteToken();
+    const headers: Record<string, string> = {};
+    if (token) headers["x-delete-token"] = token;
+    const res = await fetch(`/api/files/${encodeURIComponent(name)}`, { method: "DELETE", headers });
     return res.ok;
   } catch {
     return false;

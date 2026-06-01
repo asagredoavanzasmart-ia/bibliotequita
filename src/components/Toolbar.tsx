@@ -1,4 +1,4 @@
-import { Book, Globe, UploadCloud, Link as LinkIcon, LayoutGrid, List as ListIcon, Save, Search, Settings, Menu } from 'lucide-react';
+import { Book, Globe, UploadCloud, Link as LinkIcon, LayoutGrid, List as ListIcon, Save, Search, Settings, Menu, LogOut } from 'lucide-react';
 import React, { useState } from 'react';
 import { useLibrary } from '../hooks/useLibrary';
 import { cn } from '../lib/utils';
@@ -18,9 +18,10 @@ interface ToolbarProps {
   searchQuery: string;
   setSearchQuery: (q: string) => void;
   onOpenAddManual: () => void;
+  user?: { name: string; email: string; photo: string };
 }
 
-export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setViewMode, sortBy, setSortBy, filters, setFilters, searchQuery, setSearchQuery, onOpenAddManual }: ToolbarProps) {
+export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setViewMode, sortBy, setSortBy, filters, setFilters, searchQuery, setSearchQuery, onOpenAddManual, user }: ToolbarProps) {
   const [showSettings, setShowSettings] = useState(false);
   const { addItem, items } = useLibrary();
 
@@ -96,6 +97,24 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
               <button onClick={() => setShowSettings(true)} className="p-2.5 text-slate-500 hover:text-[var(--primary)] bg-[var(--bg-card)] border border-slate-200/50 rounded-xl hover:border-[var(--primary)]/50 transition-all shadow-sm">
                  <Settings className="w-5 h-5" />
               </button>
+
+              {/* Avatar + logout */}
+              {user && (
+                <div className="flex items-center gap-2 pl-1">
+                  {user.photo ? (
+                    <img src={user.photo} alt={user.name} className="w-8 h-8 rounded-full border-2 border-[var(--primary)]/30 object-cover" title={user.name} />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-[var(--primary)]/20 flex items-center justify-center text-[var(--primary)] font-bold text-sm">
+                      {user.name?.[0]?.toUpperCase()}
+                    </div>
+                  )}
+                  <a href="/auth/logout" title="Cerrar sesión"
+                    className="p-1.5 text-slate-400 hover:text-red-500 transition-colors rounded-lg hover:bg-red-50"
+                  >
+                    <LogOut className="w-4 h-4" />
+                  </a>
+                </div>
+              )}
             </div>
           </div>
         </div>

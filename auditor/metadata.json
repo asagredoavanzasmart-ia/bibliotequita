@@ -1,0 +1,8 @@
+{
+  "name": "Resumidor de PDF IA",
+  "description": "Una aplicación impulsada por IA que permite subir un documento PDF y genera un resumen estructurado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

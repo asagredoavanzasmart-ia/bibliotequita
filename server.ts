@@ -39,6 +39,9 @@ import { randomUUID } from "crypto";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import { GoogleAuth } from "google-auth-library";
+import session from "express-session";
+import passport from "passport";
+import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -55,6 +58,9 @@ const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || "./uploads");
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 200);
 
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
+if (IS_PROD && CORS_ORIGIN === "*") {
+  console.warn("[WARN] CORS_ORIGIN='*' en producción — define CORS_ORIGIN=https://tudominio.com en .env para restringir el acceso.");
+}
 
 const RATE_LIMIT_WINDOW_MIN = Number(process.env.RATE_LIMIT_WINDOW_MIN || 15);
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || 300);
@@ -67,6 +73,23 @@ const ALLOW_PROXY_HOSTS = (process.env.ALLOW_PROXY_HOSTS || "")
   .filter(Boolean);
 
 const TRUST_PROXY = process.env.TRUST_PROXY === "1";
+
+// --- Auth OAuth Google ---
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const SESSION_SECRET = process.env.SESSION_SECRET || randomUUID();
+// Emails autorizados separados por coma. Si está vacío, cualquier cuenta Google entra.
+const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || "")
+  .split(",").map(e => e.trim().toLowerCase()).filter(Boolean);
+
+// Token interno para operaciones destructivas (DELETE de archivos).
+// En prod debe definirse en .env como DELETE_TOKEN=<secreto>.
+// En dev, si no está definido, se genera uno aleatorio y se imprime al arrancar.
+const DELETE_TOKEN = process.env.DELETE_TOKEN || (IS_PROD ? null : (() => {
+  const t = randomUUID();
+  console.log(`[DEV] DELETE_TOKEN generado para esta sesión: ${t}`);
+  return t;
+})());
 
 const apiKey = process.env.GEMINI_API_KEY || "";
 if (!apiKey && IS_PROD) {
@@ -86,12 +109,28 @@ function safeExt(name: string): string {
   return m ? "." + m[1].toLowerCase() : "";
 }
 
+const ALLOWED_MIME_TYPES = new Set([
+  "application/pdf",
+  "application/epub+zip",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+]);
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
     filename: (_req, file, cb) => cb(null, randomUUID() + safeExt(file.originalname)),
   }),
   limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_MIME_TYPES.has(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Tipo de archivo no permitido: ${file.mimetype}`));
+    }
+  },
 });
 
 // -----------------------------------------------------------------------------
@@ -229,9 +268,81 @@ async function startServer() {
     }),
   );
 
-  app.use(cors({ origin: CORS_ORIGIN, credentials: false }));
+  app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
 
   app.use(express.json({ limit: "50mb" }));
+
+  // -------------------------------------------------------------------------
+  // Sesiones + Passport (OAuth Google)
+  // -------------------------------------------------------------------------
+  app.use(session({
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: IS_PROD,
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
+    },
+  }));
+
+  passport.use(new GoogleStrategy(
+    {
+      clientID: GOOGLE_CLIENT_ID,
+      clientSecret: GOOGLE_CLIENT_SECRET,
+      callbackURL: "/auth/google/callback",
+    },
+    (_accessToken, _refreshToken, profile, done) => {
+      const email = profile.emails?.[0]?.value?.toLowerCase() || "";
+      if (ALLOWED_EMAILS.length > 0 && !ALLOWED_EMAILS.includes(email)) {
+        return done(null, false, { message: "Email no autorizado." });
+      }
+      return done(null, {
+        id: profile.id,
+        name: profile.displayName,
+        email,
+        photo: profile.photos?.[0]?.value || "",
+      });
+    }
+  ));
+
+  passport.serializeUser((user, done) => done(null, user));
+  passport.deserializeUser((user, done) => done(null, user as Express.User));
+
+  app.use(passport.initialize());
+  app.use(passport.session());
+
+  // -------------------------------------------------------------------------
+  // Rutas de autenticación
+  // -------------------------------------------------------------------------
+  app.get("/auth/google",
+    passport.authenticate("google", { scope: ["profile", "email"] })
+  );
+
+  app.get("/auth/google/callback",
+    passport.authenticate("google", { failureRedirect: "/?error=unauthorized" }),
+    (_req, res) => res.redirect("/")
+  );
+
+  app.get("/auth/logout", (req, res) => {
+    req.logout(() => res.redirect("/"));
+  });
+
+  app.get("/api/me", (req, res) => {
+    if (req.isAuthenticated()) {
+      res.json({ user: req.user });
+    } else {
+      res.status(401).json({ user: null });
+    }
+  });
+
+  // Middleware que protege todas las rutas /api/* excepto /api/me y /api/health
+  const requireAuth = (req: Request, res: Response, next: NextFunction) => {
+    const openPaths = ["/api/me", "/api/health", "/api/config"];
+    if (openPaths.includes(req.path) || req.isAuthenticated()) return next();
+    res.status(401).json({ error: "No autenticado." });
+  };
+  app.use("/api/", requireAuth);
 
   // Rate limit global (todas las rutas /api/*).
   const apiLimiter = rateLimit({
@@ -257,6 +368,13 @@ async function startServer() {
   // -------------------------------------------------------------------------
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, env: NODE_ENV, time: new Date().toISOString() });
+  });
+
+  // -------------------------------------------------------------------------
+  // Config pública del cliente (solo expone lo que el frontend necesita)
+  // -------------------------------------------------------------------------
+  app.get("/api/config", (_req, res) => {
+    res.json({ deleteToken: DELETE_TOKEN || null });
   });
 
   // -------------------------------------------------------------------------
@@ -293,6 +411,14 @@ async function startServer() {
   });
 
   app.delete("/api/files/:name", (req, res) => {
+    // Verificar token interno antes de borrar.
+    // En prod el token debe definirse en .env (DELETE_TOKEN=...).
+    // En dev se acepta el token generado al arrancar impreso en consola.
+    const authHeader = req.headers["x-delete-token"] as string | undefined;
+    if (DELETE_TOKEN && authHeader !== DELETE_TOKEN) {
+      return res.status(401).json({ error: "No autorizado." });
+    }
+
     const name = req.params.name;
     if (!FILENAME_RE.test(name)) {
       return res.status(400).json({ error: "Nombre inválido" });
@@ -312,7 +438,7 @@ async function startServer() {
   // -------------------------------------------------------------------------
   // Proxy de recursos externos (PDF, etc.) — anti-SSRF
   // -------------------------------------------------------------------------
-  app.get("/api/proxy-resource", async (req, res) => {
+  app.get("/api/proxy-resource", aiLimiter, async (req, res) => {
     const url = reqString(req.query.url, 2048);
     if (!url) return res.status(400).json({ error: "URL es requerida" });
 

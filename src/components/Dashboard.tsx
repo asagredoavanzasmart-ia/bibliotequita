@@ -27,9 +27,10 @@ import { AddManualModal } from './AddManualModal';
 
 interface DashboardProps {
   onOpenBook: (id: string) => void;
+  user?: { name: string; email: string; photo: string };
 }
 
-export function Dashboard({ onOpenBook }: DashboardProps) {
+export function Dashboard({ onOpenBook, user }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<string>('todos');
   const [viewMode, setViewMode] = useState<'grid' | 'grid-compact' | 'list'>('grid');
   const [activePlaylist, setActivePlaylist] = useState<string | null>(null);
@@ -127,10 +128,10 @@ export function Dashboard({ onOpenBook }: DashboardProps) {
         <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-[#A0CFEB]/30 blur-[120px] pointer-events-none z-0" />
 
         <div className="flex-1 flex flex-col p-4 md:p-6 lg:p-8 overflow-hidden z-20">
-          <Toolbar 
+          <Toolbar
             onOpenSidebar={() => setSidebarOpen(true)}
-            activeTab={activeTab} 
-            setActiveTab={setActiveTab} 
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
             viewMode={viewMode}
             setViewMode={setViewMode}
             sortBy={sortBy}
@@ -140,6 +141,7 @@ export function Dashboard({ onOpenBook }: DashboardProps) {
             searchQuery={searchQuery}
             setSearchQuery={setSearchQuery}
             onOpenAddManual={() => setShowManualAdd(true)}
+            user={user}
           />
           <div className="flex-1 mt-6 overflow-y-auto no-scrollbar pr-2 pb-24 lg:pb-20">
             {activeTab === 'analytics' ? (
