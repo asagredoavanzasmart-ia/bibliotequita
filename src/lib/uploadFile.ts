@@ -30,10 +30,13 @@ export async function uploadFile(
   const name = (file instanceof File ? file.name : null) || fallbackName;
   form.append("file", file, name);
 
-  const res = await fetch("/api/upload", { method: "POST", body: form });
+  const res = await fetch("/api/upload", { method: "POST", credentials: "include", body: form });
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`Upload falló (${res.status}): ${detail || res.statusText}`);
+    const data = await res.json().catch(() => ({}));
+    const msg = data.error || res.statusText;
+    const err: any = new Error(msg);
+    err.code = data.code ?? null;
+    throw err;
   }
   return res.json();
 }

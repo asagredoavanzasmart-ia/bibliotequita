@@ -405,10 +405,32 @@ async function startServer() {
   });
 
   // -------------------------------------------------------------------------
+  // Límite de contenidos para la demo
+  // -------------------------------------------------------------------------
+  const DEMO_MAX_UPLOADS = Number(process.env.DEMO_MAX_UPLOADS || 3);
+
+  // Cuenta archivos actuales en uploads/ — solo PDF y EPUB cuentan como
+  // "contenido"; las portadas (.jpg/.png) no se cuentan.
+  function countUserContent(): number {
+    try {
+      return fs.readdirSync(UPLOAD_DIR).filter(f => {
+        const ext = path.extname(f).toLowerCase();
+        return ext === ".pdf" || ext === ".epub";
+      }).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Config pública del cliente (solo expone lo que el frontend necesita)
   // -------------------------------------------------------------------------
   app.get("/api/config", (_req, res) => {
-    res.json({ deleteToken: DELETE_TOKEN || null });
+    res.json({
+      deleteToken: DELETE_TOKEN || null,
+      demoMaxUploads: DEMO_MAX_UPLOADS,
+      demoCurrentUploads: countUserContent(),
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -418,6 +440,19 @@ async function startServer() {
     if (!req.file) {
       return res.status(400).json({ error: "No se recibió archivo" });
     }
+
+    // Para archivos de contenido (PDF/EPUB), aplicar límite de la demo.
+    const ext = path.extname(req.file.filename).toLowerCase();
+    const isContent = ext === ".pdf" || ext === ".epub";
+    if (isContent && countUserContent() > DEMO_MAX_UPLOADS) {
+      // El archivo ya fue escrito por multer — borrarlo antes de rechazar.
+      try { fs.unlinkSync(path.join(UPLOAD_DIR, req.file.filename)); } catch { /* ignore */ }
+      return res.status(429).json({
+        error: `La demo permite un máximo de ${DEMO_MAX_UPLOADS} contenidos. Elimina uno antes de subir otro.`,
+        code: "DEMO_LIMIT",
+      });
+    }
+
     res.json({
       url: `/api/files/${req.file.filename}`,
       name: req.file.filename,

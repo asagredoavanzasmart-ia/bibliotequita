@@ -12,18 +12,23 @@
 // sidebar (los IDs droppables empiezan con "playlist-").
 // =============================================================================
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Sidebar } from './Sidebar';
 import { Toolbar } from './Toolbar';
 import { BookGrid } from './BookGrid';
 import { AnalyticsDashboard } from './AnalyticsDashboard';
-import { BookMarked, Menu, X, LayoutGrid, Search, User, Settings, Plus } from 'lucide-react';
+import { BookMarked, Menu, X, LayoutGrid, Search, User, Settings, Plus, UploadCloud } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useLibrary } from '../hooks/useLibrary';
 import { DndContext, closestCenter, DragEndEvent, useSensors, useSensor, PointerSensor, KeyboardSensor } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { SettingsModal } from './SettingsModal';
 import { AddManualModal } from './AddManualModal';
+
+interface DemoQuota {
+  max: number;
+  current: number;
+}
 
 interface DashboardProps {
   onOpenBook: (id: string) => void;
@@ -43,7 +48,21 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [showMobileProfile, setShowMobileProfile] = useState(false);
   const [showManualAdd, setShowManualAdd] = useState(false);
+  const [demoQuota, setDemoQuota] = useState<DemoQuota | null>(null);
   const { updateItem, reorderItems, items, addItem, playlists } = useLibrary();
+
+  const refreshQuota = useCallback(() => {
+    fetch('/api/config', { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => {
+        if (typeof d.demoMaxUploads === 'number') {
+          setDemoQuota({ max: d.demoMaxUploads, current: d.demoCurrentUploads ?? 0 });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => { refreshQuota(); }, [refreshQuota]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -117,9 +136,10 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
       </div>
 
       <main className="flex-1 flex flex-col h-full overflow-hidden w-full relative">
-        <button 
-           onClick={() => setShowManualAdd(true)}
-           className="lg:hidden fixed bottom-6 right-6 w-[56px] h-[56px] bg-[var(--primary)] text-white rounded-full shadow-lg shadow-[var(--primary)]/30 flex items-center justify-center z-[70] transition-transform active:scale-95 border-2 border-white/20"
+        <button
+           onClick={() => !demoQuota || demoQuota.current < demoQuota.max ? setShowManualAdd(true) : null}
+           disabled={!!demoQuota && demoQuota.current >= demoQuota.max}
+           className="lg:hidden fixed bottom-6 right-6 w-[56px] h-[56px] bg-[var(--primary)] text-white rounded-full shadow-lg shadow-[var(--primary)]/30 flex items-center justify-center z-[70] transition-transform active:scale-95 border-2 border-white/20 disabled:opacity-40 disabled:cursor-not-allowed"
         >
            <Plus className="w-7 h-7" />
         </button>
@@ -143,7 +163,24 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
             onOpenAddManual={() => setShowManualAdd(true)}
             user={user}
           />
-          <div className="flex-1 mt-6 overflow-y-auto no-scrollbar pr-2 pb-24 lg:pb-20">
+          {/* Banner de cuota demo */}
+          {demoQuota && (
+            <div className={cn(
+              "mt-4 flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium border",
+              demoQuota.current >= demoQuota.max
+                ? "bg-amber-50 border-amber-200 text-amber-800"
+                : "bg-[var(--primary)]/5 border-[var(--primary)]/20 text-[var(--text-muted)]"
+            )}>
+              <UploadCloud className={cn("w-4 h-4 shrink-0", demoQuota.current >= demoQuota.max ? "text-amber-500" : "text-[var(--primary)]")} />
+              <span>
+                {demoQuota.current >= demoQuota.max
+                  ? `Límite de la demo alcanzado (${demoQuota.current}/${demoQuota.max}). Elimina un contenido para poder subir otro.`
+                  : `Demo: ${demoQuota.current} de ${demoQuota.max} contenidos subidos.`}
+              </span>
+            </div>
+          )}
+
+          <div className="flex-1 mt-4 overflow-y-auto no-scrollbar pr-2 pb-24 lg:pb-20">
             {activeTab === 'analytics' ? (
                 <AnalyticsDashboard />
             ) : (
@@ -228,7 +265,13 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
       </main>
       
       {showMobileProfile && <SettingsModal onClose={() => setShowMobileProfile(false)} />}
-      {showManualAdd && <AddManualModal onClose={() => setShowManualAdd(false)} onAdd={(b) => { addItem(b); setShowManualAdd(false); setActiveTab(b.category); }} />}
+      {showManualAdd && (
+        <AddManualModal
+          onClose={() => { setShowManualAdd(false); refreshQuota(); }}
+          onAdd={(b) => { addItem(b); setShowManualAdd(false); setActiveTab(b.category); refreshQuota(); }}
+          demoQuota={demoQuota}
+        />
+      )}
       </div>
     </DndContext>
   );

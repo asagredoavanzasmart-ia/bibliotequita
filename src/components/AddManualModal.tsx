@@ -10,12 +10,18 @@ import { uploadFile } from '../lib/uploadFile';
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
 
+interface DemoQuota {
+  max: number;
+  current: number;
+}
+
 interface AddManualModalProps {
   onClose: () => void;
   onAdd: (item: Omit<BookItem, 'id' | 'timestamp'>) => void;
+  demoQuota?: DemoQuota | null;
 }
 
-export function AddManualModal({ onClose, onAdd }: AddManualModalProps) {
+export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProps) {
   const { categories, addCategory, playlists, addPlaylist } = useLibrary();
 
   const [formData, setFormData] = useState({
@@ -37,6 +43,9 @@ export function AddManualModal({ onClose, onAdd }: AddManualModalProps) {
   const [coverUrl, setCoverUrl] = useState('');
   const coverInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadError, setUploadError] = useState('');
+
+  const isQuotaFull = !!demoQuota && demoQuota.current >= demoQuota.max;
 
   const [selectedFolderIds, setSelectedFolderIds] = useState<string[]>([]);
   const [newPlaylistName, setNewPlaylistName] = useState('');
@@ -191,15 +200,23 @@ export function AddManualModal({ onClose, onAdd }: AddManualModalProps) {
   const handleDigitalUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (isQuotaFull) {
+      setUploadError(`Límite de la demo alcanzado (${demoQuota!.current}/${demoQuota!.max}). Elimina un contenido antes de subir otro.`);
+      return;
+    }
+    setUploadError('');
     const isPdf = file.type.includes('pdf') || file.name.toLowerCase().endsWith('.pdf');
 
     // Sube al servidor → obtenemos URL persistente "/api/files/<uuid>.<ext>".
-    // Fallback: si falla, conservamos un blob: temporal solo para esta sesión.
     try {
       const { url } = await uploadFile(file);
       setDigitalSource(url);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error subiendo archivo al servidor:', err);
+      if (err?.code === 'DEMO_LIMIT') {
+        setUploadError(err.message);
+        return;
+      }
       setDigitalSource(URL.createObjectURL(file));
     }
 
@@ -298,9 +315,18 @@ export function AddManualModal({ onClose, onAdd }: AddManualModalProps) {
                 </div>
                 
                 <div className="flex flex-col gap-2 mt-4 w-full">
-                   <button disabled={isAnalyzing} type="button" onClick={() => fileInputRef.current?.click()} className={cn("px-4 py-2.5 flex items-center justify-center font-medium gap-2 text-[var(--primary)] rounded-lg transition-colors w-full border border-[var(--primary)]/30 text-xs shadow-sm", isAnalyzing ? "bg-slate-100 opacity-70" : "bg-[var(--primary)]/10 hover:bg-[var(--primary)]/20")}>
-                      <UploadCloud className={cn("w-4 h-4", isAnalyzing && "animate-pulse")} /> {isAnalyzing ? "Analizando IA..." : "Importar de PDF o EPUB"}
+                   <button
+                     disabled={isAnalyzing || isQuotaFull}
+                     type="button"
+                     onClick={() => fileInputRef.current?.click()}
+                     className={cn("px-4 py-2.5 flex items-center justify-center font-medium gap-2 text-[var(--primary)] rounded-lg transition-colors w-full border border-[var(--primary)]/30 text-xs shadow-sm", isAnalyzing || isQuotaFull ? "bg-slate-100 opacity-70 cursor-not-allowed" : "bg-[var(--primary)]/10 hover:bg-[var(--primary)]/20")}
+                   >
+                     <UploadCloud className={cn("w-4 h-4", isAnalyzing && "animate-pulse")} />
+                     {isAnalyzing ? "Analizando IA..." : isQuotaFull ? `Límite alcanzado (${demoQuota!.current}/${demoQuota!.max})` : "Importar de PDF o EPUB"}
                    </button>
+                   {uploadError && (
+                     <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-center">{uploadError}</p>
+                   )}
                    <p className="text-[10px] text-[var(--text-muted)] text-center leading-tight px-1">Extrae IA la portada y datos de las primeras 7 pág.</p>
                    <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".pdf,.epub" className="hidden" />
                    
