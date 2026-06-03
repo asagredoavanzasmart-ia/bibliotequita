@@ -19,7 +19,7 @@
 // =============================================================================
 
 import { useLibrary } from '../hooks/useLibrary';
-import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, ClipboardList, Info, Volume2, VolumeX, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward } from 'lucide-react';
+import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, ClipboardList, Info, Volume2, VolumeX, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical } from 'lucide-react';
 import { useState, useRef, FormEvent, ChangeEvent, useEffect, useCallback, useMemo } from 'react';
 import { cn } from '../lib/utils';
 import { PDFReader } from './PDFReader';
@@ -29,6 +29,7 @@ import { NotesPanel } from './NotesPanel';
 import { EditBookModal } from './EditBookModal';
 import { CitationsManager } from './CitationsManager';
 import { BookmarksMenu } from './BookmarksMenu';
+import { AuditorPanel } from './AuditorPanel';
 
 interface ReaderViewProps {
   bookId: string;
@@ -39,7 +40,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const { items, updateItem } = useLibrary();
   const item = items.find(i => i.id === bookId);
 
-  const [activeTab, setActiveTab ] = useState<'reader' | 'edit' | 'citations'>('reader');
+  const [activeTab, setActiveTab ] = useState<'reader' | 'edit' | 'citations' | 'auditor'>('reader');
   
   const [showFolderManager, setShowFolderManager ] = useState(false);
   const [showNotes, setShowNotes ] = useState(false);
@@ -138,6 +139,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Referencia para la precarga (pre-fetching) de la siguiente frase de audio
   const preloadedAudioRef = useRef<{ index: number; audio: HTMLAudioElement; url: string } | null>(null);
 
+  // AbortController para cancelar fetches TTS en vuelo al cambiar proveedor/modelo
+  const ttsAbortRef = useRef<AbortController | null>(null);
+
+  // Ref estable a playPhrase para usarla desde onended sin capturar closures stale
+  const playPhraseRef = useRef<((index: number, phraseList: string[]) => Promise<void>) | null>(null);
+
   // Función para extraer texto del DOM de la página activa del PDF
   const getActivePageText = useCallback(() => {
     if (item?.type === 'pdf') {
@@ -169,15 +176,17 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     const activePageEl = document.getElementById(`pdf-page-${currentPage}`);
     if (!activePageEl) return;
 
-    // 1. Limpiar todos los resaltados anteriores en la página activa
-    const spans = activePageEl.querySelectorAll('.react-pdf__Page__textContent span');
-    spans.forEach((span: any) => {
-      span.style.backgroundColor = '';
-      span.style.borderRadius = '';
-      span.style.transition = '';
-      span.style.mixBlendMode = '';
-      span.style.opacity = '';
-    });
+    // Evitar iterar el DOM si solo se pide limpiar y no hay nada que limpiar
+    const spans = activePageEl.querySelectorAll('.react-pdf__Page__textContent span[style]');
+    if (spans.length > 0) {
+      spans.forEach((span: any) => {
+        span.style.backgroundColor = '';
+        span.style.borderRadius = '';
+        span.style.transition = '';
+        span.style.mixBlendMode = '';
+        span.style.opacity = '';
+      });
+    }
 
     if (!phraseText || phraseText.trim().length === 0) return;
 
@@ -249,6 +258,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   // Detener la reproducción de voz
   const handleTtsStop = useCallback(() => {
+    // Cancelar cualquier fetch TTS en vuelo antes de todo lo demás
+    if (ttsAbortRef.current) {
+      ttsAbortRef.current.abort();
+      ttsAbortRef.current = null;
+    }
     if (currentAudio) {
       currentAudio.onended = null;
       currentAudio.onerror = null;
@@ -302,13 +316,22 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         audioUrl = preloadedAudioRef.current.url;
         preloadedAudioRef.current = null; // Liberar la referencia de precarga
       } else {
+        // Cancelar fetch anterior si aún está en vuelo
+        if (ttsAbortRef.current) {
+          ttsAbortRef.current.abort();
+        }
+        const controller = new AbortController();
+        ttsAbortRef.current = controller;
+
         const response = await fetch('/api/tts', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          signal: controller.signal,
           body: JSON.stringify({ text: phraseText, provider: selectedProvider, voiceId: selectedVoice, model: selectedModel })
         });
+
+        ttsAbortRef.current = null;
 
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));
@@ -321,19 +344,23 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       }
 
       audio.onended = () => {
+        // Desconectar listeners de este audio antes de avanzar para evitar
+        // que onerror se dispare cuando más adelante se vacíe audio.src
+        audio.onended = null;
+        audio.onerror = null;
         URL.revokeObjectURL(audioUrl);
-        // Avanzar automáticamente a la siguiente frase si existe
         const nextIndex = index + 1;
         if (nextIndex < phraseList.length) {
-          playPhrase(nextIndex, phraseList);
+          // Usar el ref estable — evita capturar el closure stale de playPhrase
+          playPhraseRef.current?.(nextIndex, phraseList);
         } else {
           handleTtsStop();
         }
       };
 
       audio.onerror = () => {
-        // Evitar activar el estado de error si el audio fue detenido o vaciado a propósito
-        if (audio.src === '') return;
+        // Si src está vacío, el audio fue detenido intencionalmente — no es un error
+        if (!audio.src || audio.src === '' || audio.src === window.location.href) return;
         setTtsStatus('error');
         setTtsErrorMessage('Error al reproducir esta frase.');
       };
@@ -358,6 +385,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           headers: {
             'Content-Type': 'application/json'
           },
+          credentials: 'include',
           body: JSON.stringify({
             text: nextPhraseText,
             provider: selectedProvider,
@@ -416,11 +444,16 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         });
       }
     } catch (error: any) {
+      // AbortError ocurre al cambiar proveedor/modelo — no es un error real
+      if (error?.name === 'AbortError') return;
       console.error('Error in playPhrase:', error);
       setTtsStatus('error');
       setTtsErrorMessage(error.message || 'No se pudo reproducir la frase actual.');
     }
   }, [currentAudio, item, currentPage, selectedVoice, selectedProvider, selectedModel, highlightPhraseInDOM, handleTtsStop]);
+
+  // Mantener el ref siempre apuntando a la versión más reciente de playPhrase
+  playPhraseRef.current = playPhrase;
 
   // Controles directos de Adelantar (>>) y Retroceder (<<) en la interfaz
   const handleTtsPrevious = useCallback(() => {
@@ -435,6 +468,33 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
   }, [currentPhraseIndex, phrases, playPhrase]);
 
+  // Helper: obtiene texto de una página del DOM; si está vacío y es PDF server, usa OCR
+  const getPageTextWithOcrFallback = useCallback(async (pageNum: number): Promise<string> => {
+    const pageEl = document.getElementById(`pdf-page-${pageNum}`);
+    if (pageEl) {
+      const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
+      const domText = (textLayer ? textLayer.textContent : pageEl.textContent || '').replace(/\s+/g, ' ').trim();
+      if (domText.length > 0) return domText;
+    }
+    // Fallback OCR para PDFs escaneados
+    if (item?.type === 'pdf' && item.source?.startsWith('/api/files/')) {
+      const fileName = item.source.replace('/api/files/', '');
+      try {
+        const ocrRes = await fetch('/api/ocr-page', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ fileName, pageNumber: pageNum }),
+        });
+        if (ocrRes.ok) {
+          const { text } = await ocrRes.json();
+          return (text || '').trim();
+        }
+      } catch { /* no-op */ }
+    }
+    return '';
+  }, [item?.type, item?.source]);
+
   // Cambio de página desde el widget TTS con auto-lectura
   const handleTtsPrevPage = useCallback(() => {
     const page = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
@@ -443,13 +503,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setTargetPage({ page: newPage, t: Date.now() });
     setCurrentPage(newPage);
     handleTtsStop();
-    setTimeout(() => {
-      const text = (() => {
-        const pageEl = document.getElementById(`pdf-page-${newPage}`);
-        if (!pageEl) return '';
-        const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
-        return (textLayer ? textLayer.textContent : pageEl.textContent || '').replace(/\s+/g, ' ').trim();
-      })();
+    setTimeout(async () => {
+      const text = await getPageTextWithOcrFallback(newPage);
       if (text) {
         const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
         setPhrases(phraseList);
@@ -457,7 +512,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         playPhrase(0, phraseList);
       }
     }, 800);
-  }, [currentPage, handleTtsStop, playPhrase]);
+  }, [currentPage, handleTtsStop, playPhrase, getPageTextWithOcrFallback]);
 
   const handleTtsNextPage = useCallback(() => {
     const page = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
@@ -466,13 +521,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setTargetPage({ page: newPage, t: Date.now() });
     setCurrentPage(newPage);
     handleTtsStop();
-    setTimeout(() => {
-      const text = (() => {
-        const pageEl = document.getElementById(`pdf-page-${newPage}`);
-        if (!pageEl) return '';
-        const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
-        return (textLayer ? textLayer.textContent : pageEl.textContent || '').replace(/\s+/g, ' ').trim();
-      })();
+    setTimeout(async () => {
+      const text = await getPageTextWithOcrFallback(newPage);
       if (text) {
         const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
         setPhrases(phraseList);
@@ -480,7 +530,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         playPhrase(0, phraseList);
       }
     }, 800);
-  }, [currentPage, totalPages, handleTtsStop, playPhrase]);
+  }, [currentPage, totalPages, handleTtsStop, playPhrase, getPageTextWithOcrFallback]);
 
   // Play / Pausa general
   const handleTtsPlayPause = async () => {
@@ -518,6 +568,31 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
 
     if (!textToRead || textToRead.length === 0) {
+      // Fallback OCR para PDFs escaneados (sin text layer)
+      if (item?.type === 'pdf' && item.source?.startsWith('/api/files/')) {
+        const fileName = item.source.replace('/api/files/', '');
+        const pageNum = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
+        try {
+          const ocrRes = await fetch('/api/ocr-page', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ fileName, pageNumber: pageNum }),
+          });
+          if (ocrRes.ok) {
+            const { text: ocrText } = await ocrRes.json();
+            if (ocrText && ocrText.trim().length > 0) {
+              const phraseList = splitIntoPhrases(ocrText);
+              if (phraseList.length > 0) {
+                setTtsTextSource('page');
+                setPhrases(phraseList);
+                playPhrase(0, phraseList);
+                return;
+              }
+            }
+          }
+        } catch { /* si el OCR falla, caemos al error original */ }
+      }
       setTtsStatus('error');
       setTtsErrorMessage('No se encontró texto legible en la página actual. Intenta seleccionando texto.');
       return;
@@ -806,13 +881,22 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                      >
                          <ClipboardList className="w-4 h-4 sm:w-5 sm:h-5" />
                      </button>
-                     <button 
+                     <button
                          onClick={() => setActiveTab(activeTab === 'edit' ? 'reader' : 'edit')}
                          className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'edit' ? "bg-white text-[#00558F] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
                          title="Información y Metadatos"
                      >
                          <Info className="w-4 h-4 sm:w-5 sm:h-5" />
                      </button>
+                     {item.type === 'pdf' && item.source?.startsWith('/api/files/') && (
+                       <button
+                         onClick={() => setActiveTab(activeTab === 'auditor' ? 'reader' : 'auditor')}
+                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'auditor' ? "bg-white text-[#00558F] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
+                         title="Auditoría Científica"
+                       >
+                         <FlaskConical className="w-4 h-4 sm:w-5 sm:h-5" />
+                       </button>
+                     )}
                  </div>
              </div>
  
@@ -954,6 +1038,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
             </div>
           )}
 
+          {/* Auditoría Científica */}
+          {activeTab === 'auditor' && (
+            <div className="absolute inset-0 z-40 bg-white/95 backdrop-blur-md animate-in fade-in slide-in-from-bottom-5 duration-300 overflow-y-auto shadow-2xl">
+              <AuditorPanel item={item} onClose={() => setActiveTab('reader')} />
+            </div>
+          )}
+
           {/* Citations Administration View */}
           {activeTab === 'citations' && (
              <CitationsManager 
@@ -992,14 +1083,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                          value={selectedProvider}
                          onChange={(e) => {
                             const prov = e.target.value as 'elevenlabs' | 'google' | 'google-standard';
+                            handleTtsStop(); // cancela fetch en vuelo, limpia precarga y audio
                             setSelectedProvider(prov);
-                            handleTtsStop();
-                            // Limpiar precarga para que no se use con el proveedor anterior
-                            if (preloadedAudioRef.current) {
-                               URL.revokeObjectURL(preloadedAudioRef.current.url);
-                               preloadedAudioRef.current.audio.src = '';
-                               preloadedAudioRef.current = null;
-                            }
                             if (prov === 'elevenlabs') {
                                setSelectedVoice('6Gr4AVmTax1pMJO0lHRK');
                             } else if (prov === 'google') {
@@ -1023,7 +1108,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                          <span className="text-[var(--text-muted)] font-semibold shrink-0">Modelo IA:</span>
                          <select 
                             value={selectedModel} 
-                            onChange={(e) => { setSelectedModel(e.target.value); handleTtsStop(); }}
+                            onChange={(e) => {
+                               handleTtsStop(); // cancela fetch en vuelo antes de cambiar modelo
+                               setSelectedModel(e.target.value);
+                            }}
                             className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-[var(--primary)] cursor-pointer transition-colors shadow-sm outline-none max-w-[165px] truncate"
                          >
                             {GOOGLE_MODELS.map(m => (

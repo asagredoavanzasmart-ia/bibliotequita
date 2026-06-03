@@ -32,6 +32,19 @@ export default function App() {
   const urlError = new URLSearchParams(window.location.search).get("error");
 
   useEffect(() => {
+    // Aplicar tema guardado para que LoginScreen tenga el estilo correcto de inmediato
+    const savedTheme = localStorage.getItem('library_theme') || 'blue';
+    document.documentElement.dataset.theme = savedTheme;
+
+    // Cargar fuente guardada
+    const savedFont = localStorage.getItem('library_font') || 'Inter';
+    let fontValue = '"Inter", sans-serif';
+    if (savedFont === 'Lora') fontValue = '"Lora", serif';
+    if (savedFont === 'Playfair Display') fontValue = '"Playfair Display", serif';
+    if (savedFont === 'Poppins') fontValue = '"Poppins", sans-serif';
+    if (savedFont === 'Roboto') fontValue = '"Roboto", sans-serif';
+    document.documentElement.style.setProperty('--app-font', fontValue);
+
     fetch("/api/me", { credentials: "include" })
       .then(r => r.json())
       .then(data => {

@@ -98,9 +98,10 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'grid'|'grid-compact'|'list',
     updateItem(item.id, { read: !item.read });
   };  if (viewMode === 'list') {
     return (
-      <div 
-        ref={setNodeRef} 
-        style={style} 
+      <>
+      <div
+        ref={setNodeRef}
+        style={style}
         className="group flex flex-row items-center bg-[var(--bg-card)] backdrop-blur-xl rounded-xl border border-slate-200/50 overflow-hidden hover:bg-[var(--bg-card-hover)] hover:shadow-md hover:border-[var(--primary)]/50 hover:-translate-y-0.5 transition-all duration-300"
       >
         <div 
@@ -209,14 +210,16 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'grid'|'grid-compact'|'list',
           </div>
         </div>
       </div>
-    );
+      </>
+  );
   }
 
   // Grid Mode
   return (
-    <div 
-      ref={setNodeRef} 
-      style={style} 
+    <>
+    <div
+      ref={setNodeRef}
+      style={style}
       className={cn("group flex flex-col bg-[var(--bg-card)] backdrop-blur-xl rounded-2xl shadow-sm border border-slate-200/50 hover:bg-[var(--bg-card-hover)] hover:shadow-xl hover:border-[var(--primary)]/50 hover:-translate-y-1 transition-all duration-300 h-auto",
         viewMode === 'grid-compact' ? "min-h-[220px]" : "min-h-[340px] md:min-h-[380px]"
       )}
@@ -304,7 +307,7 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'grid'|'grid-compact'|'list',
                </button>
             </div>
          </div>
-          
+
           {cardSettings.showProgress && (
             <div className="w-full flex items-center gap-2 mt-2" title={`Progreso: ${pValue}%`}>
                <div className="flex-1 h-1.5 bg-slate-200/50 rounded-full overflow-hidden shadow-inner">
@@ -327,6 +330,7 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'grid'|'grid-compact'|'list',
           )}
        </div>
     </div>
+    </>
   );
 }
 

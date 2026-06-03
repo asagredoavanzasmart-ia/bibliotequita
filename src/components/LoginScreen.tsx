@@ -1,43 +1,136 @@
-import { BookOpen } from 'lucide-react';
+import { useState } from 'react';
+import { BookOpen, Lock, User, Eye, EyeOff } from 'lucide-react';
 
-export function LoginScreen({ error }: { error?: string }) {
+export function LoginScreen({ error: urlError }: { error?: string }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(
+    urlError === 'unauthorized' ? 'No tienes acceso a esta biblioteca.' : (urlError || '')
+  );
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!username.trim() || !password.trim()) {
+      setError('Por favor, ingresa tu usuario y contraseña.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+
+    try {
+      const response = await fetch('/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ username, password }),
+      });
+
+      if (response.ok) {
+        window.location.reload();
+      } else {
+        const data = await response.json().catch(() => ({}));
+        setError(data.error || 'Usuario o contraseña incorrectos.');
+      }
+    } catch (err) {
+      setError('Error de conexión con el servidor.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div style={{ minHeight: '100dvh', backgroundColor: 'var(--bg-app)' }} className="flex items-center justify-center p-4">
-      <div style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-card)' }} className="flex flex-col items-center gap-8 p-8 rounded-2xl shadow-2xl w-full max-w-sm border">
+      {/* Ambient background blur blobs */}
+      <div className="absolute top-1/4 left-1/4 w-[300px] h-[300px] rounded-full bg-[var(--primary)]/10 blur-[100px] pointer-events-none" />
+      <div className="absolute bottom-1/4 right-1/4 w-[300px] h-[300px] rounded-full bg-[var(--secondary)]/20 blur-[100px] pointer-events-none" />
 
+      <div 
+        style={{ 
+          backgroundColor: 'var(--bg-card)', 
+          borderColor: 'var(--border-card)',
+          color: 'var(--text-main)'
+        }} 
+        className="relative z-10 flex flex-col items-center gap-6 p-8 rounded-2xl shadow-2xl w-full max-w-sm border backdrop-blur-md transition-all duration-300"
+      >
         {/* Logo */}
         <div className="flex flex-col items-center gap-3">
-          <div className="w-16 h-16 rounded-2xl bg-blue-50 flex items-center justify-center">
-            <BookOpen className="w-8 h-8 text-[#00558F]" />
+          <div className="w-16 h-16 rounded-2xl bg-[var(--primary)]/10 flex items-center justify-center border border-[var(--primary)]/20">
+            <BookOpen className="w-8 h-8 text-[var(--primary)]" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-800">Biblioteca</h1>
-          <p className="text-sm text-slate-500 text-center">
+          <h1 className="text-2xl font-bold tracking-tight">Biblioteca</h1>
+          <p className="text-sm text-[var(--text-muted)] text-center font-medium">
             Tu biblioteca personal de libros y artículos
           </p>
         </div>
 
-        {/* Error */}
+        {/* Error Alert */}
         {error && (
-          <div className="w-full bg-red-50 border border-red-200 text-red-600 rounded-xl px-4 py-3 text-sm text-center">
-            No tienes acceso a esta biblioteca.
+          <div className="w-full bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 rounded-xl px-4 py-3 text-sm text-center font-medium">
+            {error}
           </div>
         )}
 
-        {/* Botón Google */}
-        <a
-          href="/auth/google"
-          className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-white hover:bg-gray-50 text-gray-700 font-semibold rounded-xl border border-gray-200 shadow-sm transition-all active:scale-95 cursor-pointer no-underline"
-        >
-          <svg width="20" height="20" viewBox="0 0 48 48">
-            <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/>
-            <path fill="#FF3D00" d="m6.306 14.691 6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/>
-            <path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/>
-            <path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/>
-          </svg>
-          Iniciar sesión con Google
-        </a>
+        {/* Login Form */}
+        <form onSubmit={handleSubmit} className="w-full flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
+              Usuario
+            </label>
+            <div className="relative">
+              <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-[var(--text-muted)]">
+                <User className="w-4 h-4" />
+              </span>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Ingresa tu usuario"
+                className="w-full pl-10 pr-3 py-2.5 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card-hover)] text-[var(--text-main)] placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent text-sm transition-all"
+                disabled={loading}
+              />
+            </div>
+          </div>
 
-        <p className="text-xs text-slate-400 text-center">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
+              Contraseña
+            </label>
+            <div className="relative">
+              <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-[var(--text-muted)]">
+                <Lock className="w-4 h-4" />
+              </span>
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Ingresa tu contraseña"
+                className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-[var(--border-card)] bg-[var(--bg-card-hover)] text-[var(--text-main)] placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent text-sm transition-all"
+                disabled={loading}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute inset-y-0 right-0 flex items-center pr-3.5 text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors cursor-pointer"
+                disabled={loading}
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full mt-2 flex items-center justify-center gap-2 px-4 py-3 bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white font-bold rounded-xl shadow-md shadow-[var(--primary)]/20 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+          >
+            {loading ? 'Iniciando sesión...' : 'Iniciar Sesión'}
+          </button>
+        </form>
+
+        <p className="text-xs text-[var(--text-muted)] text-center font-medium">
           Solo usuarios autorizados pueden acceder.
         </p>
       </div>
