@@ -19,17 +19,20 @@
 // =============================================================================
 
 import { useLibrary } from '../hooks/useLibrary';
-import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, ClipboardList, Info, Volume2, VolumeX, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical } from 'lucide-react';
+import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp } from 'lucide-react';
 import { useState, useRef, FormEvent, ChangeEvent, useEffect, useCallback, useMemo } from 'react';
+import type { Rendition } from 'epubjs';
 import { cn } from '../lib/utils';
 import { PDFReader } from './PDFReader';
 import { EPUBReader } from './EPUBReader';
+import { TxtReader } from './TxtReader';
 import { FolderManagerModal } from './FolderManagerModal';
 import { NotesPanel } from './NotesPanel';
 import { EditBookModal } from './EditBookModal';
 import { CitationsManager } from './CitationsManager';
 import { BookmarksMenu } from './BookmarksMenu';
 import { AuditorPanel } from './AuditorPanel';
+import { useReadingTimeTracker } from '../hooks/useReadingTime';
 
 interface ReaderViewProps {
   bookId: string;
@@ -40,14 +43,21 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const { items, updateItem } = useLibrary();
   const item = items.find(i => i.id === bookId);
 
+  // Registra tiempo de lectura diario mientras este libro está abierto.
+  useReadingTimeTracker(!!item);
+
   const [activeTab, setActiveTab ] = useState<'reader' | 'edit' | 'citations' | 'auditor'>('reader');
   
   const [showFolderManager, setShowFolderManager ] = useState(false);
   const [showNotes, setShowNotes ] = useState(false);
 
   const [selectedText, setSelectedText ] = useState('');
-  const [selectedCitation, setSelectedCitation ] = useState<{text: string; color: string; timestamp: number; page: number | string}>();
+  const [selectedCitation, setSelectedCitation ] = useState<{text: string; color: string; timestamp: number; page?: number | string}>();
   const [selectionRect, setSelectionRect ] = useState<{ top: number, left: number, width: number } | null>(null);
+
+  // Referencia a la Rendition de epubjs — necesaria para acceder al contenido
+  // del iframe interno (selección de texto para citas y extracción para TTS).
+  const epubRenditionRef = useRef<Rendition | null>(null);
   
   // Start from bookmark page if saved to re-resume exactly where reader left off 
   const [currentPage, setCurrentPage ] = useState<number | string>(item?.bookmarkPage || 1);
@@ -59,10 +69,22 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   // --- Estados de Lector de Voz (TTS ElevenLabs) ------------------------------
   const [showTtsWidget, setShowTtsWidget] = useState(false);
+  // El panel de configuración (modelo/voz/origen de lectura) queda colapsado
+  // por defecto para que la barra inferior del reproductor sea compacta.
+  const [showTtsSettings, setShowTtsSettings] = useState(false);
+  // Altura real de la barra del reproductor TTS, medida con ResizeObserver,
+  // para desplazar hacia arriba los controles de página/zoom del PDF y que
+  // no queden tapados por el reproductor.
+  const ttsWidgetRef = useRef<HTMLDivElement>(null);
+  const [ttsWidgetHeight, setTtsWidgetHeight] = useState(0);
   const [ttsStatus, setTtsStatus] = useState<'idle' | 'loading' | 'playing' | 'paused' | 'error'>('idle');
   const [ttsErrorMessage, setTtsErrorMessage] = useState('');
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
   const [ttsTextSource, setTtsTextSource] = useState<'selection' | 'page'>('page');
+
+  // Origen de inicio de la lectura al presionar Play (no aplica si hay texto
+  // seleccionado, que siempre se lee tal cual).
+  const [ttsStartSource, setTtsStartSource] = useState<'visible' | 'chapter' | 'lastRead'>('visible');
 
   // Proveedores de Voz
   const [selectedProvider, setSelectedProvider] = useState<'elevenlabs' | 'google' | 'google-standard'>('elevenlabs');
@@ -136,30 +158,87 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const [phrases, setPhrases] = useState<string[]>([]);
   const [currentPhraseIndex, setCurrentPhraseIndex] = useState(-1);
 
+  // --- Memoria de posición del lector de voz ---------------------------------
+  // Guarda en localStorage la última frase reproducida (página/CFI + índice +
+  // texto) para que, al volver a presionar "Play", la lectura continúe donde
+  // quedó en vez de reiniciar siempre desde el primer párrafo visible.
+  const ttsPositionKey = `tts-position-${bookId}`;
+
+  const saveTtsPosition = useCallback((phraseIndex: number, phraseText: string) => {
+    try {
+      localStorage.setItem(ttsPositionKey, JSON.stringify({
+        page: item?.type === 'epub' ? null : currentPage,
+        phraseIndex,
+        phraseText,
+      }));
+    } catch { /* localStorage no disponible */ }
+  }, [ttsPositionKey, item?.type, currentPage]);
+
+  const loadTtsPosition = useCallback((phraseList: string[]): number => {
+    try {
+      const raw = localStorage.getItem(ttsPositionKey);
+      if (!raw) return 0;
+      const saved = JSON.parse(raw) as { page: number | string | null; phraseIndex: number; phraseText: string };
+      // Para PDF/TXT la posición solo aplica si seguimos en la misma página;
+      // para EPUB (sin páginas) basta con que la frase exacta siga presente
+      // en el texto visible actual.
+      if (item?.type !== 'epub' && String(saved.page) !== String(currentPage)) return 0;
+      if (saved.phraseIndex >= 0 && saved.phraseIndex < phraseList.length && phraseList[saved.phraseIndex] === saved.phraseText) {
+        return saved.phraseIndex;
+      }
+    } catch { /* posición inválida o inexistente */ }
+    return 0;
+  }, [ttsPositionKey, item?.type, currentPage]);
+
   // Referencia para la precarga (pre-fetching) de la siguiente frase de audio
   const preloadedAudioRef = useRef<{ index: number; audio: HTMLAudioElement; url: string } | null>(null);
 
   // AbortController para cancelar fetches TTS en vuelo al cambiar proveedor/modelo
   const ttsAbortRef = useRef<AbortController | null>(null);
 
+  // Debounce de avance/retroceso rápido de frase (ver scheduleTtsStep más abajo)
+  const ttsStepTargetRef = useRef<number | null>(null);
+  const ttsStepTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Ref estable a playPhrase para usarla desde onended sin capturar closures stale
   const playPhraseRef = useRef<((index: number, phraseList: string[]) => Promise<void>) | null>(null);
 
-  // Función para extraer texto del DOM de la página activa del PDF
+  // Timeout del reintento de resaltado EPUB (ver highlightPhraseInEpub más abajo)
+  const epubHighlightRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Texto visible en los iframes internos de la rendition de epubjs (vista
+  // de página única o doble — concatena todas las páginas activas).
+  const getEpubVisibleText = useCallback(() => {
+    const contentsList = (epubRenditionRef.current as any)?.manager?.getContents?.() || [];
+    return contentsList
+      .map((c: any) => c?.document?.body?.textContent || '')
+      .map((t: string) => t.replace(/\s+/g, ' ').trim())
+      .filter((t: string) => t.length > 0)
+      .join(' \n');
+  }, []);
+
+  // Función para extraer texto del DOM de la página activa del PDF, TXT o EPUB
   const getActivePageText = useCallback(() => {
     if (item?.type === 'pdf') {
       const pageEl = document.getElementById(`pdf-page-${currentPage}`);
       if (!pageEl) return '';
-      
+
       const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
       const text = textLayer ? textLayer.textContent : pageEl.textContent;
-      
+
       if (!text) return '';
-      
+
       return text.replace(/\s+/g, ' ').trim();
     }
+    if (item?.type === 'txt') {
+      const el = document.getElementById('txt-content');
+      return el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+    }
+    if (item?.type === 'epub') {
+      return getEpubVisibleText();
+    }
     return '';
-  }, [item?.type, currentPage]);
+  }, [item?.type, currentPage, getEpubVisibleText]);
 
   // Divide el texto en frases de punto a punto de forma simple y robusta
   const splitIntoPhrases = useCallback((text: string): string[] => {
@@ -171,8 +250,183 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       .map(p => p + '.');
   }, []);
 
+  // Recorre los nodos de texto de un elemento y devuelve el texto del primer
+  // nodo cuyo rect intersecta verticalmente con el rect del viewport dado.
+  // Usado para identificar desde qué frase debe comenzar la lectura: la
+  // primera que esté actualmente visible en pantalla, no la primera del
+  // documento/página completo.
+  const getFirstVisibleTextSnippet = useCallback((root: HTMLElement, viewportRect: { top: number; bottom: number }, doc: Document = document): string | null => {
+    const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => (node.textContent || '').trim().length > 0 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+    });
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      const range = doc.createRange();
+      range.selectNodeContents(node);
+      const rects = range.getClientRects();
+      for (let i = 0; i < rects.length; i++) {
+        const rect = rects[i];
+        if (rect.bottom > viewportRect.top && rect.top < viewportRect.bottom) {
+          const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+          if (text.length > 0) return text;
+        }
+      }
+    }
+    return null;
+  }, []);
+
+  // Dado el texto completo de la página y la lista de frases ya segmentadas,
+  // busca la frase que contiene (o está más cerca de) el fragmento visible
+  // y devuelve su índice. Si no se encuentra, devuelve 0.
+  const findPhraseIndexForSnippet = useCallback((phraseList: string[], snippet: string | null): number => {
+    if (!snippet) return 0;
+    const needle = snippet.slice(0, 40).toLowerCase();
+    for (let i = 0; i < phraseList.length; i++) {
+      if (phraseList[i].toLowerCase().includes(needle) || needle.includes(phraseList[i].toLowerCase().replace(/\.$/, ''))) {
+        return i;
+      }
+    }
+    // Fallback: comparar solo las primeras palabras
+    const firstWords = snippet.split(' ').slice(0, 4).join(' ').toLowerCase();
+    if (firstWords.length >= 3) {
+      for (let i = 0; i < phraseList.length; i++) {
+        if (phraseList[i].toLowerCase().includes(firstWords)) return i;
+      }
+    }
+    return 0;
+  }, []);
+
+  // Patrón heurístico para detectar encabezados de capítulo en el texto de
+  // una página de PDF/TXT: "Capítulo 4", "CAPITULO IV", "Chapter 4", etc.
+  const CHAPTER_HEADING_RE = /\b(cap[ií]tulo|chapter)\s+([0-9]+|[ivxlcdm]+)\b/i;
+
+  // Busca el inicio del capítulo dentro del texto de la página actual (PDF/TXT).
+  // Si no se encuentra un encabezado en la página, devuelve 0 (inicio de página).
+  const getChapterStartIndexInPage = useCallback((phraseList: string[]): number => {
+    for (let i = 0; i < phraseList.length; i++) {
+      if (CHAPTER_HEADING_RE.test(phraseList[i])) return i;
+    }
+    return 0;
+  }, []);
+
+  // Para EPUB: usa la API de ubicación de epub.js (currentLocation) para
+  // obtener el CFI del contenido visible al inicio del scroll actual, lo
+  // resuelve a un Range con getRange(cfi) y devuelve el texto desde ahí.
+  //
+  // Por qué no usar geometría (getClientRects) aquí: el contenido del EPUB
+  // vive dentro de iframes que epub.js posiciona y desplaza con su propio
+  // "manager.container". Las coordenadas que devuelve getClientRects() de
+  // nodos DENTRO del iframe están en el sistema de coordenadas interno del
+  // iframe, que no es directamente comparable con el rect de <main> (el
+  // contenedor exterior, que ni siquiera es el elemento que hace scroll).
+  // epub.js, en cambio, ya resuelve esa geometría internamente y expone el
+  // resultado como un CFI a través de currentLocation().
+  const getEpubVisibleTextFromLocation = useCallback(async (): Promise<string | null> => {
+    const rendition = epubRenditionRef.current as any;
+    if (!rendition) return null;
+    try {
+      const location = await rendition.currentLocation();
+      const cfi: string | undefined = location?.start?.cfi;
+      if (!cfi) return null;
+
+      const range: Range | undefined = rendition.getRange(cfi);
+      if (!range) return null;
+
+      // Texto desde el punto de inicio del rango visible hasta el final de
+      // ese nodo de texto, para tener un fragmento representativo a buscar
+      // en phraseList.
+      const node = range.startContainer;
+      const text = (node?.textContent || '').slice(range.startOffset);
+      const snippet = text.replace(/\s+/g, ' ').trim();
+      if (snippet.length > 0) return snippet;
+
+      // Si el nodo de inicio no tiene texto suficiente (p.ej. es un elemento,
+      // no un nodo de texto), usar el texto completo del contenedor desde ahí.
+      const container = (node as any)?.parentElement as HTMLElement | undefined;
+      const fallback = (container?.textContent || '').replace(/\s+/g, ' ').trim();
+      return fallback.length > 0 ? fallback : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Determina el índice de la frase visible actualmente en pantalla para
+  // comenzar la lectura desde ahí en vez de desde el inicio de la página.
+  const getVisiblePhraseStartIndex = useCallback(async (phraseList: string[]): Promise<number> => {
+    if (item?.type === 'pdf') {
+      const container = containerRef.current;
+      if (!container) return 0;
+      const viewportRect = container.getBoundingClientRect();
+      const pageEl = document.getElementById(`pdf-page-${currentPage}`);
+      if (!pageEl) return 0;
+      const snippet = getFirstVisibleTextSnippet(pageEl, viewportRect);
+      return findPhraseIndexForSnippet(phraseList, snippet);
+    }
+
+    if (item?.type === 'txt') {
+      const container = containerRef.current;
+      if (!container) return 0;
+      const viewportRect = container.getBoundingClientRect();
+      const el = document.getElementById('txt-content');
+      if (!el) return 0;
+      const snippet = getFirstVisibleTextSnippet(el, viewportRect);
+      return findPhraseIndexForSnippet(phraseList, snippet);
+    }
+
+    if (item?.type === 'epub') {
+      const snippet = await getEpubVisibleTextFromLocation();
+      return findPhraseIndexForSnippet(phraseList, snippet);
+    }
+
+    return 0;
+  }, [item?.type, currentPage, getFirstVisibleTextSnippet, findPhraseIndexForSnippet, getEpubVisibleTextFromLocation]);
+
+  // Para EPUB: navega la rendition al inicio del capítulo actual usando la
+  // tabla de contenidos (TOC) del libro. Devuelve true si pudo navegar.
+  const navigateEpubToChapterStart = useCallback(async (): Promise<boolean> => {
+    const rendition = epubRenditionRef.current as any;
+    if (!rendition) return false;
+    try {
+      const toc = rendition.book?.navigation?.toc as { href: string; subitems?: any[] }[] | undefined;
+      if (!toc || toc.length === 0) return false;
+
+      // Aplanar el TOC (incluye subcapítulos) para buscar el item activo
+      const flatToc: { href: string }[] = [];
+      const flatten = (items: any[]) => {
+        items.forEach(it => {
+          flatToc.push({ href: it.href });
+          if (it.subitems?.length) flatten(it.subitems);
+        });
+      };
+      flatten(toc);
+
+      const currentHref: string | undefined = rendition.currentLocation?.()?.start?.href || rendition.location?.start?.href;
+      if (!currentHref) return false;
+
+      // Normalizar quitando anclas (#...) para comparar rutas de archivo
+      const stripAnchor = (href: string) => href.split('#')[0];
+      const currentPath = stripAnchor(currentHref);
+
+      // Buscar el último item del TOC cuya ruta sea <= la ruta actual
+      let targetHref: string | null = null;
+      for (const tocItem of flatToc) {
+        const tocPath = stripAnchor(tocItem.href);
+        if (tocPath === currentPath) {
+          targetHref = tocItem.href;
+          break;
+        }
+      }
+      if (!targetHref) return false;
+
+      await rendition.display(targetHref);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   // Resalta de manera no destructiva y súper premium la frase actual en el DOM del PDF
-  const highlightPhraseInDOM = useCallback((phraseText: string) => {
+  const highlightPhraseInDOM = useCallback((phraseText: string, color: string = '#fbbf24') => {
     const activePageEl = document.getElementById(`pdf-page-${currentPage}`);
     if (!activePageEl) return;
 
@@ -241,13 +495,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           const overlaps = (spanStartNormalized < endPos && spanEndNormalized > startPos);
           if (overlaps) {
             span.style.transition = 'background-color 0.25s ease-in-out, opacity 0.25s ease-in-out';
-            span.style.backgroundColor = '#fbbf24'; // Amarillo cálido premium
+            span.style.backgroundColor = color;
             span.style.opacity = '0.5';             // 50% de opacidad requerida
             span.style.mixBlendMode = 'multiply';   // Mantiene los negros absolutos del fondo
             span.style.borderRadius = '3px';
 
             if (!highlightedAny) {
-              span.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              span.scrollIntoView({ behavior: 'smooth', block: 'center' });
               highlightedAny = true;
             }
           }
@@ -256,6 +510,169 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
   }, [currentPage]);
 
+  // Resalta la frase actual dentro del/los iframe(s) del EPUB visible.
+  // A diferencia del PDF (que ya tiene spans por carácter del text layer),
+  // el body del EPUB es HTML arbitrario, así que se recorren los nodos de
+  // texto, se busca la frase con una regex tolerante a espacios/saltos y se
+  // envuelve el rango encontrado en un <mark> temporal con el mismo estilo
+  // premium usado en PDF.
+  const highlightPhraseInEpub = useCallback((phraseText: string, color: string = '#fbbf24', retriesLeft: number = 3) => {
+    // Cancelar cualquier reintento pendiente de una llamada anterior
+    if (epubHighlightRetryRef.current) {
+      clearTimeout(epubHighlightRetryRef.current);
+      epubHighlightRetryRef.current = null;
+    }
+
+    const contentsList = (epubRenditionRef.current as any)?.manager?.getContents?.() || [];
+    let matchedInAnySection = false;
+
+    contentsList.forEach((contents: any) => {
+      const doc: Document = contents?.document;
+      if (!doc?.body) return;
+
+      // 1. Limpiar resaltados previos, desenvolviendo los <mark> insertados
+      doc.querySelectorAll('mark.__tts-highlight__').forEach((mark) => {
+        const parent = mark.parentNode;
+        if (!parent) return;
+        while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+        parent.removeChild(mark);
+        parent.normalize();
+      });
+
+      if (!phraseText || phraseText.replace(/\s+/g, ' ').trim().length < 3) return;
+
+      // 2. Recorrer nodos de texto y construir el texto completo + mapa de offsets
+      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+      const nodeRanges: { node: Text; start: number; end: number }[] = [];
+      let fullText = '';
+      let current: Node | null;
+      while ((current = walker.nextNode())) {
+        const text = current.textContent || '';
+        if (!text) continue;
+        const start = fullText.length;
+        fullText += text;
+        nodeRanges.push({ node: current as Text, start, end: fullText.length });
+      }
+      if (!fullText) return;
+
+      // 3. Buscar la frase tolerando diferencias de espacios/saltos de línea
+      const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = phraseText
+        .trim()
+        .split(/\s+/)
+        .map(escapeRegExp)
+        .join('\\s+');
+      const regex = new RegExp(pattern, 'i');
+      const match = fullText.match(regex);
+      if (!match || match.index === undefined) return;
+
+      matchedInAnySection = true;
+
+      const startPos = match.index;
+      const endPos = startPos + match[0].length;
+
+      // 4. Envolver cada nodo de texto que solape el rango encontrado
+      let highlightedAny = false;
+      nodeRanges.forEach(({ node, start, end }) => {
+        if (end <= startPos || start >= endPos) return;
+        const sliceStart = Math.max(0, startPos - start);
+        const sliceEnd = Math.min(node.length, endPos - start);
+        if (sliceStart >= sliceEnd) return;
+
+        const range = doc.createRange();
+        range.setStart(node, sliceStart);
+        range.setEnd(node, sliceEnd);
+
+        const mark = doc.createElement('mark');
+        mark.className = '__tts-highlight__';
+        mark.style.backgroundColor = color;
+        mark.style.opacity = '0.5';
+        mark.style.mixBlendMode = 'multiply';
+        mark.style.borderRadius = '3px';
+        mark.style.transition = 'background-color 0.25s ease-in-out, opacity 0.25s ease-in-out';
+
+        try {
+          range.surroundContents(mark);
+          if (!highlightedAny) {
+            // No usar mark.scrollIntoView(): scrollea el documento INTERNO del
+            // iframe, lo cual entra en conflicto con el contenedor de scroll
+            // que maneja epub.js en modo "scrolled-doc"/continuous (provoca
+            // saltos/"peleas" de scroll). En su lugar, centramos la frase
+            // resaltada desplazando el contenedor exterior del manager.
+            const manager = (epubRenditionRef.current as any)?.manager;
+            const scrollContainer: HTMLElement | undefined = manager?.container;
+            // El <mark> vive dentro del documento del iframe de esta sección,
+            // así que su getBoundingClientRect() está en coordenadas internas
+            // del iframe, no del documento exterior donde vive scrollContainer.
+            // Hay que sumarle la posición del propio iframe dentro del
+            // documento exterior para poder compararlo con scrollContainer.
+            const iframeEl: HTMLElement | undefined = contents?.iframe || (doc.defaultView?.frameElement as HTMLElement | undefined);
+            if (scrollContainer && iframeEl) {
+              const markRect = mark.getBoundingClientRect();
+              const iframeRect = iframeEl.getBoundingClientRect();
+              const containerRect = scrollContainer.getBoundingClientRect();
+              const markCenter = iframeRect.top + markRect.top + markRect.height / 2;
+              const containerCenter = containerRect.top + containerRect.height / 2;
+              const delta = markCenter - containerCenter;
+              scrollContainer.scrollBy({ top: delta, behavior: 'smooth' });
+            } else {
+              mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            highlightedAny = true;
+          }
+        } catch {
+          // surroundContents falla si el rango cruza límites de elementos no
+          // homogéneos; en ese caso se omite el resaltado de ese nodo.
+        }
+      });
+    });
+
+    // Si la frase no se encontró en ninguna sección actualmente renderizada,
+    // es probable que el manager "continuous" de epub.js todavía no haya
+    // montado el iframe de la siguiente sección (esto ocurre cuando el
+    // scroll programático va más rápido que el precargado de capítulos).
+    // Reintentamos un par de veces dejando tiempo a que epub.js la monte,
+    // en vez de quedarnos sin resaltar/centrar para el resto de la lectura.
+    if (!matchedInAnySection && retriesLeft > 0 && phraseText && phraseText.replace(/\s+/g, ' ').trim().length >= 3) {
+      epubHighlightRetryRef.current = setTimeout(() => {
+        epubHighlightRetryRef.current = null;
+        highlightPhraseInEpub(phraseText, color, retriesLeft - 1);
+      }, 400);
+    }
+  }, []);
+
+  // Despacha el resaltado al lector correspondiente (PDF o EPUB)
+  const highlightCurrentPhrase = useCallback((phraseText: string, color?: string) => {
+    if (item?.type === 'epub') {
+      highlightPhraseInEpub(phraseText, color);
+    } else {
+      highlightPhraseInDOM(phraseText, color);
+    }
+  }, [item?.type, highlightPhraseInEpub, highlightPhraseInDOM]);
+
+  // Crea una nota/cita a partir de la frase que el TTS está leyendo actualmente,
+  // marcándola con el color elegido — sin abrir el panel de Anotaciones.
+  // Se reutiliza el mismo canal que la selección manual de texto
+  // (setSelectedCitation -> NotesPanel), que es la única fuente de verdad que
+  // escribe en localStorage[`notes-${bookId}`]. Escribir aquí directamente en
+  // localStorage provocaba pérdidas intermitentes de la nota: el estado React
+  // de NotesPanel podía sobreescribir el storage con datos desactualizados
+  // justo después (p.ej. al recolorear o crear otra nota).
+  const createNoteFromCurrentPhrase = useCallback((color: string, hex: string) => {
+    const phraseText = phrases[currentPhraseIndex];
+    if (!phraseText) return;
+
+    setSelectedCitation({
+      text: phraseText,
+      color,
+      timestamp: Date.now(),
+      page: item?.type === 'epub' ? undefined : currentPage,
+    });
+
+    // Resalta visualmente la frase en el color elegido (además de crear la nota)
+    highlightCurrentPhrase(phraseText, hex);
+  }, [phrases, currentPhraseIndex, item?.type, currentPage, highlightCurrentPhrase]);
+
   // Detener la reproducción de voz
   const handleTtsStop = useCallback(() => {
     // Cancelar cualquier fetch TTS en vuelo antes de todo lo demás
@@ -263,6 +680,15 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       ttsAbortRef.current.abort();
       ttsAbortRef.current = null;
     }
+    if (ttsStepTimeoutRef.current) {
+      clearTimeout(ttsStepTimeoutRef.current);
+      ttsStepTimeoutRef.current = null;
+    }
+    if (epubHighlightRetryRef.current) {
+      clearTimeout(epubHighlightRetryRef.current);
+      epubHighlightRetryRef.current = null;
+    }
+    ttsStepTargetRef.current = null;
     if (currentAudio) {
       currentAudio.onended = null;
       currentAudio.onerror = null;
@@ -278,25 +704,55 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
     setTtsStatus('idle');
     setCurrentPhraseIndex(-1);
-    highlightPhraseInDOM('');
+    highlightCurrentPhrase('');
     if ('mediaSession' in navigator) {
       navigator.mediaSession.playbackState = 'none';
     }
-  }, [currentAudio, highlightPhraseInDOM]);
+  }, [currentAudio, highlightCurrentPhrase]);
 
-  // Reproducción paso a paso frase por frase con pre-fetching asíncrono y resiliencia a errores
-  const playPhrase = useCallback(async (index: number, phraseList: string[]) => {
+  // Reproducción paso a paso frase por frase con pre-fetching asíncrono y resiliencia a errores.
+  //
+  // isInitial=true indica que esta es la PRIMERA frase de una nueva sesión de
+  // lectura (al presionar Play). En ese caso, el resaltado dispara un scroll
+  // automático para centrar la frase en pantalla — si empezamos a reproducir
+  // el audio inmediatamente, el usuario ve/escucha la frase mientras la
+  // pantalla todavía está "saltando" hacia esa posición (la sensación de
+  // salto/desfase que reportó el usuario). Por eso esperamos a que el scroll
+  // suave termine antes de pedir/reproducir el audio. En los avances
+  // subsiguientes (onended) no se espera, para no introducir pausas entre
+  // frases durante la lectura continua.
+  const playPhrase = useCallback(async (index: number, phraseList: string[], isInitial: boolean = false) => {
     if (index < 0 || index >= phraseList.length) {
       handleTtsStop();
       return;
+    }
+
+    // Esta es una reproducción real (no un paso de debounce pendiente)
+    ttsStepTargetRef.current = null;
+    if (ttsStepTimeoutRef.current) {
+      clearTimeout(ttsStepTimeoutRef.current);
+      ttsStepTimeoutRef.current = null;
     }
 
     setTtsStatus('loading');
     setCurrentPhraseIndex(index);
     const phraseText = phraseList[index];
 
-    // Resaltar visualmente en el PDF por rangos de caracteres exactos
-    highlightPhraseInDOM(phraseText);
+    // Recordar esta posición para reanudar la lectura aquí la próxima vez
+    // que se presione "Play" (solo para lectura de página, no de selección).
+    if (ttsTextSource === 'page') {
+      saveTtsPosition(index, phraseText);
+    }
+
+    // Resaltar visualmente la frase en curso (PDF por rangos de caracteres, EPUB por <mark>)
+    // y centrarla en pantalla mediante scroll suave.
+    highlightCurrentPhrase(phraseText);
+
+    if (isInitial) {
+      // Dar tiempo a que el scroll suave de centrado termine antes de
+      // empezar a generar/reproducir el audio.
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
 
     // Desconectar listeners del audio previo para evitar el "error fantasma"
     if (currentAudio) {
@@ -450,26 +906,62 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       setTtsStatus('error');
       setTtsErrorMessage(error.message || 'No se pudo reproducir la frase actual.');
     }
-  }, [currentAudio, item, currentPage, selectedVoice, selectedProvider, selectedModel, highlightPhraseInDOM, handleTtsStop]);
+  }, [currentAudio, item, currentPage, selectedVoice, selectedProvider, selectedModel, highlightCurrentPhrase, handleTtsStop, ttsTextSource, saveTtsPosition]);
 
   // Mantener el ref siempre apuntando a la versión más reciente de playPhrase
   playPhraseRef.current = playPhrase;
 
-  // Controles directos de Adelantar (>>) y Retroceder (<<) en la interfaz
+  // Controles directos de Adelantar (>>) y Retroceder (<<) en la interfaz.
+  //
+  // Si el usuario presiona el botón varias veces en menos de medio segundo,
+  // está navegando rápido por el texto y NO quiere que se generen/reproduzcan
+  // audios para cada frase intermedia (eso dispararía una llamada a la IA por
+  // cada click). En vez de reproducir inmediatamente, se actualiza el índice
+  // "objetivo" y se espera a que el usuario deje de presionar por 500ms antes
+  // de pedir el audio de la frase final.
+  const scheduleTtsStep = useCallback((targetIndex: number, phraseList: string[]) => {
+    if (targetIndex < 0 || targetIndex >= phraseList.length) return;
+
+    ttsStepTargetRef.current = targetIndex;
+    setCurrentPhraseIndex(targetIndex);
+    highlightCurrentPhrase(phraseList[targetIndex]);
+
+    if (ttsStepTimeoutRef.current) clearTimeout(ttsStepTimeoutRef.current);
+    ttsStepTimeoutRef.current = setTimeout(() => {
+      const finalIndex = ttsStepTargetRef.current;
+      ttsStepTimeoutRef.current = null;
+      ttsStepTargetRef.current = null;
+      if (finalIndex !== null) {
+        playPhrase(finalIndex, phraseList);
+      }
+    }, 500);
+  }, [highlightCurrentPhrase, playPhrase]);
+
   const handleTtsPrevious = useCallback(() => {
-    if (currentPhraseIndex > 0) {
-      playPhrase(currentPhraseIndex - 1, phrases);
-    }
-  }, [currentPhraseIndex, phrases, playPhrase]);
+    const base = ttsStepTargetRef.current !== null ? ttsStepTargetRef.current : currentPhraseIndex;
+    scheduleTtsStep(base - 1, phrases);
+  }, [currentPhraseIndex, phrases, scheduleTtsStep]);
 
   const handleTtsNext = useCallback(() => {
-    if (currentPhraseIndex < phrases.length - 1) {
-      playPhrase(currentPhraseIndex + 1, phrases);
-    }
-  }, [currentPhraseIndex, phrases, playPhrase]);
+    const base = ttsStepTargetRef.current !== null ? ttsStepTargetRef.current : currentPhraseIndex;
+    scheduleTtsStep(base + 1, phrases);
+  }, [currentPhraseIndex, phrases, scheduleTtsStep]);
+
+  // Cancelar el debounce de avance/retroceso pendiente al desmontar o detener
+  useEffect(() => {
+    return () => {
+      if (ttsStepTimeoutRef.current) clearTimeout(ttsStepTimeoutRef.current);
+    };
+  }, []);
 
   // Helper: obtiene texto de una página del DOM; si está vacío y es PDF server, usa OCR
   const getPageTextWithOcrFallback = useCallback(async (pageNum: number): Promise<string> => {
+    // EPUB: epubjs renderiza cada "página" visible dentro de uno o más iframes
+    // internos (vista de página única o doble). Leemos el texto visible de todos
+    // los iframes activos de la rendition actual.
+    if (item?.type === 'epub') {
+      return getEpubVisibleText();
+    }
     const pageEl = document.getElementById(`pdf-page-${pageNum}`);
     if (pageEl) {
       const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
@@ -493,44 +985,54 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       } catch { /* no-op */ }
     }
     return '';
-  }, [item?.type, item?.source]);
+  }, [item?.type, item?.source, getEpubVisibleText]);
 
   // Cambio de página desde el widget TTS con auto-lectura
   const handleTtsPrevPage = useCallback(() => {
-    const page = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
-    if (page <= 1) return;
-    const newPage = page - 1;
-    setTargetPage({ page: newPage, t: Date.now() });
-    setCurrentPage(newPage);
-    handleTtsStop();
+    if (item?.type === 'epub') {
+      handleTtsStop();
+      epubRenditionRef.current?.prev();
+    } else {
+      const page = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
+      if (page <= 1) return;
+      const newPage = page - 1;
+      handleTtsStop();
+      setTargetPage({ page: newPage, t: Date.now() });
+      setCurrentPage(newPage);
+    }
     setTimeout(async () => {
-      const text = await getPageTextWithOcrFallback(newPage);
+      const text = await getPageTextWithOcrFallback(typeof currentPage === 'number' ? currentPage - 1 : 0);
       if (text) {
         const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
         setPhrases(phraseList);
         setTtsTextSource('page');
-        playPhrase(0, phraseList);
+        playPhrase(0, phraseList, true);
       }
     }, 800);
-  }, [currentPage, handleTtsStop, playPhrase, getPageTextWithOcrFallback]);
+  }, [currentPage, item?.type, handleTtsStop, playPhrase, getPageTextWithOcrFallback]);
 
   const handleTtsNextPage = useCallback(() => {
-    const page = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
-    if (page >= totalPages) return;
-    const newPage = page + 1;
-    setTargetPage({ page: newPage, t: Date.now() });
-    setCurrentPage(newPage);
-    handleTtsStop();
+    if (item?.type === 'epub') {
+      handleTtsStop();
+      epubRenditionRef.current?.next();
+    } else {
+      const page = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
+      if (page >= totalPages) return;
+      const newPage = page + 1;
+      handleTtsStop();
+      setTargetPage({ page: newPage, t: Date.now() });
+      setCurrentPage(newPage);
+    }
     setTimeout(async () => {
-      const text = await getPageTextWithOcrFallback(newPage);
+      const text = await getPageTextWithOcrFallback(typeof currentPage === 'number' ? currentPage + 1 : 0);
       if (text) {
         const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
         setPhrases(phraseList);
         setTtsTextSource('page');
-        playPhrase(0, phraseList);
+        playPhrase(0, phraseList, true);
       }
     }, 800);
-  }, [currentPage, totalPages, handleTtsStop, playPhrase, getPageTextWithOcrFallback]);
+  }, [currentPage, totalPages, item?.type, handleTtsStop, playPhrase, getPageTextWithOcrFallback]);
 
   // Play / Pausa general
   const handleTtsPlayPause = async () => {
@@ -563,6 +1065,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       textToRead = selectedText.trim();
       source = 'selection';
     } else {
+      // "Inicio del capítulo" en EPUB requiere navegar la rendition al inicio
+      // del capítulo actual ANTES de extraer el texto visible, ya que el
+      // contenido renderizado cambia tras la navegación.
+      if (item?.type === 'epub' && ttsStartSource === 'chapter') {
+        await navigateEpubToChapterStart();
+        // Esperar a que epub.js termine de renderizar el nuevo contenido
+        await new Promise(resolve => setTimeout(resolve, 400));
+      }
       textToRead = getActivePageText();
       source = 'page';
     }
@@ -586,7 +1096,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               if (phraseList.length > 0) {
                 setTtsTextSource('page');
                 setPhrases(phraseList);
-                playPhrase(0, phraseList);
+                playPhrase(loadTtsPosition(phraseList), phraseList, true);
                 return;
               }
             }
@@ -608,7 +1118,26 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
 
     setPhrases(phraseList);
-    playPhrase(0, phraseList);
+
+    let startIndex = 0;
+    if (source === 'page') {
+      switch (ttsStartSource) {
+        case 'chapter':
+          // EPUB ya navegó al inicio del capítulo; el texto extraído ya
+          // corresponde a ese punto, así que empezamos desde lo visible ahí.
+          startIndex = item?.type === 'epub' ? await getVisiblePhraseStartIndex(phraseList) : getChapterStartIndexInPage(phraseList);
+          break;
+        case 'lastRead':
+          startIndex = loadTtsPosition(phraseList);
+          break;
+        case 'visible':
+        default:
+          startIndex = await getVisiblePhraseStartIndex(phraseList);
+          break;
+      }
+    }
+
+    playPhrase(startIndex, phraseList, true);
   };
 
   const handleTtsClose = useCallback(() => {
@@ -674,6 +1203,48 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Ref siempre actualizada a handleTtsStop, para poder llamarla desde
+  // listeners/cleanups sin que una closure vieja se quede "pegada".
+  const handleTtsStopRef = useRef(handleTtsStop);
+  useEffect(() => { handleTtsStopRef.current = handleTtsStop; }, [handleTtsStop]);
+
+  // Detener la lectura de voz al bloquear/minimizar la pantalla (visibilitychange,
+  // p.ej. el móvil se bloquea) o al salir de la vista del lector (desmontaje,
+  // p.ej. el usuario vuelve a la biblioteca). Evita que el audio siga sonando
+  // "en segundo plano" sin que el usuario lo vea ni pueda controlarlo.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        handleTtsStopRef.current();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      handleTtsStopRef.current();
+    };
+  }, []);
+
+  // Mide la altura real de la barra del reproductor TTS para que los
+  // controles de página/zoom del PDF se desplacen hacia arriba y no queden
+  // tapados por ella (la altura varía según si el panel de configuración
+  // está abierto o hay un mensaje de error visible).
+  useEffect(() => {
+    const el = ttsWidgetRef.current;
+    if (!showTtsWidget || !el) {
+      setTtsWidgetHeight(0);
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setTtsWidgetHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(el);
+    setTtsWidgetHeight(el.getBoundingClientRect().height);
+    return () => observer.disconnect();
+  }, [showTtsWidget, showTtsSettings, ttsStatus]);
+
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -728,6 +1299,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   };
 
   useEffect(() => {
+    // El EPUB gestiona su propia selección/limpieza vía los eventos 'selected'
+    // y 'click' de la rendition (la selección real vive dentro del iframe y
+    // window.getSelection() del documento principal siempre está vacío aquí,
+    // lo que borraría la toolbar de citas en cada mouseup).
+    if (item?.type === 'epub') return;
+
     const handleMouseUp = () => {
       const selection = window.getSelection();
       if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
@@ -751,7 +1328,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
        document.removeEventListener('mouseup', handleMouseUp);
        document.removeEventListener('touchend', handleMouseUp);
     };
-  }, [selectionRect]);
+  }, [selectionRect, item?.type]);
 
 
 
@@ -769,8 +1346,44 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         onClick={handleScreenClick}
      >
         <div className="flex-1 overflow-hidden pointer-events-auto">
-          {item.type === 'pdf' && <PDFReader url={item.source} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} />}
-          {item.type === 'epub' && <EPUBReader url={item.source} />}
+          {item.type === 'pdf' && <PDFReader url={item.source} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} bottomOffset={showTtsWidget ? ttsWidgetHeight : 0} />}
+          {item.type === 'epub' && (
+            <EPUBReader
+              url={item.source}
+              bottomOffset={showTtsWidget ? ttsWidgetHeight : 0}
+              getRendition={(rendition) => {
+                epubRenditionRef.current = rendition;
+                rendition.on('selected', (_cfiRange: string, contents: any) => {
+                  const sel = contents?.window?.getSelection?.();
+                  const text = sel?.toString().trim();
+                  if (!text || !sel?.rangeCount) return;
+                  const range = sel.getRangeAt(0);
+                  const rect = range.getBoundingClientRect();
+                  // El iframe interno de epubjs tiene su propio viewport; sumamos
+                  // su offset para posicionar la toolbar flotante en coordenadas
+                  // del documento principal.
+                  const iframeEl = contents?.document?.defaultView?.frameElement as HTMLElement | undefined;
+                  const iframeRect = iframeEl?.getBoundingClientRect();
+                  setSelectedText(text);
+                  setSelectionRect({
+                    top: rect.top + (iframeRect?.top || 0),
+                    left: rect.left + (iframeRect?.left || 0),
+                    width: rect.width,
+                  });
+                });
+                // Sin esto, un click sin arrastre dentro del iframe no limpia
+                // la toolbar de citas previa (el listener de mouseup del
+                // documento principal no llega al iframe).
+                rendition.on('click', () => {
+                  const sel = (rendition as any).manager?.getContents?.()?.[0]?.window?.getSelection?.();
+                  if (sel && !sel.isCollapsed) return;
+                  setSelectedText('');
+                  setSelectionRect(null);
+                });
+              }}
+            />
+          )}
+          {item.type === 'txt' && <TxtReader url={item.source} />}
           {item.type === 'externa' && (
             <div className="w-full h-full flex flex-col pointer-events-auto">
               <div className="bg-[#FFA300]/10 text-[#FFA300] p-3 text-sm font-medium text-center shadow-inner">
@@ -780,14 +1393,274 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
             </div>
           )}
         </div>
+
+          {/* Reproductor de Lector de Voz (TTS) — barra inferior contenida en el
+              panel del lector (no debe tapar el panel de Anotaciones) */}
+          {showTtsWidget && (
+             <div ref={ttsWidgetRef} className="absolute bottom-0 left-0 right-0 z-40 bg-[var(--bg-card)] border-t border-[var(--border-card)] shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-2 duration-300">
+                <div className="max-w-xl mx-auto px-3 pt-2 pb-2 sm:px-4">
+
+                   {/* Panel de configuración colapsable (modelo/voz/origen) */}
+                   {showTtsSettings && (
+                      <div className="flex flex-col gap-2.5 mb-3 pb-3 border-b border-[var(--border-card)]">
+                         {/* Selector de Proveedor / Motor de Voz */}
+                         <div className="flex items-center justify-between text-xs bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5">
+                            <span className="text-[var(--text-muted)] font-semibold">Modelo:</span>
+                            <select
+                               value={selectedProvider}
+                               onChange={(e) => {
+                                  const prov = e.target.value as 'elevenlabs' | 'google' | 'google-standard';
+                                  handleTtsStop(); // cancela fetch en vuelo, limpia precarga y audio
+                                  setSelectedProvider(prov);
+                                  if (prov === 'elevenlabs') {
+                                     setSelectedVoice('6Gr4AVmTax1pMJO0lHRK');
+                                  } else if (prov === 'google') {
+                                     setSelectedVoice('Erinome');
+                                     setSelectedModel('gemini-2.0-flash');
+                                  } else {
+                                     setSelectedVoice('es-ES-Standard-A');
+                                  }
+                               }}
+                               className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-[var(--primary)] cursor-pointer transition-colors shadow-sm outline-none"
+                            >
+                               <option value="elevenlabs" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">ElevenLabs (Voz)</option>
+                               <option value="google" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">Google Gemini (Voz/IA)</option>
+                               <option value="google-standard" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">Google Standard (Gratis)</option>
+                            </select>
+                         </div>
+
+                         {/* Selector de Modelo (Solo si el motor es Google Gemini) */}
+                         {selectedProvider === 'google' && (
+                            <div className="flex items-center justify-between text-xs bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5 gap-2">
+                               <span className="text-[var(--text-muted)] font-semibold shrink-0">Modelo IA:</span>
+                               <select
+                                  value={selectedModel}
+                                  onChange={(e) => {
+                                     handleTtsStop(); // cancela fetch en vuelo antes de cambiar modelo
+                                     setSelectedModel(e.target.value);
+                                  }}
+                                  className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-[var(--primary)] cursor-pointer transition-colors shadow-sm outline-none max-w-[165px] truncate"
+                               >
+                                  {GOOGLE_MODELS.map(m => (
+                                     <option key={m.id} value={m.id} className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">{m.name}</option>
+                                  ))}
+                               </select>
+                            </div>
+                         )}
+
+                         {/* Selector de Voz con favoritos */}
+                         {(() => {
+                            const allVoices = selectedProvider === 'elevenlabs' ? ELEVENLABS_VOICES : selectedProvider === 'google' ? GOOGLE_VOICES : GOOGLE_STANDARD_VOICES;
+                            const favorites = allVoices.filter(v => favoriteVoices.includes(v.id));
+                            const rest = allVoices.filter(v => !favoriteVoices.includes(v.id));
+                            const currentVoiceName = allVoices.find(v => v.id === selectedVoice)?.name || selectedVoice;
+                            return (
+                              <div className="relative text-xs">
+                                 <div className="flex items-center justify-between bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5 gap-2">
+                                    <span className="text-[var(--text-muted)] font-semibold shrink-0">Voz:</span>
+                                    <button
+                                       onClick={() => setShowVoiceDropdown(v => !v)}
+                                       className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 font-bold text-slate-800 dark:text-slate-100 cursor-pointer transition-colors shadow-sm max-w-[170px] truncate"
+                                    >
+                                       {favoriteVoices.includes(selectedVoice) && <span className="text-yellow-400 text-[10px]">★</span>}
+                                       <span className="truncate">{currentVoiceName}</span>
+                                       <ChevronUp className="w-3 h-3 shrink-0 opacity-50" />
+                                    </button>
+                                 </div>
+                                 {showVoiceDropdown && (
+                                    <div className="absolute right-0 bottom-full mb-1 z-50 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
+                                       <div className="max-h-56 overflow-y-auto custom-scrollbar">
+                                          {favorites.length > 0 && (
+                                             <div className="px-2 pt-2 pb-1">
+                                                <span className="text-[10px] text-yellow-500 font-bold uppercase tracking-wide px-1">★ Favoritas</span>
+                                                {favorites.map(v => (
+                                                   <button key={v.id} onClick={() => { setSelectedVoice(v.id); handleTtsStop(); setShowVoiceDropdown(false); }}
+                                                      className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", selectedVoice === v.id ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
+                                                   >
+                                                      <span className="truncate text-xs">{v.name}</span>
+                                                      <span onClick={(e) => toggleFavoriteVoice(v.id, e)} className="text-yellow-400 hover:text-yellow-500 shrink-0 px-1 cursor-pointer">★</span>
+                                                   </button>
+                                                ))}
+                                             </div>
+                                          )}
+                                          {rest.length > 0 && (
+                                             <div className="px-2 pt-1 pb-2">
+                                                {favorites.length > 0 && <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wide px-1">Todas</span>}
+                                                {rest.map(v => (
+                                                   <button key={v.id} onClick={() => { setSelectedVoice(v.id); handleTtsStop(); setShowVoiceDropdown(false); }}
+                                                      className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", selectedVoice === v.id ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
+                                                   >
+                                                      <span className="truncate text-xs">{v.name}</span>
+                                                      <span onClick={(e) => toggleFavoriteVoice(v.id, e)} className="text-slate-300 hover:text-yellow-400 shrink-0 px-1 cursor-pointer">☆</span>
+                                                   </button>
+                                                ))}
+                                             </div>
+                                          )}
+                                       </div>
+                                    </div>
+                                 )}
+                              </div>
+                            );
+                         })()}
+
+                         {ttsTextSource === 'selection' && (
+                            <div className="bg-[var(--bg-app)]/50 border border-[var(--border-card)] rounded-xl p-2.5 flex items-center justify-between text-xs">
+                               <span className="text-[var(--text-muted)] text-[10px]">Origen de lectura:</span>
+                               <span className="font-semibold text-[var(--text-main)] truncate max-w-[150px]">Texto Seleccionado</span>
+                            </div>
+                         )}
+
+                         {/* Selector de punto de inicio de la lectura al presionar Play */}
+                         <div className="flex items-center justify-between text-xs bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5 gap-2">
+                            <span className="text-[var(--text-muted)] font-semibold shrink-0">Comenzar desde:</span>
+                            <select
+                               value={ttsStartSource}
+                               onChange={(e) => setTtsStartSource(e.target.value as 'visible' | 'chapter' | 'lastRead')}
+                               className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-[var(--primary)] cursor-pointer transition-colors shadow-sm outline-none max-w-[150px] truncate"
+                            >
+                               <option value="visible" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">Texto en pantalla</option>
+                               <option value="chapter" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">Inicio del capítulo</option>
+                               <option value="lastRead" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">Última lectura</option>
+                            </select>
+                         </div>
+
+                         {ttsStatus === 'error' && (
+                            <div className="bg-red-500/10 border border-red-500/20 text-red-500 rounded-xl p-3 text-xs leading-relaxed max-h-24 overflow-y-auto custom-scrollbar">
+                               {ttsErrorMessage}
+                            </div>
+                         )}
+                      </div>
+                   )}
+
+                   {/* Fila de colores: resalta la frase actual y crea la nota en silencio */}
+                   <div className="flex items-center justify-center gap-3 mb-2">
+                      {activePalette.slice(0, 5).map((colorItem) => (
+                         <button
+                           key={colorItem.id}
+                           disabled={currentPhraseIndex < 0 || phrases.length === 0}
+                           onClick={() => createNoteFromCurrentPhrase(colorItem.color, colorItem.hex)}
+                           style={{ backgroundColor: colorItem.hex }}
+                           className="w-6 h-6 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-sm cursor-pointer"
+                           title={`Resaltar y anotar (${colorItem.name})`}
+                         />
+                      ))}
+                   </div>
+
+                   {/* Fila de controles: [config] [pág◀] [◀◀frase] [stop] [▶play] [frase▶▶] [▶pág] [cerrar] */}
+                   <div className="flex items-center justify-center gap-1.5 sm:gap-2">
+
+                      {/* Mostrar/ocultar configuración */}
+                      <button
+                        onClick={() => setShowTtsSettings(v => !v)}
+                        className={cn("p-2 border rounded-full transition-all active:scale-95 shadow-sm", showTtsSettings ? "bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30" : "bg-[var(--bg-app)] hover:bg-slate-200/50 border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)]")}
+                        title="Configuración de voz"
+                      >
+                         <Settings className="w-4 h-4" />
+                      </button>
+
+                      {/* Página anterior — triángulo+línea izquierda */}
+                      <button
+                        disabled={item?.type !== 'epub' && (typeof currentPage === 'number' ? currentPage <= 1 : parseInt(String(currentPage)) <= 1)}
+                        onClick={handleTtsPrevPage}
+                        className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
+                        title="Página Anterior"
+                      >
+                         <SkipBack className="w-4 h-4 fill-current" />
+                      </button>
+
+                      {/* Retroceder frase — flechas dobles */}
+                      <button
+                        disabled={currentPhraseIndex <= 0 || ttsStatus === 'loading' || ttsStatus === 'idle'}
+                        onClick={handleTtsPrevious}
+                        className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
+                        title="Frase Anterior"
+                      >
+                         <Rewind className="w-4 h-4 fill-current" />
+                      </button>
+
+                      {/* Stop */}
+                      <button
+                        disabled={ttsStatus === 'idle' || ttsStatus === 'loading'}
+                        onClick={handleTtsStop}
+                        className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-red-500 disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
+                        title="Detener"
+                      >
+                         <Square className="w-4 h-4 fill-current" />
+                      </button>
+
+                      {/* Play / Pause — botón central grande */}
+                      <button
+                        disabled={ttsStatus === 'loading'}
+                        onClick={handleTtsPlayPause}
+                        className={cn(
+                          "p-3.5 rounded-full text-white shadow-lg transition-all active:scale-95 duration-200 flex items-center justify-center",
+                          ttsStatus === 'playing'
+                            ? "bg-[var(--primary)] hover:bg-[var(--primary-hover)] ring-4 ring-[var(--primary)]/15"
+                            : "bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
+                        )}
+                        title={ttsStatus === 'playing' ? "Pausar" : "Reproducir"}
+                      >
+                         {ttsStatus === 'loading' ? (
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                         ) : ttsStatus === 'playing' ? (
+                            <Pause className="w-5 h-5 fill-current" />
+                         ) : (
+                            <Play className="w-5 h-5 fill-current ml-0.5" />
+                         )}
+                      </button>
+
+                      {/* Adelantar frase — flechas dobles */}
+                      <button
+                        disabled={currentPhraseIndex >= phrases.length - 1 || ttsStatus === 'loading' || ttsStatus === 'idle'}
+                        onClick={handleTtsNext}
+                        className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
+                        title="Frase Siguiente"
+                      >
+                         <FastForward className="w-4 h-4 fill-current" />
+                      </button>
+
+                      {/* Página siguiente — triángulo+línea derecha */}
+                      <button
+                        disabled={item?.type !== 'epub' && (typeof currentPage === 'number' ? currentPage >= totalPages : parseInt(String(currentPage)) >= totalPages)}
+                        onClick={handleTtsNextPage}
+                        className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
+                        title="Página Siguiente"
+                      >
+                         <SkipForward className="w-4 h-4 fill-current" />
+                      </button>
+
+                      {/* Cerrar reproductor */}
+                      <button
+                        onClick={handleTtsClose}
+                        className="p-2 bg-[var(--bg-app)] hover:bg-red-50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-red-500 rounded-full transition-all active:scale-95 shadow-sm"
+                        title="Cerrar Lector de Voz"
+                      >
+                         <X className="w-4 h-4" />
+                      </button>
+
+                   </div>
+
+                   {/* Indicador de estado / progreso */}
+                   <div className="text-center h-4 mt-1.5">
+                      <span className="text-[10px] text-[var(--text-muted)] italic">
+                         {ttsStatus === 'loading' && 'Generando voz natural...'}
+                         {ttsStatus === 'paused' && 'Lectura de voz pausada'}
+                         {ttsStatus === 'idle' && 'Presiona Play para leer'}
+                         {ttsStatus === 'error' && 'Error al procesar el audio'}
+                      </span>
+                   </div>
+                </div>
+             </div>
+          )}
      </div>
   );
 
   const [isNotesFocused, setIsNotesFocused] = useState(false);
 
   const handleClearSelection = useCallback(() => {
-     setSelectedText(''); 
+     setSelectedText('');
      setSelectionRect(null);
+     setSelectedCitation(undefined);
   }, []);
 
   const renderNotes = () => (
@@ -901,7 +1774,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
              </div>
  
              {/* Fixed right tools */}
-             {activeTab === 'reader' && (item.type === 'pdf' || item.type === 'epub') && (
+             {activeTab === 'reader' && (item.type === 'pdf' || item.type === 'epub' || item.type === 'txt') && (
                  <div className="flex items-center gap-1 sm:gap-2 shrink-0">
                   {/* Lector de Voz (TTS ElevenLabs) */}
                   <button 
@@ -980,18 +1853,36 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
             >
                <div className="flex px-4 py-2.5 gap-3 items-center">
                   {activePalette.map((colorItem) => (
-                     <button 
+                     <button
                        key={colorItem.id}
-                       onClick={() => { 
-                         setSelectedCitation({ text: selectedText, color: colorItem.color, timestamp: Date.now(), page: currentPage }); 
-                         if (!showNotes) setShowNotes(true); 
-                         setSelectionRect(null); 
-                       }} 
+                       onClick={() => {
+                         // El EPUB es reflowable y no tiene número de página real
+                         // (currentPage queda fijo en el bookmark inicial), así
+                         // que omitimos la referencia de página para no guardar
+                         // un dato incorrecto.
+                         setSelectedCitation({ text: selectedText, color: colorItem.color, timestamp: Date.now(), page: item?.type === 'epub' ? undefined : currentPage });
+                         if (!showNotes) setShowNotes(true);
+                         setSelectionRect(null);
+                       }}
                        style={{ backgroundColor: colorItem.hex }}
-                       className="w-5 h-5 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-white/50 cursor-pointer" 
-                       title={colorItem.name} 
+                       className="w-5 h-5 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-white/50 cursor-pointer"
+                       title={colorItem.name}
                      />
                   ))}
+                  {/* Leer en voz alta el texto seleccionado — solo si el TTS no está activo */}
+                  {(ttsStatus === 'idle' || ttsStatus === 'error') && (
+                     <button
+                       onClick={() => {
+                         setSelectionRect(null);
+                         setShowTtsWidget(true);
+                         handleTtsPlayPause();
+                       }}
+                       className="w-5 h-5 flex items-center justify-center text-white hover:scale-110 active:scale-95 transition-transform border-l border-white/20 pl-3 ml-1"
+                       title="Leer en voz alta"
+                     >
+                        <Volume2 className="w-4 h-4" />
+                     </button>
+                  )}
                </div>
             </div>
          )}
@@ -1056,239 +1947,6 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                }}
                currentPage={currentPage}
              />
-          )}
-
-          {/* Widget de Lector de Voz Flotante (ElevenLabs TTS Proxy) */}
-          {showTtsWidget && (
-             <div className="absolute top-4 right-4 z-40 bg-[var(--bg-card)] border border-[var(--border-card)] rounded-2xl shadow-2xl p-4 backdrop-blur-md animate-in slide-in-from-top-2 duration-300 w-80 max-w-[calc(100vw-32px)]">
-                <div className="flex items-center justify-between mb-3 border-b border-[var(--border-card)] pb-2.5">
-                   <div className="flex items-center gap-2">
-                      <Volume2 className={cn("w-5 h-5 text-[var(--primary)]", ttsStatus === 'playing' && "animate-pulse")} />
-                      <span className="font-bold text-sm text-[var(--text-main)]">Lector de Voz (TTS)</span>
-                   </div>
-                   <button 
-                      onClick={handleTtsClose} 
-                      className="text-[var(--text-muted)] hover:text-[var(--primary)] p-1.5 rounded-full hover:bg-[var(--primary)]/10 transition-colors"
-                      title="Cerrar Lector"
-                   >
-                      <VolumeX className="w-4 h-4" />
-                   </button>
-                </div>
-
-                <div className="flex flex-col gap-2.5 mb-4">
-                   {/* Selector de Proveedor / Motor de Voz */}
-                   <div className="flex items-center justify-between text-xs bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5">
-                      <span className="text-[var(--text-muted)] font-semibold">Motor de Voz:</span>
-                      <select
-                         value={selectedProvider}
-                         onChange={(e) => {
-                            const prov = e.target.value as 'elevenlabs' | 'google' | 'google-standard';
-                            handleTtsStop(); // cancela fetch en vuelo, limpia precarga y audio
-                            setSelectedProvider(prov);
-                            if (prov === 'elevenlabs') {
-                               setSelectedVoice('6Gr4AVmTax1pMJO0lHRK');
-                            } else if (prov === 'google') {
-                               setSelectedVoice('Erinome');
-                               setSelectedModel('gemini-2.0-flash');
-                            } else {
-                               setSelectedVoice('es-ES-Standard-A');
-                            }
-                         }}
-                         className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-[var(--primary)] cursor-pointer transition-colors shadow-sm outline-none"
-                      >
-                         <option value="elevenlabs" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">ElevenLabs (Voz)</option>
-                         <option value="google" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">Google Gemini (Voz/IA)</option>
-                         <option value="google-standard" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">Google Standard (Gratis)</option>
-                      </select>
-                   </div>
-
-                   {/* Selector de Modelo (Solo si el motor es Google Gemini) */}
-                   {selectedProvider === 'google' && (
-                      <div className="flex items-center justify-between text-xs bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5 gap-2">
-                         <span className="text-[var(--text-muted)] font-semibold shrink-0">Modelo IA:</span>
-                         <select 
-                            value={selectedModel} 
-                            onChange={(e) => {
-                               handleTtsStop(); // cancela fetch en vuelo antes de cambiar modelo
-                               setSelectedModel(e.target.value);
-                            }}
-                            className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-[var(--primary)] cursor-pointer transition-colors shadow-sm outline-none max-w-[165px] truncate"
-                         >
-                            {GOOGLE_MODELS.map(m => (
-                               <option key={m.id} value={m.id} className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">{m.name}</option>
-                            ))}
-                         </select>
-                      </div>
-                   )}
-
-                   {/* Selector de Voz con favoritos */}
-                   {(() => {
-                      const allVoices = selectedProvider === 'elevenlabs' ? ELEVENLABS_VOICES : selectedProvider === 'google' ? GOOGLE_VOICES : GOOGLE_STANDARD_VOICES;
-                      const favorites = allVoices.filter(v => favoriteVoices.includes(v.id));
-                      const rest = allVoices.filter(v => !favoriteVoices.includes(v.id));
-                      const currentVoiceName = allVoices.find(v => v.id === selectedVoice)?.name || selectedVoice;
-                      return (
-                        <div className="relative text-xs">
-                           <div className="flex items-center justify-between bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5 gap-2">
-                              <span className="text-[var(--text-muted)] font-semibold shrink-0">Voz:</span>
-                              <button
-                                 onClick={() => setShowVoiceDropdown(v => !v)}
-                                 className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 font-bold text-slate-800 dark:text-slate-100 cursor-pointer transition-colors shadow-sm max-w-[170px] truncate"
-                              >
-                                 {favoriteVoices.includes(selectedVoice) && <span className="text-yellow-400 text-[10px]">★</span>}
-                                 <span className="truncate">{currentVoiceName}</span>
-                                 <ChevronLeft className="w-3 h-3 shrink-0 -rotate-90 opacity-50" />
-                              </button>
-                           </div>
-                           {showVoiceDropdown && (
-                              <div className="absolute right-0 top-full mt-1 z-50 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
-                                 <div className="max-h-56 overflow-y-auto custom-scrollbar">
-                                    {favorites.length > 0 && (
-                                       <div className="px-2 pt-2 pb-1">
-                                          <span className="text-[10px] text-yellow-500 font-bold uppercase tracking-wide px-1">★ Favoritas</span>
-                                          {favorites.map(v => (
-                                             <button key={v.id} onClick={() => { setSelectedVoice(v.id); handleTtsStop(); setShowVoiceDropdown(false); }}
-                                                className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", selectedVoice === v.id ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
-                                             >
-                                                <span className="truncate text-xs">{v.name}</span>
-                                                <span onClick={(e) => toggleFavoriteVoice(v.id, e)} className="text-yellow-400 hover:text-yellow-500 shrink-0 px-1 cursor-pointer">★</span>
-                                             </button>
-                                          ))}
-                                       </div>
-                                    )}
-                                    {rest.length > 0 && (
-                                       <div className="px-2 pt-1 pb-2">
-                                          {favorites.length > 0 && <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wide px-1">Todas</span>}
-                                          {rest.map(v => (
-                                             <button key={v.id} onClick={() => { setSelectedVoice(v.id); handleTtsStop(); setShowVoiceDropdown(false); }}
-                                                className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", selectedVoice === v.id ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
-                                             >
-                                                <span className="truncate text-xs">{v.name}</span>
-                                                <span onClick={(e) => toggleFavoriteVoice(v.id, e)} className="text-slate-300 hover:text-yellow-400 shrink-0 px-1 cursor-pointer">☆</span>
-                                             </button>
-                                          ))}
-                                       </div>
-                                    )}
-                                 </div>
-                              </div>
-                           )}
-                        </div>
-                      );
-                   })()}
-
-                   <div className="bg-[var(--bg-app)]/50 border border-[var(--border-card)] rounded-xl p-2.5 flex items-center justify-between text-xs">
-                      <div className="flex flex-col gap-0.5">
-                         <span className="text-[var(--text-muted)] text-[10px]">Origen de lectura:</span>
-                         <span className="font-semibold text-[var(--text-main)] truncate max-w-[150px]">
-                            {ttsTextSource === 'selection' ? 'Texto Seleccionado' : `Pág. ${currentPage} de ${totalPages || '--'}`}
-                         </span>
-                      </div>
-                      <span className="px-2 py-0.5 bg-[var(--primary)]/15 text-[var(--primary)] font-medium rounded-full text-[10px] shrink-0">
-                         Español
-                      </span>
-                   </div>
-
-                   {/* Indicador del progreso por frases */}
-                   {currentPhraseIndex >= 0 && phrases.length > 0 && (
-                      <div className="bg-[var(--bg-app)]/50 border border-[var(--border-card)] rounded-xl p-2 flex items-center justify-between text-[11px] font-mono">
-                         <span className="text-[var(--text-muted)]">Lectura frase:</span>
-                         <span className="font-bold text-[var(--primary)] tabular-nums">{currentPhraseIndex + 1} / {phrases.length}</span>
-                      </div>
-                   )}
-
-                   {ttsStatus === 'error' && (
-                      <div className="bg-red-500/10 border border-red-500/20 text-red-500 rounded-xl p-3 text-xs leading-relaxed max-h-24 overflow-y-auto custom-scrollbar">
-                         {ttsErrorMessage}
-                      </div>
-                   )}
-                </div>
-
-                {/* Barra de controles: [pág◀] [◀◀frase] [stop] [▶play] [frase▶▶] [▶pág] */}
-                <div className="flex items-center justify-center gap-2 py-1">
-
-                   {/* Página anterior — triángulo+línea izquierda */}
-                   <button
-                     disabled={typeof currentPage === 'number' ? currentPage <= 1 : parseInt(String(currentPage)) <= 1}
-                     onClick={handleTtsPrevPage}
-                     className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
-                     title="Página Anterior"
-                   >
-                      <SkipBack className="w-4 h-4 fill-current" />
-                   </button>
-
-                   {/* Retroceder frase — flechas dobles */}
-                   <button
-                     disabled={currentPhraseIndex <= 0 || ttsStatus === 'loading' || ttsStatus === 'idle'}
-                     onClick={handleTtsPrevious}
-                     className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
-                     title="Frase Anterior"
-                   >
-                      <Rewind className="w-4 h-4 fill-current" />
-                   </button>
-
-                   {/* Stop */}
-                   <button
-                     disabled={ttsStatus === 'idle' || ttsStatus === 'loading'}
-                     onClick={handleTtsStop}
-                     className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-red-500 disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
-                     title="Detener"
-                   >
-                      <Square className="w-4 h-4 fill-current" />
-                   </button>
-
-                   {/* Play / Pause — botón central grande */}
-                   <button
-                     disabled={ttsStatus === 'loading'}
-                     onClick={handleTtsPlayPause}
-                     className={cn(
-                       "p-3.5 rounded-full text-white shadow-lg transition-all active:scale-95 duration-200 flex items-center justify-center",
-                       ttsStatus === 'playing'
-                         ? "bg-[var(--primary)] hover:bg-[var(--primary-hover)] ring-4 ring-[var(--primary)]/15"
-                         : "bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
-                     )}
-                     title={ttsStatus === 'playing' ? "Pausar" : "Reproducir"}
-                   >
-                      {ttsStatus === 'loading' ? (
-                         <Loader2 className="w-5 h-5 animate-spin" />
-                      ) : ttsStatus === 'playing' ? (
-                         <Pause className="w-5 h-5 fill-current" />
-                      ) : (
-                         <Play className="w-5 h-5 fill-current ml-0.5" />
-                      )}
-                   </button>
-
-                   {/* Adelantar frase — flechas dobles */}
-                   <button
-                     disabled={currentPhraseIndex >= phrases.length - 1 || ttsStatus === 'loading' || ttsStatus === 'idle'}
-                     onClick={handleTtsNext}
-                     className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
-                     title="Frase Siguiente"
-                   >
-                      <FastForward className="w-4 h-4 fill-current" />
-                   </button>
-
-                   {/* Página siguiente — triángulo+línea derecha */}
-                   <button
-                     disabled={typeof currentPage === 'number' ? currentPage >= totalPages : parseInt(String(currentPage)) >= totalPages}
-                     onClick={handleTtsNextPage}
-                     className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
-                     title="Página Siguiente"
-                   >
-                      <SkipForward className="w-4 h-4 fill-current" />
-                   </button>
-
-                </div>
-
-                <div className="text-center h-4 mt-2">
-                   <span className="text-[10px] text-[var(--text-muted)] italic">
-                      {ttsStatus === 'loading' && 'Generando voz natural...'}
-                      {ttsStatus === 'playing' && 'Reproduciendo lectura de voz'}
-                      {ttsStatus === 'paused' && 'Lectura de voz pausada'}
-                      {ttsStatus === 'idle' && 'Presiona Play para leer'}
-                      {ttsStatus === 'error' && 'Error al procesar el audio'}
-                   </span>
-                </div>
-             </div>
           )}
       </main>
 

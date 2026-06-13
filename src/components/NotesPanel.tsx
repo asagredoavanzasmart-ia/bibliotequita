@@ -30,11 +30,24 @@ export interface Note {
   type?: 'note' | 'bookmark';
 }
 
+// Extrae un número de página real de `pageReference`. En EPUB, `pageReference`
+// puede ser un CFI (p.ej. "epubcfi(/6/14!/4/2/16,/1:0,/1:117)") en vez de un
+// número de página: si se interpretara su primer dígito como página, las notas
+// quedarían ordenadas por un número arbitrario en vez de cronológicamente.
+// Por eso solo se trata como "página" si la referencia es puramente numérica.
+const parsePageNum = (ref: any): number => {
+  if (typeof ref === 'number') return ref > 0 ? ref : 0;
+  if (typeof ref !== 'string') return 0;
+  const str = ref.trim();
+  if (!/^\d+$/.test(str)) return 0;
+  return parseInt(str, 10);
+};
+
 interface NotesPanelProps {
   documentId: string;
   onNavigateToPage?: (page: number | string) => void;
   selectedText?: string;
-  selectedCitation?: { text: string, color: string, timestamp: number, page: number | string };
+  selectedCitation?: { text: string, color: string, timestamp: number, page?: number | string };
   clearSelection?: () => void;
   currentPage?: number | string;
 }
@@ -48,6 +61,7 @@ export function NotesPanel({ documentId, onNavigateToPage, selectedText, selecte
   const [editPage, setEditPage] = useState<string | number>('');
   const [activePalette, setActivePalette] = useState<{ id: string, color: string, bgClass: string, borderClass: string, textClass: string, name: string, hex: string }[]>([]);
   const notesEndRef = useRef<HTMLDivElement>(null);
+  const lastCitationTimestampRef = useRef<number | null>(null);
 
   // Load color palette
   useEffect(() => {
@@ -82,14 +96,6 @@ export function NotesPanel({ documentId, onNavigateToPage, selectedText, selecte
 
   // Save notes
   const saveNotes = (newNotes: Note[] | ((prev: Note[]) => Note[])) => {
-    const parsePageNum = (ref: any): number => {
-      if (ref === undefined || ref === null) return 0;
-      const str = String(ref).trim();
-      if (!str) return 0;
-      const match = str.match(/\d+/);
-      return match ? parseInt(match[0], 10) : 0;
-    };
-
     setNotes(prev => {
       const updated = typeof newNotes === 'function' ? newNotes(prev) : newNotes;
       const sorted = [...updated].sort((a, b) => {
@@ -116,7 +122,8 @@ export function NotesPanel({ documentId, onNavigateToPage, selectedText, selecte
   };
 
   useEffect(() => {
-    if (selectedCitation) {
+    if (selectedCitation && lastCitationTimestampRef.current !== selectedCitation.timestamp) {
+      lastCitationTimestampRef.current = selectedCitation.timestamp;
       const newNote: Note = {
         id: crypto.randomUUID(),
         documentId,
@@ -188,14 +195,6 @@ export function NotesPanel({ documentId, onNavigateToPage, selectedText, selecte
          ) : (
             [...notes]
               .sort((a, b) => {
-                const parsePageNum = (ref: any): number => {
-                  if (ref === undefined || ref === null) return 0;
-                  const str = String(ref).trim();
-                  if (!str) return 0;
-                  const match = str.match(/\d+/);
-                  return match ? parseInt(match[0], 10) : 0;
-                };
-
                 const pageA = parsePageNum(a.pageReference);
                 const pageB = parsePageNum(b.pageReference);
                 

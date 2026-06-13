@@ -1,10 +1,11 @@
 import React, { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { BookItem } from '../types';
-import { UploadCloud, X, Plus, CheckCircle2, Link as LinkIcon } from 'lucide-react';
+import { UploadCloud, X, Plus, CheckCircle2, Link as LinkIcon, Tag } from 'lucide-react';
 import { useLibrary } from '../hooks/useLibrary';
-import { cn } from '../lib/utils';
+import { cn, colorSwatchProps } from '../lib/utils';
 import { pdfjs } from 'react-pdf';
+import ePub from 'epubjs';
 // Migrado de idb-keyval a almacenamiento real en el servidor (ver src/lib/uploadFile.ts).
 import { uploadFile } from '../lib/uploadFile';
 
@@ -38,7 +39,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
     toBuy: false
   });
   const [digitalSource, setDigitalSource] = useState('');
-  const [digitalType, setDigitalType] = useState<'externa' | 'pdf' | 'epub'>('externa');
+  const [digitalType, setDigitalType] = useState<'externa' | 'pdf' | 'epub' | 'txt'>('externa');
 
   const [coverUrl, setCoverUrl] = useState('');
   const coverInputRef = useRef<HTMLInputElement>(null);
@@ -59,6 +60,21 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
 
   const [newCategoryName, setNewCategoryName] = useState('');
   const [showNewCategory, setShowNewCategory] = useState(false);
+
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState('');
+
+  const addTag = (tagName: string) => {
+    const trimmed = tagName.trim();
+    if (trimmed && !tags.includes(trimmed)) {
+      setTags(prev => [...prev, trimmed]);
+    }
+    setTagInput('');
+  };
+
+  const removeTag = (tagName: string) => {
+    setTags(prev => prev.filter(t => t !== tagName));
+  };
 
   const analyzeImageContent = async (base64Str: string) => {
       setIsAnalyzing(true);
@@ -197,6 +213,90 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
      }
   };
 
+  const analyzeEpubContent = async (buffer: ArrayBuffer) => {
+    setIsAnalyzing(true);
+    try {
+      const book = ePub(buffer);
+      await book.ready;
+      const metadata = await book.loaded.metadata;
+
+      // El ISBN suele venir en el identifier del OPF, a veces con prefijo "urn:isbn:" o "isbn:".
+      const rawIdentifier = (metadata as any).identifier || '';
+      const isbnMatch = String(rawIdentifier).match(/(?:urn:)?isbn:?\s*([\d-]{10,17})/i);
+      const isbn = isbnMatch ? isbnMatch[1] : (/^[\d-]{10,17}$/.test(String(rawIdentifier).trim()) ? rawIdentifier.trim() : '');
+
+      setFormData(prev => ({
+        ...prev,
+        title: metadata.title || prev.title,
+        author: metadata.creator || prev.author,
+        publisher: metadata.publisher || prev.publisher,
+        year: (metadata.pubdate ? String(metadata.pubdate).slice(0, 4) : '') || prev.year,
+        isbn: isbn || prev.isbn
+      }));
+
+      if (!coverUrl) {
+        try {
+          const coverBlobUrl = await book.coverUrl();
+          if (coverBlobUrl) {
+            const coverBlob = await (await fetch(coverBlobUrl)).blob();
+            try {
+              const { url } = await uploadFile(coverBlob, `cover-${Date.now()}.jpg`);
+              setCoverUrl(url);
+            } catch (err) {
+              console.warn('No se pudo subir la auto-portada del EPUB, uso preview local:', err);
+              setCoverUrl(coverBlobUrl);
+            }
+          }
+        } catch (e) { console.error("EPUB cover extraction failed", e); }
+      }
+
+      // La materia principal y el ISBN (si no estaba en los metadatos) requieren
+      // analizar el texto del contenido, igual que con los PDFs.
+      try {
+        const spineItems = (book.spine as any).spineItems as any[];
+        const sectionsToRead = spineItems.slice(0, 7);
+        // Para libros archivados (ArrayBuffer/zip), section.url ya viene resuelto,
+        // por lo que hay que usar archive.request directo (book.load re-resolvería
+        // la ruta y rompería la URL).
+        const requestFn = book.archive.request.bind(book.archive);
+        let fullText: string[] = [];
+        for (const item of sectionsToRead) {
+          try {
+            const contents: Element = await item.load(requestFn);
+            const text = contents.textContent?.replace(/\s+/g, ' ').trim() || '';
+            if (text) fullText.push(text);
+            item.unload();
+          } catch { /* sección no legible, se ignora */ }
+        }
+        const textString = fullText.join(' \n').slice(0, 200000);
+
+        if (textString) {
+          const response = await fetch('/api/analyze-pdf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: textString })
+          });
+          if (response.ok) {
+            const extracted = await response.json();
+            setFormData(prev => ({
+              ...prev,
+              title: prev.title || extracted.title || '',
+              author: prev.author || extracted.author || '',
+              year: prev.year || extracted.year || '',
+              publisher: prev.publisher || extracted.publisher || '',
+              isbn: prev.isbn || extracted.isbn || '',
+              subject: extracted.subject || prev.subject
+            }));
+          }
+        }
+      } catch (e) { console.error("EPUB text analysis failed", e); }
+    } catch (error) {
+      console.error("EPUB analysis failed:", error);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   const handleDigitalUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -205,7 +305,9 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       return;
     }
     setUploadError('');
-    const isPdf = file.type.includes('pdf') || file.name.toLowerCase().endsWith('.pdf');
+    const name = file.name.toLowerCase();
+    const isPdf = file.type.includes('pdf') || name.endsWith('.pdf');
+    const isTxt = file.type.includes('text/plain') || name.endsWith('.txt');
 
     // Sube al servidor → obtenemos URL persistente "/api/files/<uuid>.<ext>".
     try {
@@ -220,13 +322,17 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       setDigitalSource(URL.createObjectURL(file));
     }
 
-    setDigitalType(isPdf ? 'pdf' : 'epub');
+    setDigitalType(isPdf ? 'pdf' : isTxt ? 'txt' : 'epub');
     setFormData(prev => ({ ...prev, ownedDigital: true }));
 
     if (isPdf) {
       // Pasamos el ArrayBuffer directo a pdfjs (más fiable que volver a fetchear).
       const buffer = await file.arrayBuffer();
       await analyzePdfContent(buffer);
+    } else if (!isTxt) {
+      // EPUB: extraemos metadatos (título, autor, editorial, año) y portada igual que un PDF.
+      const buffer = await file.arrayBuffer();
+      await analyzeEpubContent(buffer);
     }
   };
 
@@ -256,15 +362,16 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       read: formData.read,
       ownedPhysical: formData.ownedPhysical,
       ownedDigital: formData.ownedDigital,
-      toBuy: formData.toBuy
+      toBuy: formData.toBuy,
+      tags
     });
   };
 
   const modalContent = (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[9999]">
-      <div className="bg-[var(--bg-app)] rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden animate-in fade-in zoom-in-95 flex flex-col h-[95vh] md:h-auto md:max-h-[85vh]">
-        <div className="flex items-center justify-between p-4 md:p-6 border-b border-slate-200/50 shrink-0">
-           <h2 className="text-lg md:text-xl font-bold text-[var(--text-main)] truncate">Añadir Recurso Manualmente</h2>
+      <div className="bg-[var(--bg-app)] rounded-2xl shadow-xl w-full max-w-3xl lg:max-w-[62rem] overflow-hidden animate-in fade-in zoom-in-95 flex flex-col h-[95vh] md:h-auto md:max-h-[85vh]">
+        <div className="flex items-center justify-between p-3 md:p-5 border-b border-slate-200/50 shrink-0">
+           <h2 className="text-base md:text-lg font-bold text-[var(--text-main)] truncate">Añadir Recurso Manualmente</h2>
            <div className="flex items-center gap-2 sm:gap-4 shrink-0">
              <span className="hidden sm:inline-block text-[10px] text-[var(--text-muted)] opacity-70 italic font-medium tracking-wide">
                 Autoguardado activado
@@ -295,12 +402,12 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
            </div>
         </div>
         
-        <form id="add-manual-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 md:p-6 settings-scrollbar">
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 min-h-min pb-20">
-              <div className="md:col-span-1 flex flex-col gap-2 items-center">
-                 <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block w-full text-center">Portada</label>
-                 <div 
-                   className="w-1/2 md:w-[60%] lg:w-[60%] aspect-[4/5] bg-[var(--bg-card)] rounded-xl border-2 border-dashed border-slate-200/50 flex flex-col items-center justify-center text-slate-400 cursor-pointer overflow-hidden relative shadow-sm transition-all hover:border-[var(--primary)]/50 group" 
+        <form id="add-manual-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto md:overflow-hidden p-3 md:p-5">
+           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 min-h-min md:h-full md:items-start">
+              <div className="md:col-span-1 flex flex-col gap-2 items-center md:sticky md:top-0">
+                 <label className="text-[11px] font-semibold text-[var(--text-muted)] block w-full text-center">Portada</label>
+                 <div
+                   className="w-1/2 md:w-[70%] lg:w-[70%] aspect-[2/3] bg-[var(--bg-card)] rounded-xl border-2 border-dashed border-slate-200/50 flex flex-col items-center justify-center text-slate-400 cursor-pointer overflow-hidden relative shadow-sm transition-all hover:border-[var(--primary)]/50 group"
                    onClick={() => coverInputRef.current?.click()}
                  >
                    {coverUrl ? (
@@ -314,41 +421,40 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                    <input type="file" ref={coverInputRef} accept="image/*" className="hidden" onChange={handleCoverUpload} />
                 </div>
                 
-                <div className="flex flex-col gap-2 mt-4 w-full">
+                <div className="flex flex-col gap-2 mt-3 w-full">
                    <button
                      disabled={isAnalyzing || isQuotaFull}
                      type="button"
                      onClick={() => fileInputRef.current?.click()}
-                     className={cn("px-4 py-2.5 flex items-center justify-center font-medium gap-2 text-[var(--primary)] rounded-lg transition-colors w-full border border-[var(--primary)]/30 text-xs shadow-sm", isAnalyzing || isQuotaFull ? "bg-slate-100 opacity-70 cursor-not-allowed" : "bg-[var(--primary)]/10 hover:bg-[var(--primary)]/20")}
+                     className={cn("px-3 py-1.5 flex items-center justify-center font-bold gap-2 rounded-lg transition-all w-full text-xs shadow-md whitespace-nowrap", isAnalyzing || isQuotaFull ? "bg-slate-200 text-slate-400 opacity-70 cursor-not-allowed" : "bg-[var(--primary)] text-white hover:opacity-90")}
                    >
-                     <UploadCloud className={cn("w-4 h-4", isAnalyzing && "animate-pulse")} />
-                     {isAnalyzing ? "Analizando IA..." : isQuotaFull ? `Límite alcanzado (${demoQuota!.current}/${demoQuota!.max})` : "Importar de PDF o EPUB"}
+                     <UploadCloud className={cn("w-4 h-4 shrink-0", isAnalyzing && "animate-pulse")} />
+                     {isAnalyzing ? "Analizando IA..." : isQuotaFull ? `Límite alcanzado (${demoQuota!.current}/${demoQuota!.max})` : "Importar archivo"}
                    </button>
                    {uploadError && (
                      <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-center">{uploadError}</p>
                    )}
-                   <p className="text-[10px] text-[var(--text-muted)] text-center leading-tight px-1">Extrae IA la portada y datos de las primeras 7 pág.</p>
-                   <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".pdf,.epub" className="hidden" />
-                   
-                   <div className="relative mt-2">
+                   <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".pdf,.epub,.txt" className="hidden" />
+
+                   <div className="relative mt-1">
                        {digitalType === 'externa' ? (
                           <>
-                             <input 
-                               type="text" 
-                               value={digitalSource} 
+                             <input
+                               type="text"
+                               value={digitalSource}
                                onChange={e => {
                                   setDigitalSource(e.target.value);
                                   setDigitalType('externa');
                                   if (e.target.value) {
                                      setFormData(prev => ({ ...prev, ownedDigital: true }));
                                   }
-                               }} 
-                               className="w-full text-xs pl-9 pr-24 py-2.5 bg-[var(--bg-card)] border border-[var(--primary)]/20 rounded-lg focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400 font-medium transition-all shadow-sm" 
-                               placeholder="Pegar enlace externo..." 
+                               }}
+                               className="w-full text-xs pl-9 pr-20 py-1.5 bg-[var(--bg-card)] border border-[var(--primary)]/20 rounded-lg focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400 font-medium transition-all shadow-sm"
+                               placeholder="Pegar enlace..."
                              />
                              <LinkIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--primary)]/50" />
                              {digitalSource && (
-                               <button 
+                               <button
                                  type="button"
                                  onClick={handleAnalyzeLink}
                                  disabled={isAnalyzing}
@@ -359,13 +465,13 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                              )}
                           </>
                        ) : (
-                          <div className="flex items-center justify-between p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-600 font-medium shadow-sm transition-all animate-in fade-in">
+                          <div className="flex items-center justify-between p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-600 font-medium shadow-sm transition-all animate-in fade-in">
                              <span className="flex items-center gap-1.5 truncate">
                                <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
                                Archivo {digitalType.toUpperCase()} cargado con éxito
                              </span>
-                             <button 
-                               type="button" 
+                             <button
+                               type="button"
                                onClick={() => {
                                  setDigitalSource('');
                                  setDigitalType('externa');
@@ -381,25 +487,41 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                 </div>
              </div>
              
-             <div className="md:col-span-2 space-y-6">
+             <div className="md:col-span-2 space-y-4 md:h-full md:overflow-y-auto md:pr-2 settings-scrollbar">
                 <div>
-                   <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block mb-1">Título *</label>
-                   <input required type="text" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} className="w-full text-base font-medium px-4 py-3 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-sm text-[var(--text-main)]" placeholder="Ej. El Señor de los Anillos" />
+                   <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">Título *</label>
+                   <input required type="text" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} className="w-full text-sm font-medium px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-sm text-[var(--text-main)]" placeholder="Ej. El Señor de los Anillos" />
                 </div>
-                
-                <div className="grid grid-cols-2 gap-4">
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                    <div>
-                      <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block mb-1">Autor</label>
-                      <input type="text" value={formData.author} onChange={e => setFormData({...formData, author: e.target.value})} className="w-full px-4 py-2.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. J.R.R. Tolkien" />
+                      <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">Autor</label>
+                      <input type="text" value={formData.author} onChange={e => setFormData({...formData, author: e.target.value})} className="w-full text-sm px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. J.R.R. Tolkien" />
                    </div>
                    <div>
-                      <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block mb-1">Año</label>
-                      <input type="text" value={formData.year} onChange={e => setFormData({...formData, year: e.target.value})} className="w-full px-4 py-2.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. 1954" />
+                      <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">Año</label>
+                      <input type="text" value={formData.year} onChange={e => setFormData({...formData, year: e.target.value})} className="w-full text-sm px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. 1954" />
                    </div>
                 </div>
 
                 <div>
-                   <label className="flex items-center justify-between text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2">
+                   <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">Materia</label>
+                   <input type="text" value={formData.subject} onChange={e => setFormData({...formData, subject: e.target.value})} className="w-full text-sm px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. Filosofía" />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                   <div>
+                      <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">Editorial</label>
+                      <input type="text" value={formData.publisher} onChange={e => setFormData({...formData, publisher: e.target.value})} className="w-full text-sm px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. Planeta" />
+                   </div>
+                   <div>
+                      <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">ISBN</label>
+                      <input type="text" value={formData.isbn} onChange={e => setFormData({...formData, isbn: e.target.value})} className="w-full text-sm px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. 978-3-16-148410-0" />
+                   </div>
+                </div>
+
+                <div>
+                   <label className="flex items-center justify-between text-[11px] font-semibold text-[var(--text-muted)] mb-2">
                       Categoría
                       <button type="button" onClick={() => setShowNewCategory(!showNewCategory)} className="p-0.5 hover:bg-slate-200 rounded text-slate-400 hover:text-[var(--primary)] transition-colors">
                          <Plus className="w-3 h-3" />
@@ -417,16 +539,17 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                             key={c.id}
                             type="button"
                             onClick={() => setFormData({...formData, category: c.id})}
-                            className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border", formData.category === c.id ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
+                            className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center gap-2", formData.category === c.id ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
                           >
                              {c.name}
+                             {formData.category === c.id && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                           </button>
                        ))}
                    </div>
                 </div>
 
                 <div>
-                   <label className="flex items-center justify-between text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 select-none">
+                   <label className="flex items-center justify-between text-[11px] font-semibold text-[var(--text-muted)] mb-2 select-none">
                       <span className="flex items-center gap-1">Asignar a Listas / Carpetas (Etiquetas)</span>
                       <button type="button" onClick={() => setShowNewPlaylist(!showNewPlaylist)} className="p-0.5 hover:bg-slate-200 rounded text-slate-400 hover:text-[var(--primary)] transition-colors" title="Nueva lista/etiqueta">
                          <Plus className="w-3 h-3" />
@@ -451,7 +574,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                                   onClick={() => toggleFolder(pl.id)}
                                   className={cn("px-3 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm border flex items-center gap-2", checked ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
                                 >
-                                   <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", pl.color)} />
+                                   <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", colorSwatchProps(pl.color).className)} style={colorSwatchProps(pl.color).style} />
                                    <span className="truncate max-w-[120px]">{pl.name}</span>
                                    {checked && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                                 </button>
@@ -462,34 +585,83 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                 </div>
 
                 <div>
-                   <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block mb-1">Materia</label>
-                   <input type="text" value={formData.subject} onChange={e => setFormData({...formData, subject: e.target.value})} className="w-full px-4 py-2.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. Filosofía" />
+                   <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-2">Etiquetas</label>
+                   <div className="bg-[var(--bg-card)] border border-slate-200/50 rounded-xl p-2.5 flex flex-col gap-2 shadow-sm">
+                      <div className="flex gap-2">
+                         <input
+                            type="text"
+                            value={tagInput}
+                            onChange={(e) => setTagInput(e.target.value)}
+                            onKeyDown={(e) => {
+                               if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  addTag(tagInput);
+                               }
+                            }}
+                            className="flex-1 text-sm px-3 py-1.5 bg-[var(--bg-app)] border border-slate-200/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
+                            placeholder="Nueva etiqueta y Enter..."
+                         />
+                         <button
+                            type="button"
+                            onClick={() => addTag(tagInput)}
+                            className="bg-[var(--primary)] text-white px-3 py-1.5 rounded-lg text-sm font-bold hover:opacity-90 active:scale-95 transition-all"
+                         >
+                            +
+                         </button>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 min-h-[1.5rem]">
+                         {tags.map((tag) => (
+                            <span
+                               key={tag}
+                               className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[var(--bg-app)] border border-slate-200/50 text-[11px] font-bold text-[var(--text-muted)] transition-all hover:bg-slate-100"
+                            >
+                               <Tag className="w-2.5 h-2.5 text-slate-400" />
+                               {tag}
+                               <button
+                                  type="button"
+                                  onClick={() => removeTag(tag)}
+                                  className="text-slate-400 hover:text-rose-500 font-bold ml-0.5 text-xs focus:outline-none cursor-pointer"
+                                  title="Quitar"
+                               >
+                                  ×
+                               </button>
+                            </span>
+                         ))}
+                         {tags.length === 0 && (
+                            <span className="text-[11px] text-[var(--text-muted)] italic py-0.5">Sin etiquetas</span>
+                         )}
+                      </div>
+                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                   <div>
-                      <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block mb-1">Editorial</label>
-                      <input type="text" value={formData.publisher} onChange={e => setFormData({...formData, publisher: e.target.value})} className="w-full px-4 py-2.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. Planeta" />
+                <div className="pt-3 border-t border-slate-200/50">
+                   <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-2">Formato</label>
+                   <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setFormData({...formData, ownedPhysical: !formData.ownedPhysical})}
+                        className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center gap-2", formData.ownedPhysical ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
+                      >
+                         Físico
+                         {formData.ownedPhysical && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({...formData, ownedDigital: !formData.ownedDigital})}
+                        className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center gap-2", formData.ownedDigital ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
+                      >
+                         Digital
+                         {formData.ownedDigital && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({...formData, toBuy: !formData.toBuy})}
+                        className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center gap-2", formData.toBuy ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
+                      >
+                         Wishlist
+                         {formData.toBuy && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                      </button>
                    </div>
-                   <div>
-                      <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block mb-1">ISBN</label>
-                      <input type="text" value={formData.isbn} onChange={e => setFormData({...formData, isbn: e.target.value})} className="w-full px-4 py-2.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. 978-3-16-148410-0" />
-                   </div>
-                </div>
-                
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-4 border-t border-slate-200/50 relative z-10 bg-[var(--bg-card)]">
-                   <label className="flex items-center gap-2 cursor-pointer p-3 rounded-xl border border-slate-200/50 hover:border-[var(--primary)]/50 transition-colors bg-[var(--bg-app)]">
-                      <input type="checkbox" checked={formData.ownedPhysical} onChange={e => setFormData({...formData, ownedPhysical: e.target.checked})} className="rounded border-slate-300 text-[var(--primary)] focus:ring-[var(--primary)]" />
-                      <span className="text-xs font-bold text-[var(--text-main)]">Físico</span>
-                   </label>
-                   <label className="flex items-center gap-2 cursor-pointer p-3 rounded-xl border border-slate-200/50 hover:border-[var(--primary)]/50 transition-colors bg-[var(--bg-app)]">
-                      <input type="checkbox" checked={formData.ownedDigital} onChange={e => setFormData({...formData, ownedDigital: e.target.checked})} className="rounded border-slate-300 text-[var(--primary)] focus:ring-[var(--primary)]" />
-                      <span className="text-xs font-bold text-[var(--text-main)]">Digital</span>
-                   </label>
-                   <label className="flex items-center gap-2 cursor-pointer p-3 rounded-xl border border-slate-200/50 hover:border-[var(--primary)]/50 transition-colors bg-[var(--bg-app)]">
-                      <input type="checkbox" checked={formData.toBuy} onChange={e => setFormData({...formData, toBuy: e.target.checked})} className="rounded border-slate-300 text-[var(--primary)] focus:ring-[var(--primary)]" />
-                      <span className="text-xs font-bold text-[var(--text-main)]">Wishlist</span>
-                   </label>
                 </div>
              </div>
           </div>

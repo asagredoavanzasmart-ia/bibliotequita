@@ -5,8 +5,9 @@
 // el orden (manual/recent/oldest/alpha) sobre items y renderiza cada uno
 // como <SortableItem> (drag & drop con @dnd-kit/sortable).
 //
-// 3 modos de vista:
-//   - grid          → 1–5 columnas, tarjeta alta con portada grande.
+// 4 modos de vista:
+//   - covers        → solo portadas, grilla densa (hasta 10 columnas).
+//   - grid          → 1–6 columnas, tarjeta alta con portada grande.
 //   - grid-compact  → más columnas y altura reducida.
 //   - list          → 1–2 columnas, portada lateral + ficha completa.
 //
@@ -38,10 +39,11 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import React, { useState, useMemo, FC, useRef } from 'react';
 import { EditBookModal } from './EditBookModal';
+import { StarRating } from './StarRating';
 
 interface BookGridProps {
   category: string;
-  viewMode: 'grid' | 'grid-compact' | 'list';
+  viewMode: 'covers' | 'grid' | 'grid-compact' | 'list';
   sortBy: 'manual' | 'recent' | 'oldest' | 'alpha';
   stageFilter: string | null;
   playlistFilter: string | null;
@@ -52,7 +54,47 @@ interface BookGridProps {
   setSelectedItems?: (items: string[]) => void;
 }
 
-const SortableItem: FC<{ item: BookItem, viewMode: 'grid'|'grid-compact'|'list', onOpen: () => void, onDelete: () => void, onEdit: () => void, isSelected?: boolean, onSelectToggle?: () => void }> = ({ item, viewMode, onOpen, onDelete, onEdit, isSelected, onSelectToggle }) => {
+// Barra de progreso interactiva: click o arrastre (mouse/touch) fija el % según
+// la posición horizontal. El wrapper amplía el área táctil sin cambiar el visual.
+const DraggableProgress: FC<{ value: number; color: string; onChange: (v: number) => void }> = ({ value, color, onChange }) => {
+  const barRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+
+  const valueFromPointer = (clientX: number): number | null => {
+    const rect = barRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return null;
+    return Math.min(100, Math.max(0, Math.round(((clientX - rect.left) / rect.width) * 100)));
+  };
+
+  return (
+    <div
+      ref={barRef}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        draggingRef.current = true;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        const v = valueFromPointer(e.clientX);
+        if (v !== null) onChange(v);
+      }}
+      onPointerMove={(e) => {
+        if (!draggingRef.current) return;
+        e.stopPropagation();
+        const v = valueFromPointer(e.clientX);
+        if (v !== null) onChange(v);
+      }}
+      onPointerUp={() => { draggingRef.current = false; }}
+      onPointerCancel={() => { draggingRef.current = false; }}
+      className="flex-1 min-w-0 py-1.5 -my-1.5 cursor-pointer touch-none"
+    >
+      <div className="h-1.5 bg-slate-200/50 rounded-full overflow-hidden shadow-inner">
+        <div className={cn("h-full rounded-full transition-[width] duration-100", color)} style={{ width: `${value}%` }} />
+      </div>
+    </div>
+  );
+};
+
+const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact'|'list', onOpen: () => void, onDelete: () => void, onEdit: () => void, isSelected?: boolean, onSelectToggle?: () => void }> = ({ item, viewMode, onOpen, onDelete, onEdit, isSelected, onSelectToggle }) => {
   const { updateItem, cardSettings } = useLibrary();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -67,9 +109,8 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'grid'|'grid-compact'|'list',
     if (item.read) return { text: "Leído", color: "bg-emerald-500" };
     const p = item.progress || 0;
     if (p === 0) return { text: "Pendiente", color: "bg-slate-500" };
-    if (p < 25) return { text: "Consultado", color: "bg-yellow-400" };
-    if (p < 75) return { text: "Avanzado", color: "bg-blue-500" };
-    if (p < 100) return { text: "Revisado", color: "bg-cyan-400" };
+    if (p < 25) return { text: "Consultado", color: "bg-slate-500" };
+    if (p < 100) return { text: "En progreso", color: "bg-blue-500" };
     return { text: "Leído", color: "bg-emerald-500" };
   }, [item.progress, item.read]);
 
@@ -96,7 +137,72 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'grid'|'grid-compact'|'list',
   const handleToggleRead = (e: React.MouseEvent) => {
     e.stopPropagation();
     updateItem(item.id, { read: !item.read });
-  };  if (viewMode === 'list') {
+  };
+
+  // Covers Mode — solo portada, grilla densa. Click abre el libro; el drag
+  // funciona en toda la tarjeta (PointerSensor con distance:5 no roba el click).
+  if (viewMode === 'covers') {
+    return (
+      <div
+        ref={setNodeRef}
+        style={style}
+        {...attributes}
+        {...listeners}
+        onClick={onOpen}
+        title={item.title}
+        className="group relative aspect-[2/3] rounded-lg overflow-hidden bg-[var(--bg-card)] border border-slate-200/50 shadow-sm hover:shadow-xl hover:-translate-y-1 hover:border-[var(--primary)]/50 transition-all duration-300 cursor-pointer"
+      >
+        {item.thumbnailUrl ? (
+          <img src={item.thumbnailUrl} alt={item.title} className="w-full h-full object-cover" draggable={false} />
+        ) : (
+          <div className="w-full h-full bg-gradient-to-br from-[#00558F] to-slate-800 flex flex-col items-center justify-center p-2 relative overflow-hidden before:absolute before:left-[4px] before:top-0 before:bottom-0 before:w-[3px] before:bg-black/20">
+            <h4 className="text-center text-white/90 font-bold text-[10px] sm:text-[11px] line-clamp-4 leading-tight drop-shadow-md px-1 relative z-10">{item.title}</h4>
+            {item.author && <p className="text-[8px] text-white/60 font-medium uppercase line-clamp-1 mt-1 relative z-10">{item.author}</p>}
+          </div>
+        )}
+
+        {/* Badges de estado, siempre visibles */}
+        {item.pinned && <Pin className="absolute top-1.5 left-1.5 w-4 h-4 text-amber-400 fill-amber-400/40 drop-shadow z-10" />}
+        {item.read && <CheckCircle2 className="absolute top-1.5 right-1.5 w-4 h-4 text-emerald-400 drop-shadow z-10" />}
+
+        {/* Overlay hover: título + acciones rápidas */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col justify-end p-2 z-20">
+          <h4 className="text-white font-bold text-[11px] leading-tight line-clamp-2 drop-shadow">{item.title}</h4>
+          {item.author && <p className="text-white/70 text-[9px] line-clamp-1 mb-1">{item.author}</p>}
+          <div className="flex items-center gap-1">
+            <button onClick={(e) => { e.stopPropagation(); updateItem(item.id, { pinned: !item.pinned }); }} onPointerDown={(e) => e.stopPropagation()} className="p-1 rounded bg-white/15 hover:bg-white/30 transition-colors" title={item.pinned ? 'Desfijar' : 'Fijar'}>
+              <Pin className={cn('w-3.5 h-3.5', item.pinned ? 'text-amber-400 fill-amber-400/40' : 'text-white')} />
+            </button>
+            <button onClick={handleToggleRead} onPointerDown={(e) => e.stopPropagation()} className="p-1 rounded bg-white/15 hover:bg-white/30 transition-colors" title={item.read ? 'Marcar como no leído' : 'Marcar como leído'}>
+              <CheckCircle2 className={cn('w-3.5 h-3.5', item.read ? 'text-emerald-400' : 'text-white')} />
+            </button>
+            <button onClick={(e) => { e.stopPropagation(); onEdit(); }} onPointerDown={(e) => e.stopPropagation()} className="p-1 rounded bg-white/15 hover:bg-white/30 transition-colors" title="Editar">
+              <Edit className="w-3.5 h-3.5 text-white" />
+            </button>
+            <button onClick={(e) => { e.stopPropagation(); onDelete(); }} onPointerDown={(e) => e.stopPropagation()} className="p-1 rounded bg-white/15 hover:bg-rose-500/80 transition-colors ml-auto" title="Eliminar">
+              <Trash2 className="w-3.5 h-3.5 text-white" />
+            </button>
+          </div>
+        </div>
+
+        {/* Checkbox de selección múltiple */}
+        {onSelectToggle && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onSelectToggle(); }}
+            onPointerDown={(e) => e.stopPropagation()}
+            className={cn("absolute bottom-1.5 left-1.5 z-30 p-1 rounded shadow backdrop-blur-sm transition-opacity bg-black/40", isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100")}
+          >
+            <div className={cn("w-3.5 h-3.5 rounded-sm border border-white/60 flex items-center justify-center", isSelected ? "bg-[var(--primary)] border-[var(--primary)]" : "bg-transparent")}>
+              {isSelected && <svg viewBox="0 0 14 14" fill="none" className="w-2.5 h-2.5 text-white"><path d="M3 8L6 11L11 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+            </div>
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (viewMode === 'list') {
     return (
       <>
       <div
@@ -189,22 +295,13 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'grid'|'grid-compact'|'list',
              
              {cardSettings.showProgress && (
                <div className="w-full flex items-center gap-2 mt-1" title={`Progreso: ${pValue}%`}>
-                  <div className="flex-1 h-1.5 bg-slate-200/50 rounded-full overflow-hidden shadow-inner">
-                     <div className={cn("h-full rounded-full transition-all duration-500", progState.color)} style={{ width: `${pValue}%` }} />
-                  </div>
-                  <span className={cn("text-xs font-bold w-14 text-right", progState.color.replace('bg-', 'text-'))}>{progState.text}</span>
+                  <DraggableProgress value={pValue} color={progState.color} onChange={(v) => updateItem(item.id, { progress: v, ...(item.read && v < 100 ? { read: false } : {}) })} />
+                  <span className={cn("text-xs font-bold w-[72px] shrink-0 text-right whitespace-nowrap", progState.color.replace('bg-', 'text-'))}>{progState.text}</span>
                </div>
              )}
              {cardSettings.showRating && (
-               <div className="flex items-center gap-1 mt-1.5" onClick={(e) => { e.stopPropagation(); e.preventDefault(); }}>
-                  {[1, 2, 3, 4, 5].map(star => (
-                     <svg 
-                        key={star} 
-                        onClick={() => updateItem(item.id, { rating: item.rating === star ? 0 : star })}
-                        className={cn("w-3.5 h-3.5 cursor-pointer transition-colors", (item.rating || 0) >= star ? "text-amber-400 fill-amber-400" : "text-slate-300 hover:text-amber-200")} 
-                        xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"
-                     ><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26"></polygon></svg>
-                  ))}
+               <div className="mt-1.5" onPointerDown={(e) => e.stopPropagation()}>
+                  <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" />
                </div>
              )}
           </div>
@@ -232,7 +329,11 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'grid'|'grid-compact'|'list',
         {...listeners}
       >
         {item.thumbnailUrl ? (
-          <img src={item.thumbnailUrl} alt={item.title} className="w-full h-full object-contain aspect-[4/5] drop-shadow-md rounded" draggable={false} />
+          <>
+            {/* Fondo difuminado con la misma portada para rellenar los huecos laterales */}
+            <img src={item.thumbnailUrl} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover blur-lg scale-110 opacity-40" draggable={false} />
+            <img src={item.thumbnailUrl} alt={item.title} className="relative z-10 w-full h-full object-contain drop-shadow-md rounded" draggable={false} />
+          </>
         ) : (
           <div className="w-[85%] h-[90%] bg-gradient-to-br from-[#00558F] to-slate-800 rounded-md shadow-lg shadow-black/20 flex flex-col items-center justify-center p-4 relative overflow-hidden border border-white/10 before:absolute before:left-2 before:top-0 before:bottom-0 before:w-1 before:bg-black/20 before:shadow-[1px_0_2px_rgba(255,255,255,0.1)]">
              <BookIcon className="w-8 h-8 text-white/20 absolute bottom-4 right-4" />
@@ -277,57 +378,47 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'grid'|'grid-compact'|'list',
         </button>
       </div>
       <div className="flex-1 p-4 flex flex-col justify-between relative bg-[var(--bg-card)] rounded-b-2xl">
-         <div className="relative group/title">
-            <div className="flex justify-between items-start mb-2 pr-6">
-              <div className="flex flex-col">
-                {cardSettings.showAuthor && <span className="text-xs font-bold text-[var(--primary)] truncate pr-2 hover:underline z-20 relative cursor-pointer" onClick={(e) => { e.stopPropagation(); onOpen(); }}>{item.author || 'Sin autor'}</span>}
-                {cardSettings.showYear && item.year && <span className="text-xs text-[var(--text-muted)] mt-0.5">{item.year}</span>}
+         <div className="relative min-w-0">
+            <div className="flex justify-between items-start mb-2 min-w-0">
+              <div className="flex flex-col min-w-0 overflow-hidden">
+                {cardSettings.showAuthor && <span className="text-xs font-bold text-[var(--primary)] truncate pr-2 hover:underline z-20 relative cursor-pointer block" onClick={(e) => { e.stopPropagation(); onOpen(); }}>{item.author || 'Sin autor'}</span>}
+                {cardSettings.showYear && item.year && <span className="text-[12px] text-[var(--text-muted)] mt-0.5">{item.year}</span>}
               </div>
-              
+
               <div className="flex gap-1 shrink-0 px-2 py-0.5 rounded overflow-hidden">
                 {item.folderIds.length > 0 && <div className="w-2 h-2 rounded-full bg-[var(--secondary)]" />}
               </div>
             </div>
-            <h3 onClick={onOpen} className="text-sm font-bold text-[var(--text-main)] leading-tight mb-2 cursor-pointer hover:text-[var(--primary)] line-clamp-2 pr-6">{item.title}</h3>
-
-            <div className="absolute right-0 top-0 flex flex-col gap-1">
-                <button onClick={(e) => { e.stopPropagation(); onEdit(); }} className="p-1.5 text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--bg-app)] rounded-md opacity-0 group-hover/title:opacity-100 transition-opacity z-20 shadow-sm" title="Editar">
-                    <Edit className="w-4 h-4" />
-                </button>
-            </div>
+            <h3 onClick={onOpen} className="text-sm font-bold text-[var(--text-main)] leading-tight mb-2 cursor-pointer hover:text-[var(--primary)] line-clamp-2">{item.title}</h3>
          </div>
          <div className="flex justify-between items-center mt-auto h-6">
-            <div className="flex items-center gap-3 text-[11px] text-[var(--text-muted)]">
+            <div className="flex items-center gap-3 text-[12px] text-[var(--text-muted)]">
                {cardSettings.showType && item.type !== 'externa' && <span className="flex items-center gap-1 uppercase font-bold"><FileText className="w-3 h-3" /> {item.type}</span>}
                {cardSettings.showPhysicalStatus && item.ownedPhysical && <span className="flex items-center gap-1 text-[var(--primary)] uppercase font-bold"><BookIcon className="w-3 h-3" /> Físico</span>}
-            </div>
-            <div className="flex items-center gap-1 translate-y-1 opacity-0 group-hover:opacity-100 transition-all z-20 relative bg-[var(--bg-app)]/80 p-0.5 rounded shadow-sm backdrop-blur-sm border border-slate-200/50">
-               <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-1 text-slate-500 hover:text-rose-500 hover:bg-[var(--bg-app)] rounded transition-colors">
-                 <Trash2 className="w-4 h-4" />
-               </button>
             </div>
          </div>
 
           {cardSettings.showProgress && (
             <div className="w-full flex items-center gap-2 mt-2" title={`Progreso: ${pValue}%`}>
-               <div className="flex-1 h-1.5 bg-slate-200/50 rounded-full overflow-hidden shadow-inner">
-                  <div className={cn("h-full rounded-full transition-all duration-500", progState.color)} style={{ width: `${pValue}%` }} />
-               </div>
-               <span className={cn("text-xs font-bold w-14 text-right", progState.color.replace('bg-', 'text-'))}>{progState.text}</span>
+               <DraggableProgress value={pValue} color={progState.color} onChange={(v) => updateItem(item.id, { progress: v, ...(item.read && v < 100 ? { read: false } : {}) })} />
+               <span className={cn("text-[12px] font-bold w-[72px] shrink-0 text-right whitespace-nowrap", progState.color.replace('bg-', 'text-'))}>{progState.text}</span>
             </div>
           )}
-          {cardSettings.showRating && (
-            <div className="flex items-center gap-1 mt-2" onClick={(e) => { e.stopPropagation(); e.preventDefault(); }}>
-               {[1, 2, 3, 4, 5].map(star => (
-                  <svg 
-                     key={star} 
-                     onClick={() => updateItem(item.id, { rating: item.rating === star ? 0 : star })}
-                     className={cn("w-3.5 h-3.5 cursor-pointer transition-colors", (item.rating || 0) >= star ? "text-amber-400 fill-amber-400" : "text-slate-300 hover:text-amber-200")} 
-                     xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"
-                  ><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26"></polygon></svg>
-               ))}
+          <div className="flex items-end justify-between mt-2">
+            {cardSettings.showRating ? (
+              <div onPointerDown={(e) => e.stopPropagation()}>
+                <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" />
+              </div>
+            ) : <div />}
+            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all z-20 relative bg-[var(--bg-app)]/80 p-0.5 rounded shadow-sm backdrop-blur-sm border border-slate-200/50">
+               <button onClick={(e) => { e.stopPropagation(); onEdit(); }} className="p-1 text-slate-500 hover:text-[var(--primary)] hover:bg-[var(--bg-app)] rounded transition-colors" title="Editar">
+                 <Edit className="w-4 h-4" />
+               </button>
+               <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-1 text-slate-500 hover:text-rose-500 hover:bg-[var(--bg-app)] rounded transition-colors" title="Eliminar">
+                 <Trash2 className="w-4 h-4" />
+               </button>
             </div>
-          )}
+          </div>
        </div>
     </div>
     </>
@@ -399,7 +490,7 @@ export function BookGrid({ category, viewMode, sortBy, stageFilter, playlistFilt
     );
   }
 
-  const strategy = (viewMode === 'grid' || viewMode === 'grid-compact') ? rectSortingStrategy : verticalListSortingStrategy;
+  const strategy = viewMode === 'list' ? verticalListSortingStrategy : rectSortingStrategy;
 
   return (
       <>
@@ -408,12 +499,11 @@ export function BookGrid({ category, viewMode, sortBy, stageFilter, playlistFilt
         strategy={strategy}
       >
         <div className={cn(
-          "w-full",
-          (viewMode === 'grid' || viewMode === 'grid-compact') 
-            ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6" 
-            : "grid grid-cols-1 lg:grid-cols-2 gap-4",
-          viewMode === 'grid-compact' && "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3",
-          viewMode === 'list' && "grid-cols-1 lg:grid-cols-2"
+          "w-full grid",
+          viewMode === 'covers' && "grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3",
+          viewMode === 'grid' && "grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-5",
+          viewMode === 'grid-compact' && "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3",
+          viewMode === 'list' && "grid-cols-1 lg:grid-cols-2 gap-4"
         )}>
           {filteredItems.map(item => (
             <SortableItem 

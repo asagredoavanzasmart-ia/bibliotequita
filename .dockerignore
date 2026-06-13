@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+*.env
+google-tts-credentials.json
+google-oauth-credentials.json
+uploads
+.git
+.gitignore
+*.log

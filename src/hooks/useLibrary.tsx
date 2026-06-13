@@ -68,6 +68,22 @@ const initialPlaylists: PlaylistData[] = [
   { id: 'p2', name: 'Economía Clásica', color: 'bg-[#FFA300]' },
 ];
 
+// Listas temáticas añadidas a petición del usuario, con los colores de su
+// captura de referencia. Se agregan vía migración para que también aparezcan
+// en bibliotecas ya existentes (ver bloque de migración de playlists abajo).
+const newThematicPlaylists: PlaylistData[] = [
+  { id: 'pl-historia', name: 'Historia', color: 'bg-[#C9A227]' },
+  { id: 'pl-negocios', name: 'Negocios', color: 'bg-[#4FBF9F]' },
+  { id: 'pl-matematicas', name: 'Matemáticas', color: 'bg-[#B5651D]' },
+  { id: 'pl-ciencia', name: 'Ciencia', color: 'bg-[#8CC152]' },
+  { id: 'pl-politica', name: 'Política', color: 'bg-[#5C1A1B]' },
+  { id: 'pl-musica', name: 'Música', color: 'bg-[#C0392B]' },
+  { id: 'pl-religion', name: 'Religión', color: 'bg-[#E8806B]' },
+  { id: 'pl-arte', name: 'Arte', color: 'bg-[#7B4F9E]' },
+  { id: 'pl-filosofia', name: 'Filosofía', color: 'bg-[#7A3B5E]' },
+  { id: 'pl-geopolitica', name: 'Geopolítica', color: 'bg-[#4A4A4A]' },
+];
+
 const initialCategories: CategoryData[] = [
   { id: 'libros', name: 'Libros' },
   { id: 'revistas', name: 'Revistas' },
@@ -86,7 +102,17 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   
   const [playlists, setPlaylists] = useState<PlaylistData[]>(() => {
     const saved = localStorage.getItem('library_playlists');
-    return saved ? JSON.parse(saved) : initialPlaylists;
+    const parsed: PlaylistData[] = saved ? JSON.parse(saved) : [...initialPlaylists];
+
+    // Agrega las nuevas listas temáticas si aún no existen (por nombre).
+    const existingNames = new Set(parsed.map(p => p.name.toLowerCase()));
+    for (const pl of newThematicPlaylists) {
+      if (!existingNames.has(pl.name.toLowerCase())) {
+        parsed.push(pl);
+      }
+    }
+
+    return parsed;
   });
 
   // MIGRACIÓN DE CATEGORÍAS: versiones antiguas guardaban 'libro' / 'articulo'

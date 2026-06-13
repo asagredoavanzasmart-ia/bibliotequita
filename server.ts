@@ -113,6 +113,7 @@ function safeExt(name: string): string {
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "application/epub+zip",
+  "text/plain",
   "image/jpeg",
   "image/png",
   "image/webp",
@@ -415,7 +416,7 @@ async function startServer() {
     try {
       return fs.readdirSync(UPLOAD_DIR).filter(f => {
         const ext = path.extname(f).toLowerCase();
-        return ext === ".pdf" || ext === ".epub";
+        return ext === ".pdf" || ext === ".epub" || ext === ".txt";
       }).length;
     } catch {
       return 0;
@@ -443,8 +444,8 @@ async function startServer() {
 
     // Para archivos de contenido (PDF/EPUB), aplicar límite de la demo.
     const ext = path.extname(req.file.filename).toLowerCase();
-    const isContent = ext === ".pdf" || ext === ".epub";
-    if (isContent && countUserContent() > DEMO_MAX_UPLOADS) {
+    const isContent = ext === ".pdf" || ext === ".epub" || ext === ".txt";
+    if (isContent && DEMO_MAX_UPLOADS > 0 && countUserContent() > DEMO_MAX_UPLOADS) {
       // El archivo ya fue escrito por multer — borrarlo antes de rechazar.
       try { fs.unlinkSync(path.join(UPLOAD_DIR, req.file.filename)); } catch { /* ignore */ }
       return res.status(429).json({

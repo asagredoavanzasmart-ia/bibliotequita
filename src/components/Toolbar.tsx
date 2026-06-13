@@ -1,4 +1,4 @@
-import { Book, Globe, UploadCloud, Link as LinkIcon, LayoutGrid, List as ListIcon, Save, Search, Settings, Menu, LogOut } from 'lucide-react';
+import { Book, Globe, UploadCloud, Link as LinkIcon, LayoutGrid, Grid3x3, GalleryVerticalEnd, List as ListIcon, Save, Search, Settings, Menu, LogOut } from 'lucide-react';
 import React, { useState } from 'react';
 import { useLibrary } from '../hooks/useLibrary';
 import { cn } from '../lib/utils';
@@ -9,8 +9,8 @@ interface ToolbarProps {
   onOpenSidebar?: () => void;
   activeTab: string;
   setActiveTab: (cat: string) => void;
-  viewMode: 'grid' | 'list' | 'grid-compact';
-  setViewMode: (mode: 'grid' | 'list' | 'grid-compact') => void;
+  viewMode: 'covers' | 'grid' | 'grid-compact' | 'list';
+  setViewMode: (mode: 'covers' | 'grid' | 'grid-compact' | 'list') => void;
   sortBy: 'manual' | 'recent' | 'oldest' | 'alpha';
   setSortBy: (sort: 'manual' | 'recent' | 'oldest' | 'alpha') => void;
   filters: any;
@@ -36,7 +36,7 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
           <div className="flex-1 w-full flex items-center gap-2">
              {onOpenSidebar && (
                <button 
-                 className="lg:hidden p-2 text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 rounded-lg shrink-0 transition-colors -ml-2"
+                 className="lg:hidden p-2 text-[var(--text-muted)] hover:bg-[var(--bg-card-hover)] rounded-lg shrink-0 transition-colors -ml-2"
                  onClick={onOpenSidebar}
                >
                  <Menu className="w-6 h-6" />
@@ -50,7 +50,7 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
                  onChange={(e) => setSearchQuery(e.target.value)}
                  placeholder="Buscar títulos, autores, materias o etiquetas..." 
                  list="search-suggestions"
-                 className="w-full pl-12 pr-4 py-3 border-2 border-transparent bg-[var(--bg-card)]/80 backdrop-blur-md rounded-2xl text-base focus:outline-none focus:border-[var(--primary)] focus:bg-white dark:focus:bg-slate-800 text-[var(--text-main)] shadow-sm hover:bg-white/90 dark:hover:bg-slate-800/90 transition-all font-medium placeholder-slate-400"
+                 className="w-full pl-12 pr-4 py-3 border-2 border-transparent bg-[var(--bg-card)]/80 backdrop-blur-md rounded-2xl text-base focus:outline-none focus:border-[var(--primary)] focus:bg-[var(--bg-card-hover)] text-[var(--text-main)] shadow-sm hover:bg-[var(--bg-card-hover)] transition-all font-medium placeholder-slate-400"
                />
                <datalist id="search-suggestions">
                  {suggestions.map((s, i) => <option key={i} value={s as string} />)}
@@ -81,13 +81,29 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
 
               <div className="flex bg-[var(--bg-card)] border border-slate-200/50 p-1 rounded-xl shadow-sm">
                  <button
+                    onClick={() => setViewMode('covers')}
+                    title="Solo portadas"
+                    className={cn("p-2 rounded-lg transition-colors", viewMode === 'covers' ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "text-slate-500 hover:text-[var(--text-main)] hover:bg-slate-100/50")}
+                 >
+                    <GalleryVerticalEnd className="w-4 h-4" />
+                 </button>
+                 <button
                     onClick={() => setViewMode('grid')}
+                    title="Cuadrícula"
                     className={cn("p-2 rounded-lg transition-colors", viewMode === 'grid' ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "text-slate-500 hover:text-[var(--text-main)] hover:bg-slate-100/50")}
                  >
                     <LayoutGrid className="w-4 h-4" />
                  </button>
                  <button
+                    onClick={() => setViewMode('grid-compact')}
+                    title="Cuadrícula compacta"
+                    className={cn("p-2 rounded-lg transition-colors", viewMode === 'grid-compact' ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "text-slate-500 hover:text-[var(--text-main)] hover:bg-slate-100/50")}
+                 >
+                    <Grid3x3 className="w-4 h-4" />
+                 </button>
+                 <button
                     onClick={() => setViewMode('list')}
+                    title="Lista"
                     className={cn("p-2 rounded-lg transition-colors", viewMode === 'list' ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "text-slate-500 hover:text-[var(--text-main)] hover:bg-slate-100/50")}
                  >
                     <ListIcon className="w-4 h-4" />

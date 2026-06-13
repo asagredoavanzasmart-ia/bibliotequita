@@ -15,10 +15,10 @@
 // (ver DroppablePlaylist y Dashboard.handleDragEnd).
 // =============================================================================
 
-import { Library, Folder, Plus, Edit2, Trash2, X, Check, ChevronDown, ChevronRight, Pin, BarChart2, LayoutGrid, List, Settings, BookOpen, Newspaper, FileText, Book, Laptop, Layers } from 'lucide-react';
+import { Library, Folder, Plus, Edit2, Trash2, X, Check, ChevronDown, ChevronRight, Pin, BarChart2, LayoutGrid, GalleryVerticalEnd, List, Settings, BookOpen, Newspaper, FileText, Book, Laptop, Layers } from 'lucide-react';
 import { useLibrary } from '../hooks/useLibrary';
 import { useState, FormEvent } from 'react';
-import { cn } from '../lib/utils';
+import { cn, colorSwatchProps } from '../lib/utils';
 import { PlaylistData } from '../types';
 import { useDroppable } from '@dnd-kit/core';
 
@@ -39,8 +39,8 @@ interface SidebarProps {
   setActiveStage: (id: string | null) => void;
   filters: any;
   setFilters: (f: any) => void;
-  viewMode?: 'grid' | 'grid-compact' | 'list';
-  setViewMode?: (mode: 'grid' | 'grid-compact' | 'list') => void;
+  viewMode?: 'covers' | 'grid' | 'grid-compact' | 'list';
+  setViewMode?: (mode: 'covers' | 'grid' | 'grid-compact' | 'list') => void;
   collapsed?: boolean;
   setCollapsed?: (c: boolean) => void;
   onOpenSettings?: () => void;
@@ -62,7 +62,7 @@ const DroppablePlaylist = ({ pl, activePlaylist, setActivePlaylist, setActiveSta
           activePlaylist === pl.id ? "text-white font-medium" : "text-white/80 hover:bg-white/5 font-medium"
         )}
       >
-        <div className={cn("w-2 h-2 rounded-full flex-shrink-0", pl.color)} />
+        <div className={cn("w-2 h-2 rounded-full flex-shrink-0", colorSwatchProps(pl.color).className)} style={colorSwatchProps(pl.color).style} />
         <span className="truncate text-sm opacity-80 group-hover:opacity-100">{pl.name}</span>
       </button>
       <div className="hidden group-hover:flex items-center gap-1">
@@ -182,6 +182,13 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
           <>
             {/* Mobile view toggles */}
             <div className="lg:hidden flex bg-white/5 border border-white/10 p-1 rounded-xl mb-6">
+             <button
+                onClick={() => setViewMode('covers')}
+                className={cn("flex-1 py-2 flex items-center justify-center gap-2 rounded-lg transition-colors text-xs font-bold", viewMode === 'covers' ? "bg-white/10 text-white" : "text-white/50 hover:text-white")}
+             >
+                <GalleryVerticalEnd className="w-4 h-4" />
+                Portadas
+             </button>
              <button
                 onClick={() => setViewMode('grid-compact')}
                 className={cn("flex-1 py-2 flex items-center justify-center gap-2 rounded-lg transition-colors text-xs font-bold", viewMode === 'grid-compact' ? "bg-white/10 text-white" : "text-white/50 hover:text-white")}
@@ -503,7 +510,7 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
                 onChange={(e) => setNewPlaylistName(e.target.value)}
                 className="w-full text-sm p-2 rounded border border-white/20 bg-white/10 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-[#A0CFEB] mb-3"
               />
-              <div className="flex gap-1 mb-3">
+              <div className="flex gap-1 mb-3 items-center">
                 {THEME_COLORS.map(color => (
                   <button
                     key={color}
@@ -512,6 +519,18 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
                     className={cn("w-5 h-5 rounded-full ring-offset-1 ring-offset-[#00558F] transition-all", color, newPlaylistColor === color ? 'ring-2 ring-white scale-110' : '')}
                   />
                 ))}
+                <label
+                  title="Elegir color personalizado"
+                  className={cn("relative w-5 h-5 rounded-full ring-offset-1 ring-offset-[#00558F] transition-all cursor-pointer overflow-hidden border border-white/30", !THEME_COLORS.includes(newPlaylistColor) ? 'ring-2 ring-white scale-110' : '')}
+                  style={!THEME_COLORS.includes(newPlaylistColor) ? { backgroundColor: newPlaylistColor } : { background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)' }}
+                >
+                  <input
+                    type="color"
+                    value={!THEME_COLORS.includes(newPlaylistColor) ? newPlaylistColor : '#ffffff'}
+                    onChange={(e) => setNewPlaylistColor(e.target.value)}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                </label>
               </div>
               <div className="flex gap-2 justify-end">
                 <button type="button" onClick={() => setIsCreating(false)} className="text-xs text-white/60 px-2 py-1 hover:bg-white/10 rounded">Cancelar</button>
@@ -532,7 +551,7 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
                       onChange={(e) => setEditName(e.target.value)}
                       className="w-full text-sm p-1 rounded border border-white/20 bg-white/10 text-white focus:outline-none mb-2"
                     />
-                     <div className="flex gap-1 mb-2">
+                     <div className="flex gap-1 mb-2 items-center">
                       {THEME_COLORS.map(color => (
                         <button
                           key={color}
@@ -541,6 +560,18 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
                           className={cn("w-4 h-4 rounded-full ring-offset-1 ring-offset-[#00558F]", color, editColor === color ? 'ring-2 ring-white' : '')}
                         />
                       ))}
+                      <label
+                        title="Elegir color personalizado"
+                        className={cn("relative w-4 h-4 rounded-full ring-offset-1 ring-offset-[#00558F] cursor-pointer overflow-hidden border border-white/30", !THEME_COLORS.includes(editColor) ? 'ring-2 ring-white' : '')}
+                        style={!THEME_COLORS.includes(editColor) ? { backgroundColor: editColor } : { background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)' }}
+                      >
+                        <input
+                          type="color"
+                          value={!THEME_COLORS.includes(editColor) ? editColor : '#ffffff'}
+                          onChange={(e) => setEditColor(e.target.value)}
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                        />
+                      </label>
                     </div>
                     <div className="flex gap-1 justify-end">
                       <button type="button" onClick={() => setEditingId(null)} className="p-1 hover:bg-white/10 rounded text-white/60"><X className="w-3 h-3" /></button>

@@ -1,9 +1,10 @@
 import React, { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { BookItem, PlaylistData, StageData } from '../types';
-import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Star, Tag } from 'lucide-react';
-import { cn } from '../lib/utils';
+import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag } from 'lucide-react';
+import { cn, colorSwatchProps } from '../lib/utils';
 import { useLibrary } from '../hooks/useLibrary';
+import { StarRating } from './StarRating';
 import { pdfjs } from 'react-pdf';
 // Migrado de idb-keyval a almacenamiento real en el servidor (ver src/lib/uploadFile.ts).
 import { uploadFile, deleteUploadedFile } from '../lib/uploadFile';
@@ -220,7 +221,9 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   const handleDigitalUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const isPdf = file.type.includes('pdf') || file.name.toLowerCase().endsWith('.pdf');
+    const name = file.name.toLowerCase();
+    const isPdf = file.type.includes('pdf') || name.endsWith('.pdf');
+    const isTxt = file.type.includes('text/plain') || name.endsWith('.txt');
 
     // Si había un archivo digital anterior en el servidor, lo eliminamos.
     const previousSource = digitalSource;
@@ -236,7 +239,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
       setDigitalSource(URL.createObjectURL(file));
     }
 
-    setType(isPdf ? 'pdf' : 'epub');
+    setType(isPdf ? 'pdf' : isTxt ? 'txt' : 'epub');
     setOwnedDigital(true);
 
     if (isPdf) {
@@ -389,7 +392,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                      <UploadCloud className={cn('w-4 h-4', isAnalyzing && 'animate-pulse')} />
                      {isAnalyzing ? 'Analizando IA…' : item.source ? 'Reemplazar PDF/EPUB' : 'Importar PDF o EPUB'}
                   </button>
-                  <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".pdf,.epub" className="hidden" />
+                  <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".pdf,.epub,.txt" className="hidden" />
                   <div className="relative">
                      {type === 'externa' ? (
                         <>
@@ -510,22 +513,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                <div>
                   <label className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 block">Valoración</label>
                   <div className="flex items-center gap-1 bg-[var(--bg-card)] border border-slate-200/50 px-3 py-2.5 rounded-2xl w-fit shadow-sm">
-                     {[1, 2, 3, 4, 5].map((star) => (
-                        <button
-                           type="button"
-                           key={star}
-                           onClick={() => setRating(rating === star ? 0 : star)}
-                           className="transition-transform active:scale-95 hover:scale-110"
-                           title={`${star} estrellas`}
-                        >
-                           <Star
-                              className={cn(
-                                 "w-6 h-6",
-                                 star <= rating ? "fill-amber-400 text-amber-400" : "text-slate-200 stroke-[1.5]"
-                              )}
-                           />
-                        </button>
-                     ))}
+                     <StarRating value={rating} onChange={setRating} size="md" />
                   </div>
                </div>
 
@@ -747,7 +735,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                                     : 'bg-transparent border-transparent text-[var(--text-muted)] hover:bg-slate-100'
                               )}
                            >
-                              <span className={cn('w-2.5 h-2.5 rounded-full shrink-0', pl.color)} />
+                              <span className={cn('w-2.5 h-2.5 rounded-full shrink-0', colorSwatchProps(pl.color).className)} style={colorSwatchProps(pl.color).style} />
                               <span className="flex-1 truncate">{pl.name}</span>
                               {checked && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                            </button>
@@ -862,7 +850,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                        <UploadCloud className={cn("w-4 h-4", isAnalyzing && "animate-pulse")} /> {isAnalyzing ? "Analizando IA..." : "Importar de PDF o EPUB"}
                     </button>
                     <p className="text-[10px] text-[var(--text-muted)] text-center leading-tight">Extrae IA la portada y datos de las primeras 7 pág.</p>
-                    <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".pdf,.epub" className="hidden" />
+                    <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".pdf,.epub,.txt" className="hidden" />
                     
                     <div className="relative mt-2">
                         {type === 'externa' ? (
@@ -954,22 +942,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   <div>
                      <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 block">Valoración</label>
                      <div className="flex items-center gap-1 bg-[var(--bg-card)] border border-slate-200/50 px-4 py-3 rounded-2xl w-fit shadow-sm">
-                        {[1, 2, 3, 4, 5].map((star) => (
-                           <button
-                              type="button"
-                              key={star}
-                              onClick={() => setRating(rating === star ? 0 : star)}
-                              className="transition-transform active:scale-95 hover:scale-110"
-                              title={`${star} estrellas`}
-                           >
-                              <Star
-                                 className={cn(
-                                    "w-6 h-6",
-                                    star <= rating ? "fill-amber-400 text-amber-400" : "text-slate-200 stroke-[1.5]"
-                                 )}
-                              />
-                           </button>
-                        ))}
+                        <StarRating value={rating} onChange={setRating} size="md" />
                      </div>
                   </div>
 
@@ -1159,7 +1132,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                              onClick={() => toggleFolder(pl.id)}
                              className={cn("flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-all border", folderIds.includes(pl.id) ? "bg-[var(--bg-card)] border-slate-300 shadow-sm text-[var(--text-main)] font-medium" : "bg-transparent border-transparent text-[var(--text-muted)] hover:bg-[var(--bg-card)]")}
                           >
-                             <div className={cn("w-2 h-2 rounded-full", pl.color)} />
+                             <div className={cn("w-2 h-2 rounded-full", colorSwatchProps(pl.color).className)} style={colorSwatchProps(pl.color).style} />
                              {pl.name}
                              {folderIds.includes(pl.id) && <CheckCircle2 className="w-3 h-3 ml-1 text-emerald-500" />}
                           </button>

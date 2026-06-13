@@ -18,7 +18,7 @@ import { Toolbar } from './Toolbar';
 import { BookGrid } from './BookGrid';
 import { AnalyticsDashboard } from './AnalyticsDashboard';
 import { BookMarked, Menu, X, LayoutGrid, Search, User, Settings, Plus, UploadCloud } from 'lucide-react';
-import { cn } from '../lib/utils';
+import { cn, colorSwatchProps } from '../lib/utils';
 import { useLibrary } from '../hooks/useLibrary';
 import { DndContext, closestCenter, DragEndEvent, useSensors, useSensor, PointerSensor, KeyboardSensor } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
@@ -37,10 +37,25 @@ interface DashboardProps {
 
 export function Dashboard({ onOpenBook, user }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<string>('todos');
-  const [viewMode, setViewMode] = useState<'grid' | 'grid-compact' | 'list'>('grid');
+  // Vista y orden persisten en localStorage (igual que library_theme).
+  const [viewMode, setViewModeState] = useState<'covers' | 'grid' | 'grid-compact' | 'list'>(() => {
+    const saved = localStorage.getItem('library_view_mode');
+    return (saved === 'covers' || saved === 'grid' || saved === 'grid-compact' || saved === 'list') ? saved : 'grid';
+  });
+  const setViewMode = (mode: 'covers' | 'grid' | 'grid-compact' | 'list') => {
+    setViewModeState(mode);
+    localStorage.setItem('library_view_mode', mode);
+  };
   const [activePlaylist, setActivePlaylist] = useState<string | null>(null);
   const [activeStage, setActiveStage] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<'manual' | 'recent' | 'oldest' | 'alpha'>('manual');
+  const [sortBy, setSortByState] = useState<'manual' | 'recent' | 'oldest' | 'alpha'>(() => {
+    const saved = localStorage.getItem('library_sort_by');
+    return (saved === 'manual' || saved === 'recent' || saved === 'oldest' || saved === 'alpha') ? saved : 'manual';
+  });
+  const setSortBy = (sort: 'manual' | 'recent' | 'oldest' | 'alpha') => {
+    setSortByState(sort);
+    localStorage.setItem('library_sort_by', sort);
+  };
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsedDesktop, setSidebarCollapsedDesktop] = useState(false);
   const [filters, setFilters] = useState({ year: '', author: '', subject: '', read: '', toBuy: '', authorInitial: '', titleInitial: '' });
@@ -55,8 +70,10 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
     fetch('/api/config', { credentials: 'include' })
       .then(r => r.json())
       .then(d => {
-        if (typeof d.demoMaxUploads === 'number') {
+        if (typeof d.demoMaxUploads === 'number' && d.demoMaxUploads > 0) {
           setDemoQuota({ max: d.demoMaxUploads, current: d.demoCurrentUploads ?? 0 });
+        } else {
+          setDemoQuota(null);
         }
       })
       .catch(() => {});
@@ -234,7 +251,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
                                  }}
                                  className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 flex items-center gap-2"
                               >
-                                 <div className={cn("w-2 h-2 rounded-full", pl.color)} />
+                                 <div className={cn("w-2 h-2 rounded-full", colorSwatchProps(pl.color).className)} style={colorSwatchProps(pl.color).style} />
                                  <span className="truncate">{pl.name}</span>
                               </button>
                            ))

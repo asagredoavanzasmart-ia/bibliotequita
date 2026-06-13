@@ -1,8 +1,17 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Settings2, Palette, Library, Plus, Trash2, Edit2, AppWindow } from 'lucide-react';
-import { cn } from '../lib/utils';
+import { cn, colorSwatchProps } from '../lib/utils';
 import { useLibrary, ThemeMode } from '../hooks/useLibrary';
+
+const PRESET_PLAYLIST_COLORS = [
+  'bg-slate-800 text-white',
+  'bg-rose-500 text-white',
+  'bg-emerald-500 text-white',
+  'bg-blue-500 text-white',
+  'bg-purple-500 text-white',
+  'bg-amber-500 text-white',
+];
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const {
@@ -210,8 +219,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                          <div key={pl.id} className="flex items-center justify-between p-3 rounded-lg border border-slate-200/50 bg-[var(--bg-card)]">
                             {editPlaylistId === pl.id ? (
                                <div className="flex items-center gap-2 flex-1 relative">
-                                  <select 
-                                    value={editPlaylistColor} 
+                                  <select
+                                    value={PRESET_PLAYLIST_COLORS.includes(editPlaylistColor) ? editPlaylistColor : ''}
                                     onChange={e => setEditPlaylistColor(e.target.value)}
                                     className="w-8 h-8 rounded-full border-0 outline-none text-transparent bg-clip-text"
                                     style={{appearance: 'none'}}
@@ -223,11 +232,23 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                                      <option value="bg-purple-500 text-white">Morado</option>
                                      <option value="bg-amber-500 text-white">Ambar</option>
                                   </select>
+                                  <label
+                                    title="Elegir color personalizado"
+                                    className={cn("relative w-6 h-6 rounded-full cursor-pointer overflow-hidden border border-slate-300 shrink-0", !PRESET_PLAYLIST_COLORS.includes(editPlaylistColor) ? 'ring-2 ring-[var(--primary)]' : '')}
+                                    style={!PRESET_PLAYLIST_COLORS.includes(editPlaylistColor) ? { backgroundColor: editPlaylistColor } : { background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)' }}
+                                  >
+                                     <input
+                                       type="color"
+                                       value={!PRESET_PLAYLIST_COLORS.includes(editPlaylistColor) ? editPlaylistColor : '#ffffff'}
+                                       onChange={e => setEditPlaylistColor(e.target.value)}
+                                       className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                     />
+                                  </label>
                                   <input autoFocus value={editPlaylistName} onChange={e => setEditPlaylistName(e.target.value)} onBlur={() => { updatePlaylist(pl.id, { name: editPlaylistName || pl.name, color: editPlaylistColor }); setEditPlaylistId(null); }} onKeyDown={e => e.key === 'Enter' && e.currentTarget.blur()} className="flex-1 bg-transparent outline-none text-sm font-medium" />
                                </div>
                             ) : (
                                <div className="flex items-center gap-2">
-                                  <div className={cn("w-3 h-3 rounded-full", pl.color)} />
+                                  <div className={cn("w-3 h-3 rounded-full", colorSwatchProps(pl.color).className)} style={colorSwatchProps(pl.color).style} />
                                   <span className="text-sm font-medium">{pl.name}</span>
                                </div>
                             )}

@@ -17,7 +17,7 @@ export interface CardSettings {
 }
 
 // Tipo de fuente del recurso: archivo PDF, libro EPUB o página web externa.
-export type ResourceType = 'pdf' | 'epub' | 'externa';
+export type ResourceType = 'pdf' | 'epub' | 'txt' | 'externa';
 
 export interface CategoryData {
   id: string;

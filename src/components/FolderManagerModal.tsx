@@ -2,6 +2,7 @@ import { X } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useLibrary } from '../hooks/useLibrary';
 import { BookItem } from '../types';
+import { colorSwatchProps } from '../lib/utils';
 
 interface Props {
   book: BookItem;
@@ -50,7 +51,7 @@ export function FolderManagerModal({ book, onClose }: Props) {
                        onChange={() => toggleFolder(pl.id)}
                        className="w-4 h-4 text-[#00558F] rounded border-slate-300 focus:ring-[#00558F]"
                      />
-                     <div className={`w-3 h-3 rounded-full ${pl.color}`} />
+                     <div className={`w-3 h-3 rounded-full ${colorSwatchProps(pl.color).className || ''}`} style={colorSwatchProps(pl.color).style} />
                      <span className="text-sm font-medium text-slate-700">{pl.name}</span>
                    </label>
                  ))}

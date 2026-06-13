@@ -31,9 +31,12 @@ interface PDFReaderProps {
   hideControls?: boolean;
   onPageChange?: (page: number) => void;
   targetPage?: { page: number, t: number };
+  // Desplaza la barra flotante de zoom/paginación hacia arriba para que no
+  // quede tapada por el reproductor TTS cuando está visible.
+  bottomOffset?: number;
 }
 
-export function PDFReader({ url, hideControls = false, onPageChange, targetPage }: PDFReaderProps) {
+export function PDFReader({ url, hideControls = false, onPageChange, targetPage, bottomOffset = 0 }: PDFReaderProps) {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
@@ -348,8 +351,11 @@ export function PDFReader({ url, hideControls = false, onPageChange, targetPage 
 
          {/* Toolbar Static at Bottom */}
          {!hideControls && (
-           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center justify-center pointer-events-auto z-30 w-[90%] sm:w-auto max-w-xl duration-300">
-             <div className="flex items-center gap-2 sm:gap-4 px-4 py-2 bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-main)] shadow-2xl rounded-full backdrop-blur-md justify-between sm:justify-center transition-all min-h-[44px]">
+           <div
+             className="absolute left-1/2 -translate-x-1/2 flex items-center justify-center pointer-events-auto z-30 w-max max-w-[95%] transition-[bottom] duration-300"
+             style={{ bottom: `${16 + bottomOffset}px` }}
+           >
+             <div className="flex items-center gap-1 sm:gap-4 px-2 sm:px-4 py-2 bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-main)] shadow-2xl rounded-full backdrop-blur-md justify-center transition-all min-h-[44px] whitespace-nowrap">
               
               <div className="flex items-center">
                  <button 
@@ -376,7 +382,7 @@ export function PDFReader({ url, hideControls = false, onPageChange, targetPage 
                    <ChevronLeft className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
                  </button>
                  
-                 <span className="text-xs sm:text-sm font-mono font-bold min-w-[3.5rem] text-center px-1 tabular-nums">
+                 <span className="text-xs sm:text-sm font-mono font-bold min-w-[3.5rem] text-center px-1 tabular-nums whitespace-nowrap">
                    {pageNumber} <span className="opacity-40 font-normal text-[10px] sm:text-xs">/ {numPages || '--'}</span>
                  </span>
 
