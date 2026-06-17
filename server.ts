@@ -1778,7 +1778,10 @@ ${text}
             const audioPart = parts.find((p: any) => p.inlineData?.data && p.inlineData.mimeType?.startsWith('audio/'));
             if (audioPart?.inlineData?.data) {
               const audioBuffer = Buffer.from(audioPart.inlineData.data, 'base64');
-              const mimeType = audioPart.inlineData.mimeType || 'audio/mp3';
+              let mimeType = audioPart.inlineData.mimeType || 'audio/mp3';
+              if (mimeType.includes('wav')) {
+                mimeType = 'audio/wav';
+              }
               
               // Save in circular cache
               ttsCache.unshift({ key: cacheKey, buffer: audioBuffer, contentType: mimeType });
