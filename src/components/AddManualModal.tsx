@@ -26,7 +26,7 @@ interface AddManualModalProps {
 }
 
 export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProps) {
-  const { categories, addCategory, playlists, addPlaylist } = useLibrary();
+  const { categories, addCategory, playlists, addPlaylist, items } = useLibrary();
 
   const [formData, setFormData] = useState({
     title: '',
@@ -66,6 +66,9 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
 
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState('');
+  const allExistingTags = Array.from(
+    new Set(items.flatMap((i) => i.tags || []))
+  ).filter((tag) => !tags.includes(tag));
 
   const addTag = (tagName: string) => {
     const trimmed = tagName.trim();
@@ -612,9 +615,15 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                                   addTag(tagInput);
                                }
                             }}
+                            list="add-tags-suggestions"
                             className="flex-1 text-sm px-3 py-1.5 bg-[var(--bg-app)] border border-slate-200/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
                             placeholder="Nueva etiqueta y Enter..."
                          />
+                         <datalist id="add-tags-suggestions">
+                            {allExistingTags.map((tag) => (
+                               <option key={tag} value={tag} />
+                            ))}
+                         </datalist>
                          <button
                             type="button"
                             onClick={() => addTag(tagInput)}

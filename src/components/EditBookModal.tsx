@@ -22,7 +22,7 @@ interface EditBookModalProps {
 }
 
 export function EditBookModal({ item, onClose, onSave, inline = false }: EditBookModalProps) {
-  const { playlists, categories, stages, addCategory, addPlaylist, deleteItem } = useLibrary();
+  const { playlists, categories, stages, addCategory, addPlaylist, deleteItem, items } = useLibrary();
 
   
   const [title, setTitle] = useState(item.title || '');
@@ -44,6 +44,9 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   const [rating, setRating] = useState(item.rating || 0);
   const [tags, setTags] = useState<string[]>(item.tags || []);
   const [tagInput, setTagInput] = useState('');
+  const allExistingTags = Array.from(
+    new Set(items.flatMap((i) => i.tags || []))
+  ).filter((tag) => !tags.includes(tag));
 
   const addTag = (tagName: string) => {
     const trimmed = tagName.trim();
@@ -546,9 +549,15 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                                  addTag(tagInput);
                               }
                            }}
+                           list="edit-tags-suggestions"
                            className="flex-1 text-xs px-3 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
                            placeholder="Nueva etiqueta y Enter..."
                         />
+                        <datalist id="edit-tags-suggestions">
+                           {allExistingTags.map((tag) => (
+                              <option key={tag} value={tag} />
+                           ))}
+                        </datalist>
                         <button
                            type="button"
                            onClick={() => addTag(tagInput)}
@@ -975,9 +984,15 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                                     addTag(tagInput);
                                  }
                               }}
+                              list="edit-tags-suggestions"
                               className="flex-1 text-sm px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
                               placeholder="Nueva etiqueta y Enter..."
                            />
+                           <datalist id="edit-tags-suggestions">
+                              {allExistingTags.map((tag) => (
+                                 <option key={tag} value={tag} />
+                              ))}
+                           </datalist>
                            <button
                               type="button"
                               onClick={() => addTag(tagInput)}
