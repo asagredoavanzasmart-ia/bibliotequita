@@ -1572,10 +1572,33 @@ ${text}
   }
   const ttsCache: CacheEntry[] = [];
 
+  // Resuelve las credenciales de Google Cloud TTS desde GOOGLE_TTS_CREDENTIALS_JSON
+  // (contenido del service account JSON, para despliegues sin filesystem persistente)
+  // o, si no está definida, desde el archivo en GOOGLE_TTS_CREDENTIALS.
+  function resolveGoogleTtsCredentials(credentialsPath: string): { keyFile?: string; credentials?: object } | null {
+    const credentialsJson = process.env.GOOGLE_TTS_CREDENTIALS_JSON;
+    if (credentialsJson) {
+      try {
+        return { credentials: JSON.parse(credentialsJson) };
+      } catch {
+        console.warn("[WARN] GOOGLE_TTS_CREDENTIALS_JSON no es un JSON válido.");
+        return null;
+      }
+    }
+    if (fs.existsSync(credentialsPath)) {
+      return { keyFile: credentialsPath };
+    }
+    return null;
+  }
+
   async function runGoogleStandardTTS(text: string, voiceName: string, credentialsPath: string, cacheKey: string, res: Response) {
     try {
+      const resolved = resolveGoogleTtsCredentials(credentialsPath);
+      if (!resolved) {
+        return res.status(503).json({ error: "Credenciales de Google Cloud TTS no encontradas en el servidor." });
+      }
       const auth = new GoogleAuth({
-        keyFile: credentialsPath,
+        ...resolved,
         scopes: ["https://www.googleapis.com/auth/cloud-platform"],
       });
       const client = await auth.getClient();
@@ -1665,7 +1688,7 @@ ${text}
       
       if (!apiKey) {
         console.warn("[WARN] GEMINI_API_KEY no está configurada en el servidor.");
-        if (fs.existsSync(credentialsPath)) {
+        if (resolveGoogleTtsCredentials(credentialsPath)) {
           console.log("[TTS Fallback] GEMINI_API_KEY missing. Falling back to google-standard.");
           return await runGoogleStandardTTS(text, "es-ES-Standard-A", credentialsPath, cacheKey, res);
         }
@@ -1724,7 +1747,7 @@ ${text}
         
         if (!success) {
           // If Gemini models fail, check if Google Standard credentials exist for fallback
-          if (fs.existsSync(credentialsPath)) {
+          if (resolveGoogleTtsCredentials(credentialsPath)) {
             console.log("[TTS Fallback] Gemini synthesis failed. Falling back transparently to google-standard.");
             return await runGoogleStandardTTS(text, "es-ES-Standard-A", credentialsPath, cacheKey, res);
           } else {
@@ -1737,7 +1760,7 @@ ${text}
       }
     } else if (activeProvider === "google-standard") {
       const credentialsPath = process.env.GOOGLE_TTS_CREDENTIALS || "./google-tts-credentials.json";
-      if (!fs.existsSync(credentialsPath)) {
+      if (!resolveGoogleTtsCredentials(credentialsPath)) {
         return res.status(503).json({ error: "Credenciales de Google Cloud TTS no encontradas en el servidor." });
       }
       return await runGoogleStandardTTS(text, voiceId || "es-ES-Standard-A", credentialsPath, cacheKey, res);
