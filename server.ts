@@ -1677,19 +1677,18 @@ ${text}
         let response;
         let success = false;
         
-        // Try multiple models in sequence for high availability
-        const modelsToTry = [model, "gemini-2.0-flash-exp", "gemini-2.0-flash"];
+        // Modelos TTS dedicados de Gemini (solo estos soportan audio nativo vía generateContent).
+        const modelsToTry = ["gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"];
         let lastErr: any = null;
-        
+
         for (const m of modelsToTry) {
           try {
             console.log(`[TTS Gemini] Trying model "${m}" with voice "${voiceName}"`);
             response = await ai.models.generateContent({
               model: m,
-              contents: `Por favor, lee el siguiente fragmento de texto de forma fluida. Texto:\n${text}`,
+              contents: `Lee el siguiente fragmento de texto de forma fluida, con voz chilena nativa, coloquial y rápida, con énfasis, pausas y de manera narrativa pero ágil:\n${text}`,
               config: {
-                systemInstruction: `leelo con voz chilena nativa como una persona de Chile 100% coloquial y rápido con énfasis, pausas y de manera narrativa pero ágil`,
-                responseModalities: ["TEXT", "AUDIO"],
+                responseModalities: ["AUDIO"],
                 speechConfig: {
                   voiceConfig: {
                     prebuiltVoiceConfig: {
