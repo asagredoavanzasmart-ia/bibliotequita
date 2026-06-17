@@ -299,7 +299,7 @@ async function startServer() {
 
   // Si estás detrás de Nginx en un VPS, esto hace que rate-limit y los logs
   // vean la IP real del cliente vía X-Forwarded-For.
-  if (TRUST_PROXY) app.set("trust proxy", 1);
+  if (TRUST_PROXY || IS_PROD) app.set("trust proxy", 1);
 
   // Security headers. CSP relajado: la app carga Google Fonts y blobs PDF.
   app.use(
@@ -337,7 +337,7 @@ async function startServer() {
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: IS_PROD,
+      secure: false,
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
     },
   }));
