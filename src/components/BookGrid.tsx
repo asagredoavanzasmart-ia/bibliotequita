@@ -56,7 +56,7 @@ interface BookGridProps {
 
 // Barra de progreso interactiva: click o arrastre (mouse/touch) fija el % según
 // la posición horizontal. El wrapper amplía el área táctil sin cambiar el visual.
-const DraggableProgress: FC<{ value: number; color: string; onChange: (v: number) => void }> = ({ value, color, onChange }) => {
+export const DraggableProgress: FC<{ value: number; color: string; onChange: (v: number) => void }> = ({ value, color, onChange }) => {
   const barRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
 

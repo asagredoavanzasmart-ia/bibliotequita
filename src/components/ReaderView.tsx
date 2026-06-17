@@ -33,6 +33,8 @@ import { CitationsManager } from './CitationsManager';
 import { BookmarksMenu } from './BookmarksMenu';
 import { AuditorPanel } from './AuditorPanel';
 import { useReadingTimeTracker } from '../hooks/useReadingTime';
+import { StarRating } from './StarRating';
+import { DraggableProgress } from './BookGrid';
 
 interface ReaderViewProps {
   bookId: string;
@@ -62,6 +64,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const item = items.find(i => i.id === bookId);
   // Nombre de la categoría del item (BookItem.category guarda el id).
   const itemCategoryName = categories.find(c => c.id === item?.category)?.name ?? '';
+  const isPhysicalOnly = item ? (item.ownedPhysical && (!item.source || item.source.trim() === '')) : false;
 
   // Registra tiempo de lectura diario mientras este libro está abierto.
   useReadingTimeTracker(!!item);
@@ -1488,7 +1491,139 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     return <div className="h-screen flex items-center justify-center font-bold">Elemento no encontrado</div>;
   }
 
-  const renderReader = () => (
+  const renderPhysicalBookDashboard = () => {
+    const progState = {
+      text: item.read ? "Leído" : (item.progress || 0) <= 25 ? "Consultado" : (item.progress || 0) <= 50 ? "En proceso" : (item.progress || 0) < 100 ? "Revisado" : "Leído",
+      color: item.read ? "bg-emerald-500" : (item.progress || 0) <= 25 ? "bg-slate-500" : (item.progress || 0) <= 50 ? "bg-amber-500" : (item.progress || 0) < 100 ? "bg-blue-500" : "bg-emerald-500"
+    };
+    const pValue = item.read ? 100 : Math.min(100, Math.max(0, item.progress || 0));
+
+    return (
+      <div className="w-full h-full flex items-center justify-center p-4 sm:p-8 overflow-y-auto bg-slate-50/50 animate-in fade-in duration-300">
+        <div className="max-w-2xl w-full bg-white rounded-3xl border border-slate-200/60 shadow-xl p-6 sm:p-8 flex flex-col md:flex-row gap-6 md:gap-8 items-stretch">
+          
+          {/* Columna Izquierda: Portada */}
+          <div className="w-full md:w-48 shrink-0 flex flex-col items-center gap-3">
+            <div className="relative aspect-[2/3] w-40 md:w-full rounded-2xl overflow-hidden bg-gradient-to-br from-[#00558F] to-slate-800 shadow-lg border border-slate-100 flex flex-col items-center justify-center p-3 text-center">
+              {item.thumbnailUrl ? (
+                <img src={item.thumbnailUrl} alt={item.title} className="absolute inset-0 w-full h-full object-cover" />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full">
+                  <BookOpen className="w-12 h-12 text-white/30 mb-2" />
+                  <span className="text-white/60 text-xs font-bold uppercase tracking-wider">Libro Físico</span>
+                </div>
+              )}
+              <div className="absolute top-2 left-2 bg-[#00558F] text-white text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full shadow-md">
+                Físico
+              </div>
+            </div>
+            
+            {/* Rating */}
+            <div className="flex flex-col items-center gap-1 mt-2">
+              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Tu Calificación</span>
+              <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="lg" />
+            </div>
+          </div>
+
+          {/* Columna Derecha: Detalles + Acciones */}
+          <div className="flex-1 flex flex-col justify-between gap-6">
+            <div className="space-y-4">
+              <div>
+                <span className="text-[10px] text-[#00558F] font-black uppercase tracking-wider">Título</span>
+                <h1 className="text-xl sm:text-2xl font-black text-slate-800 leading-tight">{item.title}</h1>
+              </div>
+
+              {item.author && (
+                <div>
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Autor</span>
+                  <p className="text-sm font-semibold text-slate-700">{item.author}</p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                {item.year && (
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Año</span>
+                    <p className="text-sm font-semibold text-slate-700">{item.year}</p>
+                  </div>
+                )}
+                {item.publisher && (
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Editorial</span>
+                    <p className="text-sm font-semibold text-slate-700">{item.publisher}</p>
+                  </div>
+                )}
+                {item.isbn && (
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">ISBN</span>
+                    <p className="text-sm font-mono font-semibold text-slate-700">{item.isbn}</p>
+                  </div>
+                )}
+                {item.subject && (
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Tema / Materia</span>
+                    <p className="text-sm font-semibold text-slate-700">{item.subject}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Progreso */}
+              <div className="space-y-1.5 pt-2">
+                <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider">
+                  <span className="text-slate-400">Progreso de Lectura</span>
+                  <span className={cn(progState.color.replace('bg-', 'text-'))}>{pValue}% ({progState.text})</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <DraggableProgress 
+                    value={pValue} 
+                    color={progState.color} 
+                    onChange={(v) => updateItem(item.id, { progress: v, ...(item.read && v < 100 ? { read: false } : {}) })} 
+                  />
+                  <button 
+                    onClick={() => updateItem(item.id, { read: !item.read })}
+                    className={cn("text-xs font-bold px-3 py-1 rounded-lg border transition-all", item.read ? "bg-emerald-50 border-emerald-200 text-emerald-600" : "bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300")}
+                  >
+                    {item.read ? "Leído" : "Marcar Leído"}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Botones de acción principales */}
+            <div className="grid grid-cols-2 gap-3 pt-4 border-t border-slate-100 shrink-0">
+              <button
+                onClick={() => setActiveTab('edit')}
+                className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-slate-200 hover:border-[#00558F] text-slate-700 hover:text-[#00558F] font-bold text-sm transition-all shadow-sm active:scale-95 bg-white"
+              >
+                <Info className="w-4 h-4" />
+                Editar Info
+              </button>
+              <button
+                onClick={() => setShowNotes(!showNotes)}
+                className={cn(
+                  "flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-sm transition-all shadow-sm active:scale-95 border",
+                  showNotes 
+                    ? "bg-[#00558F] text-white border-[#00558F]" 
+                    : "bg-white border-slate-200 hover:border-[#00558F] text-slate-700 hover:text-[#00558F]"
+                )}
+              >
+                <MessageSquareQuote className="w-4 h-4" />
+                {showNotes ? "Cerrar Notas" : "Apuntes y Notas"}
+              </button>
+            </div>
+
+          </div>
+
+        </div>
+      </div>
+    );
+  };
+
+  const renderReader = () => {
+    if (isPhysicalOnly) {
+      return renderPhysicalBookDashboard();
+    }
+    return (
      <div 
         className={cn("w-full h-full flex flex-col relative transition-all duration-300 pointer-events-auto")}
         onClick={handleScreenClick}
@@ -1793,7 +1928,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
              </div>
           )}
      </div>
-  );
+    );
+  };
 
   const [isNotesFocused, setIsNotesFocused] = useState(false);
 
@@ -1935,7 +2071,18 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
              </div>
  
              {/* Fixed right tools */}
-             {activeTab === 'reader' && (item.type === 'pdf' || item.type === 'epub' || item.type === 'txt') && (
+             {activeTab === 'reader' && (
+               isPhysicalOnly ? (
+                 <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+                   <button 
+                       onClick={() => setShowNotes(!showNotes)} 
+                       className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showNotes ? "bg-[#00558F] text-white border-[#00558F]" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}
+                       title="Apuntes y Notas"
+                   >
+                       <MessageSquareQuote className="w-4 h-4 sm:w-5 sm:h-5" />
+                   </button>
+                 </div>
+               ) : (item.type === 'pdf' || item.type === 'epub' || item.type === 'txt') && (
                  <div className="flex items-center gap-1 sm:gap-2 shrink-0">
                   {/* Lector de Voz (TTS ElevenLabs) */}
                   <button 
@@ -2002,6 +2149,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                       <MessageSquareQuote className="w-4 h-4 sm:w-5 sm:h-5" />
                   </button>
                  </div>
+               )
              )}
             </div>
         </header>
