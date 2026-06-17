@@ -1576,19 +1576,71 @@ ${text}
   // (contenido del service account JSON, para despliegues sin filesystem persistente)
   // o, si no está definida, desde el archivo en GOOGLE_TTS_CREDENTIALS.
   function resolveGoogleTtsCredentials(credentialsPath: string): { keyFile?: string; credentials?: object } | null {
-    const credentialsJson = process.env.GOOGLE_TTS_CREDENTIALS_JSON;
+    let credentialsJson = process.env.GOOGLE_TTS_CREDENTIALS_JSON;
     if (credentialsJson) {
+      credentialsJson = credentialsJson.trim();
+      
+      // Eliminar comillas simples externas si existen
+      if (credentialsJson.startsWith("'") && credentialsJson.endsWith("'")) {
+        credentialsJson = credentialsJson.slice(1, -1).trim();
+      }
+      if (credentialsJson.startsWith('"') && credentialsJson.endsWith('"')) {
+        try {
+          const doubleParsed = JSON.parse(credentialsJson);
+          if (typeof doubleParsed === 'string') {
+            credentialsJson = doubleParsed.trim();
+          }
+        } catch {
+          // Seguir con credentialsJson
+        }
+      }
+
       try {
         return { credentials: JSON.parse(credentialsJson) };
-      } catch {
-        console.warn("[WARN] GOOGLE_TTS_CREDENTIALS_JSON no es un JSON válido.");
-        return null;
+      } catch (e: any) {
+        console.warn("[WARN] Fallo inicial al parsear GOOGLE_TTS_CREDENTIALS_JSON. Intentando saneamiento de saltos de línea...", e.message);
+        try {
+          // Intentar sanear saltos de línea reales dentro de cadenas del JSON (ej: la clave privada)
+          let inString = false;
+          const chars = credentialsJson.split("");
+          for (let i = 0; i < chars.length; i++) {
+            if (chars[i] === '"' && chars[i - 1] !== '\\') {
+              inString = !inString;
+            }
+            if (inString && (chars[i] === '\n' || chars[i] === '\r')) {
+              if (chars[i] === '\n') {
+                chars[i] = '\\n';
+              } else {
+                chars[i] = '';
+              }
+            }
+          }
+          const sanitized = chars.join("");
+          return { credentials: JSON.parse(sanitized) };
+        } catch (innerErr: any) {
+          console.error("[ERROR] No se pudo parsear GOOGLE_TTS_CREDENTIALS_JSON incluso tras saneamiento:", innerErr.message);
+          return null;
+        }
       }
     }
     if (fs.existsSync(credentialsPath)) {
       return { keyFile: credentialsPath };
     }
     return null;
+  }
+
+  // Generar archivo de credenciales físicas si están disponibles en la variable de entorno y el archivo no existe
+  try {
+    const defaultCredentialsPath = process.env.GOOGLE_TTS_CREDENTIALS || "./google-tts-credentials.json";
+    if (process.env.GOOGLE_TTS_CREDENTIALS_JSON && !fs.existsSync(defaultCredentialsPath)) {
+      const resolved = resolveGoogleTtsCredentials(defaultCredentialsPath);
+      if (resolved && resolved.credentials) {
+        fs.writeFileSync(defaultCredentialsPath, JSON.stringify(resolved.credentials, null, 2), "utf8");
+        console.log(`[TTS Init] Archivo de credenciales físicas creado dinámicamente en: ${defaultCredentialsPath}`);
+      }
+    }
+  } catch (err: any) {
+    console.error("[TTS Init] Error al intentar generar archivo de credenciales desde variable de entorno:", err.message);
   }
 
   async function runGoogleStandardTTS(text: string, voiceName: string, credentialsPath: string, cacheKey: string, res: Response) {
