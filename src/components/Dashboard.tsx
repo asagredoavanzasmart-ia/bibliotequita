@@ -24,6 +24,7 @@ import { DndContext, closestCenter, DragEndEvent, useSensors, useSensor, Pointer
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { SettingsModal } from './SettingsModal';
 import { AddManualModal } from './AddManualModal';
+import { AdminPanel } from './AdminPanel';
 
 interface DemoQuota {
   max: number;
@@ -32,30 +33,13 @@ interface DemoQuota {
 
 interface DashboardProps {
   onOpenBook: (id: string) => void;
-  user?: { name: string; email: string; photo: string };
+  user?: { name: string; email: string; photo: string; role?: string };
 }
 
 export function Dashboard({ onOpenBook, user }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<string>('todos');
-  // Vista y orden persisten en localStorage (igual que library_theme).
-  const [viewMode, setViewModeState] = useState<'covers' | 'grid' | 'grid-compact' | 'list'>(() => {
-    const saved = localStorage.getItem('library_view_mode');
-    return (saved === 'covers' || saved === 'grid' || saved === 'grid-compact' || saved === 'list') ? saved : 'grid';
-  });
-  const setViewMode = (mode: 'covers' | 'grid' | 'grid-compact' | 'list') => {
-    setViewModeState(mode);
-    localStorage.setItem('library_view_mode', mode);
-  };
   const [activePlaylist, setActivePlaylist] = useState<string | null>(null);
   const [activeStage, setActiveStage] = useState<string | null>(null);
-  const [sortBy, setSortByState] = useState<'manual' | 'recent' | 'oldest' | 'alpha'>(() => {
-    const saved = localStorage.getItem('library_sort_by');
-    return (saved === 'manual' || saved === 'recent' || saved === 'oldest' || saved === 'alpha') ? saved : 'manual';
-  });
-  const setSortBy = (sort: 'manual' | 'recent' | 'oldest' | 'alpha') => {
-    setSortByState(sort);
-    localStorage.setItem('library_sort_by', sort);
-  };
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsedDesktop, setSidebarCollapsedDesktop] = useState(false);
   const [filters, setFilters] = useState({ year: '', author: '', subject: '', read: '', toBuy: '', authorInitial: '', titleInitial: '' });
@@ -63,15 +47,16 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [showMobileProfile, setShowMobileProfile] = useState(false);
   const [showManualAdd, setShowManualAdd] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [demoQuota, setDemoQuota] = useState<DemoQuota | null>(null);
-  const { updateItem, reorderItems, items, addItem, playlists } = useLibrary();
+  const { updateItem, reorderItems, items, addItem, playlists, viewMode, setViewMode, sortBy, setSortBy } = useLibrary();
 
   const refreshQuota = useCallback(() => {
-    fetch('/api/config', { credentials: 'include' })
+    fetch('/api/upload-quota', { credentials: 'include' })
       .then(r => r.json())
       .then(d => {
-        if (typeof d.demoMaxUploads === 'number' && d.demoMaxUploads > 0) {
-          setDemoQuota({ max: d.demoMaxUploads, current: d.demoCurrentUploads ?? 0 });
+        if (typeof d.max === 'number' && d.max > 0) {
+          setDemoQuota({ max: d.max, current: d.current ?? 0 });
         } else {
           setDemoQuota(null);
         }
@@ -148,6 +133,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
           collapsed={sidebarCollapsedDesktop}
           setCollapsed={setSidebarCollapsedDesktop}
           onOpenSettings={() => setShowMobileProfile(true)}
+          onOpenAdmin={user?.role === 'admin' ? () => setShowAdminPanel(true) : undefined}
           onClose={() => setSidebarOpen(false)}
         />
       </div>
@@ -180,7 +166,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
             onOpenAddManual={() => setShowManualAdd(true)}
             user={user}
           />
-          {/* Banner de cuota demo */}
+          {/* Banner de cuota de contenidos */}
           {demoQuota && (
             <div className={cn(
               "mt-4 flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium border",
@@ -191,8 +177,8 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
               <UploadCloud className={cn("w-4 h-4 shrink-0", demoQuota.current >= demoQuota.max ? "text-amber-500" : "text-[var(--primary)]")} />
               <span>
                 {demoQuota.current >= demoQuota.max
-                  ? `Límite de la demo alcanzado (${demoQuota.current}/${demoQuota.max}). Elimina un contenido para poder subir otro.`
-                  : `Demo: ${demoQuota.current} de ${demoQuota.max} contenidos subidos.`}
+                  ? `Límite de contenidos alcanzado (${demoQuota.current}/${demoQuota.max}). Elimina un contenido para poder subir otro.`
+                  : `${demoQuota.current} de ${demoQuota.max} contenidos subidos.`}
               </span>
             </div>
           )}
@@ -282,6 +268,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
       </main>
       
       {showMobileProfile && <SettingsModal onClose={() => setShowMobileProfile(false)} />}
+      {showAdminPanel && <AdminPanel onClose={() => setShowAdminPanel(false)} />}
       {showManualAdd && (
         <AddManualModal
           onClose={() => { setShowManualAdd(false); refreshQuota(); }}

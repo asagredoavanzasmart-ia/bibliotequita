@@ -38,13 +38,14 @@ const RESOURCE_TYPE_LABELS: Record<string, string> = {
 function getProgressStatus(item: { read?: boolean; progress?: number }): string {
   if (item.read) return 'Leído';
   const p = item.progress || 0;
-  if (p === 0) return 'Pendiente';
-  if (p < 25) return 'Consultado';
-  if (p < 100) return 'En progreso';
+  // 0–25% Consultado · 26–50% En proceso · 51–99% Revisado · 100% Leído
+  if (p <= 25) return 'Consultado';
+  if (p <= 50) return 'En proceso';
+  if (p < 100) return 'Revisado';
   return 'Leído';
 }
 
-const STATUS_ORDER = ['Pendiente', 'Consultado', 'En progreso', 'Leído'];
+const STATUS_ORDER = ['Consultado', 'En proceso', 'Revisado', 'Leído'];
 
 function formatMinutes(totalSeconds: number): string {
   const totalMinutes = Math.round(totalSeconds / 60);
@@ -79,7 +80,7 @@ export function AnalyticsDashboard() {
     const monthlyFinished: Record<string, number> = {};
     const resourceTypeCounts: Record<string, number> = {};
     const tagCounts: Record<string, number> = {};
-    const statusCounts: Record<string, number> = { 'Pendiente': 0, 'Consultado': 0, 'En progreso': 0, 'Leído': 0 };
+    const statusCounts: Record<string, number> = { 'Consultado': 0, 'En proceso': 0, 'Revisado': 0, 'Leído': 0 };
 
     items.forEach(item => {
       if (item.read) readCount++;

@@ -301,7 +301,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
     const file = e.target.files?.[0];
     if (!file) return;
     if (isQuotaFull) {
-      setUploadError(`Límite de la demo alcanzado (${demoQuota!.current}/${demoQuota!.max}). Elimina un contenido antes de subir otro.`);
+      setUploadError(`Límite de contenidos alcanzado (${demoQuota!.current}/${demoQuota!.max}). Elimina un contenido antes de subir otro.`);
       return;
     }
     setUploadError('');

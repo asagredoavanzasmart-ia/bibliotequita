@@ -14,6 +14,29 @@
 //   POST   /api/analyze-image  (Gemini analiza portada base64)
 //   POST   /api/gemini/summarize (Gemini resume citas)
 //   GET    /api/health         (probe para load balancer / pm2)
+//   GET    /api/db-health      (probe de conexión a Postgres/Supabase)
+//   GET    /api/admin/users    (lista usuarios + límites — solo admin)
+//   POST   /api/admin/users    (crea usuario de prueba + límites — solo admin)
+//   PUT    /api/admin/users/:id (edita rol/estado/límites — solo admin)
+//   DELETE /api/admin/users/:id (elimina usuario de prueba — solo admin)
+//   GET    /api/library/state           (carga items, playlists, categorías y ajustes)
+//   POST   /api/library/items           (crea item)
+//   PUT    /api/library/items/:id       (actualiza item)
+//   DELETE /api/library/items/:id       (borra item)
+//   PUT    /api/library/items/reorder   (reordena manualmente)
+//   POST   /api/library/playlists       (crea playlist)
+//   PUT    /api/library/playlists/:id   (actualiza playlist)
+//   DELETE /api/library/playlists/:id   (borra playlist)
+//   POST   /api/library/categories      (crea categoría)
+//   PUT    /api/library/categories/:id  (actualiza categoría)
+//   DELETE /api/library/categories/:id  (borra categoría)
+//   PUT    /api/library/settings        (actualiza tema/fuente/vista/orden/cardSettings)
+//   GET    /api/documents/:docId/notes    (lista notas/citas/marcadores)
+//   PUT    /api/documents/:docId/notes    (reemplaza la lista completa de notas)
+//   GET    /api/documents/:docId/settings (paleta de colores, agrupado, resúmenes IA)
+//   PUT    /api/documents/:docId/settings (actualiza paleta/agrupado/resúmenes)
+//   DELETE /api/documents/:docId          (borra notas y ajustes del documento)
+//   GET    /api/upload-quota              (límite de contenidos del usuario actual)
 //
 // Variables de entorno relevantes (ver .env.example):
 //   PORT, HOST, NODE_ENV
@@ -24,6 +47,7 @@
 //   AI_RATE_LIMIT_WINDOW_MIN, AI_RATE_LIMIT_MAX  (más estricto para /api/gemini)
 //   ALLOW_PROXY_HOSTS  (whitelist opcional: "example.com,arxiv.org")
 //   TRUST_PROXY  ("1" si estás detrás de Nginx, para que express lea X-Forwarded-For)
+//   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY  (Supabase)
 // =============================================================================
 
 import express, { Request, Response, NextFunction } from "express";
@@ -43,6 +67,8 @@ import session from "express-session";
 // import passport from "passport";
 // import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import dotenv from "dotenv";
+import { checkDbConnection, supabase } from "./src/server/supabase.ts";
+import { hashPassword, verifyPassword } from "./src/server/password.ts";
 
 dotenv.config();
 
@@ -328,10 +354,36 @@ async function startServer() {
   // -------------------------------------------------------------------------
   // Rutas de autenticación
   // -------------------------------------------------------------------------
-  app.post("/auth/login", (req: any, res) => {
+  app.post("/auth/login", async (req: any, res) => {
     const { username, password } = req.body;
     if (!username || !password) {
       return res.status(400).json({ error: "Usuario y contraseña requeridos." });
+    }
+
+    if (supabase) {
+      const { data: dbUser, error } = await supabase
+        .from("users")
+        .select("id, username, password_hash, role, is_active")
+        .ilike("username", username)
+        .maybeSingle();
+
+      if (!error && dbUser) {
+        if (!dbUser.is_active) {
+          return res.status(401).json({ error: "Usuario deshabilitado." });
+        }
+        const valid = await verifyPassword(password, dbUser.password_hash);
+        if (!valid) {
+          return res.status(401).json({ error: "Usuario o contraseña incorrectos." });
+        }
+        req.session.user = {
+          id: dbUser.id,
+          name: dbUser.username,
+          email: "",
+          photo: "",
+          role: dbUser.role,
+        };
+        return res.json({ ok: true });
+      }
     }
 
     if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
@@ -340,6 +392,7 @@ async function startServer() {
         name: "Administrador",
         email: "admin@local.com",
         photo: "",
+        role: "admin",
       };
       return res.json({ ok: true });
     }
@@ -364,7 +417,7 @@ async function startServer() {
 
   // Middleware que protege todas las rutas /api/* excepto /api/me y /api/health
   const requireAuth = (req: any, res: Response, next: NextFunction) => {
-    const openPaths = ["/api/me", "/api/health", "/api/config"];
+    const openPaths = ["/me", "/health", "/config", "/db-health"];
     if (openPaths.includes(req.path) || req.isAuthenticated()) return next();
     res.status(401).json({ error: "No autenticado." });
   };
@@ -406,22 +459,613 @@ async function startServer() {
   });
 
   // -------------------------------------------------------------------------
-  // Límite de contenidos para la demo
+  // Health check (DB)
   // -------------------------------------------------------------------------
-  const DEMO_MAX_UPLOADS = Number(process.env.DEMO_MAX_UPLOADS || 3);
+  app.get("/api/db-health", async (_req, res) => {
+    const result = await checkDbConnection();
+    res.status(result.ok ? 200 : 503).json(result);
+  });
 
-  // Cuenta archivos actuales en uploads/ — solo PDF y EPUB cuentan como
-  // "contenido"; las portadas (.jpg/.png) no se cuentan.
-  function countUserContent(): number {
-    try {
-      return fs.readdirSync(UPLOAD_DIR).filter(f => {
-        const ext = path.extname(f).toLowerCase();
-        return ext === ".pdf" || ext === ".epub" || ext === ".txt";
-      }).length;
-    } catch {
-      return 0;
+  // -------------------------------------------------------------------------
+  // Administración de usuarios (solo role === 'admin')
+  // -------------------------------------------------------------------------
+  const requireAdmin = (req: any, res: Response, next: NextFunction) => {
+    if (req.user?.role !== "admin") {
+      return res.status(403).json({ error: "Acceso solo para administradores." });
     }
-  }
+    next();
+  };
+
+  // GET /api/admin/users — lista usuarios con sus límites.
+  app.get("/api/admin/users", requireAdmin, async (_req, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+
+    const { data, error } = await supabase
+      .from("users")
+      .select("id, username, email, role, is_active, created_at, user_limits(max_uploads, max_tts_chars, max_ai_summaries)")
+      .order("created_at", { ascending: true });
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ users: data });
+  });
+
+  // POST /api/admin/users — crea un usuario de prueba con límites.
+  app.post("/api/admin/users", requireAdmin, async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+
+    const { username, password, role, max_uploads, max_tts_chars, max_ai_summaries } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: "Usuario y contraseña requeridos." });
+    }
+    if (role && role !== "admin" && role !== "user") {
+      return res.status(400).json({ error: "Rol inválido." });
+    }
+
+    const passwordHash = await hashPassword(password);
+
+    const { data: user, error: userError } = await supabase
+      .from("users")
+      .insert({ username, password_hash: passwordHash, role: role || "user" })
+      .select()
+      .single();
+
+    if (userError) return res.status(400).json({ error: userError.message });
+
+    const { error: limitsError } = await supabase
+      .from("user_limits")
+      .insert({
+        user_id: user.id,
+        max_uploads: max_uploads ?? 3,
+        max_tts_chars: max_tts_chars ?? 0,
+        max_ai_summaries: max_ai_summaries ?? 0,
+      });
+
+    if (limitsError) return res.status(400).json({ error: limitsError.message });
+
+    res.status(201).json({ id: user.id, username: user.username, role: user.role });
+  });
+
+  // PUT /api/admin/users/:id — edita rol, estado activo y/o límites.
+  app.put("/api/admin/users/:id", requireAdmin, async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+
+    const { id } = req.params;
+    const { role, is_active, max_uploads, max_tts_chars, max_ai_summaries } = req.body;
+
+    if (role !== undefined || is_active !== undefined) {
+      const patch: Record<string, unknown> = {};
+      if (role !== undefined) {
+        if (role !== "admin" && role !== "user") return res.status(400).json({ error: "Rol inválido." });
+        patch.role = role;
+      }
+      if (is_active !== undefined) patch.is_active = !!is_active;
+
+      const { error } = await supabase.from("users").update(patch).eq("id", id);
+      if (error) return res.status(400).json({ error: error.message });
+    }
+
+    if (max_uploads !== undefined || max_tts_chars !== undefined || max_ai_summaries !== undefined) {
+      const patch: Record<string, unknown> = {};
+      if (max_uploads !== undefined) patch.max_uploads = max_uploads;
+      if (max_tts_chars !== undefined) patch.max_tts_chars = max_tts_chars;
+      if (max_ai_summaries !== undefined) patch.max_ai_summaries = max_ai_summaries;
+
+      const { error } = await supabase.from("user_limits").update(patch).eq("user_id", id);
+      if (error) return res.status(400).json({ error: error.message });
+    }
+
+    res.json({ ok: true });
+  });
+
+  // DELETE /api/admin/users/:id — elimina un usuario de prueba.
+  app.delete("/api/admin/users/:id", requireAdmin, async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+
+    const { id } = req.params;
+    if (id === req.user?.id) {
+      return res.status(400).json({ error: "No puedes eliminar tu propia cuenta." });
+    }
+
+    const { error } = await supabase.from("users").delete().eq("id", id);
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ ok: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Biblioteca: items, playlists, categorías y ajustes (Supabase)
+  // -------------------------------------------------------------------------
+  const DEFAULT_CATEGORIES = [
+    { name: "Libros" },
+    { name: "Revistas" },
+    { name: "Artículos" },
+    { name: "Estudio" },
+  ];
+
+  const DEFAULT_PLAYLISTS = [
+    { name: "Filosofía Política", color: "bg-[#00558F]" },
+    { name: "Economía Clásica", color: "bg-[#FFA300]" },
+    { name: "Historia", color: "bg-[#C9A227]" },
+    { name: "Negocios", color: "bg-[#4FBF9F]" },
+    { name: "Matemáticas", color: "bg-[#B5651D]" },
+    { name: "Ciencia", color: "bg-[#8CC152]" },
+    { name: "Política", color: "bg-[#5C1A1B]" },
+    { name: "Música", color: "bg-[#C0392B]" },
+    { name: "Religión", color: "bg-[#E8806B]" },
+    { name: "Arte", color: "bg-[#7B4F9E]" },
+    { name: "Filosofía", color: "bg-[#7A3B5E]" },
+    { name: "Geopolítica", color: "bg-[#4A4A4A]" },
+  ];
+
+  const DEFAULT_CARD_SETTINGS = {
+    showAuthor: true,
+    showYear: true,
+    showProgress: true,
+    showType: true,
+    showPhysicalStatus: true,
+    showRating: true,
+  };
+
+  // GET /api/library/state — carga todo lo necesario para arrancar la app.
+  // Si el usuario no tiene categorías/playlists/ajustes, los crea con valores
+  // por defecto (primera vez que usa la biblioteca).
+  app.get("/api/library/state", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+
+    let { data: categories, error: catError } = await supabase
+      .from("library_categories")
+      .select("id, name, sort_index, hidden")
+      .eq("user_id", userId)
+      .order("sort_index", { ascending: true });
+    if (catError) return res.status(500).json({ error: catError.message });
+
+    if (!categories || categories.length === 0) {
+      const { data: inserted, error: insError } = await supabase
+        .from("library_categories")
+        .insert(DEFAULT_CATEGORIES.map((c, i) => ({ user_id: userId, name: c.name, sort_index: i })))
+        .select("id, name, sort_index, hidden");
+      if (insError) return res.status(500).json({ error: insError.message });
+      categories = inserted;
+    } else if (!categories.some((c) => c.name.toLowerCase() === "estudio")) {
+      // Usuarios que ya tenían categorías de antes de introducir "Estudio":
+      // la creamos para que el botón de Auditoría Científica esté disponible.
+      const maxSort = Math.max(0, ...categories.map((c: any) => c.sort_index ?? 0));
+      const { data: estudio, error: estErr } = await supabase
+        .from("library_categories")
+        .insert({ user_id: userId, name: "Estudio", sort_index: maxSort + 1 })
+        .select("id, name, sort_index, hidden")
+        .single();
+      if (estErr) return res.status(500).json({ error: estErr.message });
+      categories = [...categories, estudio];
+    }
+
+    let { data: playlists, error: plError } = await supabase
+      .from("library_playlists")
+      .select("id, name, color")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true });
+    if (plError) return res.status(500).json({ error: plError.message });
+
+    if (!playlists || playlists.length === 0) {
+      const { data: inserted, error: insError } = await supabase
+        .from("library_playlists")
+        .insert(DEFAULT_PLAYLISTS.map((p) => ({ user_id: userId, name: p.name, color: p.color })))
+        .select("id, name, color");
+      if (insError) return res.status(500).json({ error: insError.message });
+      playlists = inserted;
+    }
+
+    const { data: itemRows, error: itemsError } = await supabase
+      .from("library_items")
+      .select("id, data, list_index")
+      .eq("user_id", userId)
+      .order("list_index", { ascending: true });
+    if (itemsError) return res.status(500).json({ error: itemsError.message });
+
+    const items = (itemRows ?? []).map((row) => ({ ...(row.data as object), id: row.id, listIndex: row.list_index }));
+
+    let { data: settings, error: settError } = await supabase
+      .from("library_settings")
+      .select("theme, font_family, view_mode, sort_by, card_settings")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (settError) return res.status(500).json({ error: settError.message });
+
+    if (!settings) {
+      const { data: inserted, error: insError } = await supabase
+        .from("library_settings")
+        .insert({ user_id: userId, card_settings: DEFAULT_CARD_SETTINGS })
+        .select("theme, font_family, view_mode, sort_by, card_settings")
+        .single();
+      if (insError) return res.status(500).json({ error: insError.message });
+      settings = inserted;
+    }
+
+    res.json({
+      items,
+      playlists: (playlists ?? []).map((p) => ({ id: p.id, name: p.name, color: p.color })),
+      categories: (categories ?? []).map((c) => ({ id: c.id, name: c.name })),
+      settings: {
+        theme: settings.theme,
+        fontFamily: settings.font_family,
+        viewMode: settings.view_mode,
+        sortBy: settings.sort_by,
+        cardSettings: settings.card_settings,
+      },
+    });
+  });
+
+  // POST /api/library/items — crea un item.
+  app.post("/api/library/items", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { id: _ignoredId, listIndex, ...data } = req.body ?? {};
+
+    const { data: row, error } = await supabase
+      .from("library_items")
+      .insert({ user_id: userId, data, list_index: listIndex ?? 0 })
+      .select("id, data, list_index")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.status(201).json({ item: { ...(row.data as object), id: row.id, listIndex: row.list_index } });
+  });
+
+  // PUT /api/library/items/reorder — reordena manualmente (drag & drop).
+  // IMPORTANTE: esta ruta debe declararse ANTES de PUT /api/library/items/:id,
+  // porque Express probaría ":id" = "reorder" si estuviera primero.
+  app.put("/api/library/items/reorder", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { activeId, overId } = req.body ?? {};
+    if (!activeId || !overId) return res.status(400).json({ error: "activeId y overId requeridos." });
+
+    const { data: rows, error } = await supabase
+      .from("library_items")
+      .select("id, data, list_index")
+      .eq("user_id", userId)
+      .order("list_index", { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+
+    const items = rows ?? [];
+    const oldIndex = items.findIndex((i) => i.id === activeId);
+    const newIndex = items.findIndex((i) => i.id === overId);
+    if (oldIndex === -1 || newIndex === -1) return res.status(404).json({ error: "Item no encontrado." });
+
+    const reordered = [...items];
+    const [removed] = reordered.splice(oldIndex, 1);
+    reordered.splice(newIndex, 0, removed);
+
+    for (let i = 0; i < reordered.length; i++) {
+      if (reordered[i].list_index !== i) {
+        await supabase.from("library_items").update({ list_index: i }).eq("id", reordered[i].id).eq("user_id", userId);
+      }
+    }
+
+    res.json({
+      items: reordered.map((row, i) => ({ ...(row.data as object), id: row.id, listIndex: i })),
+    });
+  });
+
+  // PUT /api/library/items/:id — actualiza un item (merge de campos).
+  app.put("/api/library/items/:id", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    const { data: existing, error: getError } = await supabase
+      .from("library_items")
+      .select("data, list_index")
+      .eq("id", id)
+      .eq("user_id", userId)
+      .single();
+    if (getError) return res.status(404).json({ error: "Item no encontrado." });
+
+    const { listIndex, ...updates } = req.body ?? {};
+    const mergedData = { ...(existing.data as object), ...updates };
+    const patch: Record<string, unknown> = { data: mergedData };
+    if (listIndex !== undefined) patch.list_index = listIndex;
+
+    const { data: row, error } = await supabase
+      .from("library_items")
+      .update(patch)
+      .eq("id", id)
+      .eq("user_id", userId)
+      .select("id, data, list_index")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ item: { ...(row.data as object), id: row.id, listIndex: row.list_index } });
+  });
+
+  // DELETE /api/library/items/:id — borra un item.
+  app.delete("/api/library/items/:id", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    const { error } = await supabase.from("library_items").delete().eq("id", id).eq("user_id", userId);
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ ok: true });
+  });
+
+  // POST /api/library/playlists — crea una playlist.
+  app.post("/api/library/playlists", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { name, color } = req.body ?? {};
+    if (!name) return res.status(400).json({ error: "Nombre requerido." });
+
+    const { data: row, error } = await supabase
+      .from("library_playlists")
+      .insert({ user_id: userId, name, color })
+      .select("id, name, color")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.status(201).json({ playlist: row });
+  });
+
+  // PUT /api/library/playlists/:id — actualiza una playlist.
+  app.put("/api/library/playlists/:id", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { id } = req.params;
+    const { name, color } = req.body ?? {};
+
+    const patch: Record<string, unknown> = {};
+    if (name !== undefined) patch.name = name;
+    if (color !== undefined) patch.color = color;
+
+    const { data: row, error } = await supabase
+      .from("library_playlists")
+      .update(patch)
+      .eq("id", id)
+      .eq("user_id", userId)
+      .select("id, name, color")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ playlist: row });
+  });
+
+  // DELETE /api/library/playlists/:id — borra una playlist y la quita de los items.
+  app.delete("/api/library/playlists/:id", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    const { error: delError } = await supabase.from("library_playlists").delete().eq("id", id).eq("user_id", userId);
+    if (delError) return res.status(400).json({ error: delError.message });
+
+    const { data: items, error: itemsError } = await supabase
+      .from("library_items")
+      .select("id, data")
+      .eq("user_id", userId);
+    if (itemsError) return res.status(500).json({ error: itemsError.message });
+
+    for (const item of items ?? []) {
+      const data = item.data as { folderIds?: string[] };
+      if (data.folderIds?.includes(id)) {
+        const folderIds = data.folderIds.filter((fId) => fId !== id);
+        await supabase.from("library_items").update({ data: { ...data, folderIds } }).eq("id", item.id).eq("user_id", userId);
+      }
+    }
+
+    res.json({ ok: true });
+  });
+
+  // POST /api/library/categories — crea una categoría.
+  app.post("/api/library/categories", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { name } = req.body ?? {};
+    if (!name) return res.status(400).json({ error: "Nombre requerido." });
+
+    const { data: row, error } = await supabase
+      .from("library_categories")
+      .insert({ user_id: userId, name })
+      .select("id, name, hidden")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.status(201).json({ category: row });
+  });
+
+  // PUT /api/library/categories/:id — actualiza nombre y/o visibilidad.
+  app.put("/api/library/categories/:id", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { id } = req.params;
+    const { name, hidden } = req.body ?? {};
+
+    const patch: Record<string, unknown> = {};
+    if (typeof name === "string" && name.trim()) patch.name = name.trim();
+    if (typeof hidden === "boolean") patch.hidden = hidden;
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ error: "Nada que actualizar." });
+    }
+
+    const { data: row, error } = await supabase
+      .from("library_categories")
+      .update(patch)
+      .eq("id", id)
+      .eq("user_id", userId)
+      .select("id, name, hidden")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ category: row });
+  });
+
+  // DELETE /api/library/categories/:id — borra una categoría.
+  app.delete("/api/library/categories/:id", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    const { error } = await supabase.from("library_categories").delete().eq("id", id).eq("user_id", userId);
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ ok: true });
+  });
+
+  // PUT /api/library/settings — actualiza tema/fuente/vista/orden/cardSettings (upsert parcial).
+  app.put("/api/library/settings", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { theme, fontFamily, viewMode, sortBy, cardSettings } = req.body ?? {};
+
+    const patch: Record<string, unknown> = { user_id: userId };
+    if (theme !== undefined) patch.theme = theme;
+    if (fontFamily !== undefined) patch.font_family = fontFamily;
+    if (viewMode !== undefined) patch.view_mode = viewMode;
+    if (sortBy !== undefined) patch.sort_by = sortBy;
+    if (cardSettings !== undefined) patch.card_settings = cardSettings;
+
+    const { data: row, error } = await supabase
+      .from("library_settings")
+      .upsert(patch, { onConflict: "user_id" })
+      .select("theme, font_family, view_mode, sort_by, card_settings")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({
+      settings: {
+        theme: row.theme,
+        fontFamily: row.font_family,
+        viewMode: row.view_mode,
+        sortBy: row.sort_by,
+        cardSettings: row.card_settings,
+      },
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Documentos: notas/citas/marcadores y ajustes (paleta, resúmenes IA)
+  // -------------------------------------------------------------------------
+
+  // GET /api/documents/:docId/notes — lista de notas/citas/marcadores.
+  app.get("/api/documents/:docId/notes", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { docId } = req.params;
+
+    const { data, error } = await supabase
+      .from("document_notes")
+      .select("data")
+      .eq("user_id", userId)
+      .eq("document_id", docId);
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({ notes: (data ?? []).map((row) => row.data) });
+  });
+
+  // PUT /api/documents/:docId/notes — reemplaza la lista completa de notas.
+  app.put("/api/documents/:docId/notes", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { docId } = req.params;
+    const notes = Array.isArray(req.body?.notes) ? req.body.notes : [];
+
+    const { error: delError } = await supabase
+      .from("document_notes")
+      .delete()
+      .eq("user_id", userId)
+      .eq("document_id", docId);
+    if (delError) return res.status(400).json({ error: delError.message });
+
+    if (notes.length > 0) {
+      const { error: insError } = await supabase
+        .from("document_notes")
+        .insert(notes.map((note: unknown) => ({ user_id: userId, document_id: docId, data: note })));
+      if (insError) return res.status(400).json({ error: insError.message });
+    }
+
+    res.json({ notes });
+  });
+
+  // GET /api/documents/:docId/settings — paleta de colores, agrupado, resúmenes IA.
+  app.get("/api/documents/:docId/settings", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { docId } = req.params;
+
+    const { data, error } = await supabase
+      .from("document_settings")
+      .select("color_palette, group_by_color, summary_gen, summary_edit, audit_result")
+      .eq("user_id", userId)
+      .eq("document_id", docId)
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({
+      settings: {
+        colorPalette: data?.color_palette ?? null,
+        groupByColor: data?.group_by_color ?? false,
+        summaryGen: data?.summary_gen ?? null,
+        summaryEdit: data?.summary_edit ?? null,
+        auditResult: data?.audit_result ?? null,
+      },
+    });
+  });
+
+  // PUT /api/documents/:docId/settings — upsert parcial.
+  app.put("/api/documents/:docId/settings", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { docId } = req.params;
+    const { colorPalette, groupByColor, summaryGen, summaryEdit, auditResult } = req.body ?? {};
+
+    const patch: Record<string, unknown> = { user_id: userId, document_id: docId };
+    if (colorPalette !== undefined) patch.color_palette = colorPalette;
+    if (groupByColor !== undefined) patch.group_by_color = groupByColor;
+    if (summaryGen !== undefined) patch.summary_gen = summaryGen;
+    if (summaryEdit !== undefined) patch.summary_edit = summaryEdit;
+    if (auditResult !== undefined) patch.audit_result = auditResult;
+
+    const { data, error } = await supabase
+      .from("document_settings")
+      .upsert(patch, { onConflict: "user_id,document_id" })
+      .select("color_palette, group_by_color, summary_gen, summary_edit, audit_result")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({
+      settings: {
+        colorPalette: data.color_palette ?? null,
+        groupByColor: data.group_by_color ?? false,
+        summaryGen: data.summary_gen ?? null,
+        summaryEdit: data.summary_edit ?? null,
+        auditResult: data.audit_result ?? null,
+      },
+    });
+  });
+
+  // DELETE /api/documents/:docId — borra notas y ajustes (al borrar un item).
+  app.delete("/api/documents/:docId", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { docId } = req.params;
+
+    const { error: notesError } = await supabase
+      .from("document_notes")
+      .delete()
+      .eq("user_id", userId)
+      .eq("document_id", docId);
+    if (notesError) return res.status(400).json({ error: notesError.message });
+
+    const { error: settingsError } = await supabase
+      .from("document_settings")
+      .delete()
+      .eq("user_id", userId)
+      .eq("document_id", docId);
+    if (settingsError) return res.status(400).json({ error: settingsError.message });
+
+    res.json({ ok: true });
+  });
 
   // -------------------------------------------------------------------------
   // Config pública del cliente (solo expone lo que el frontend necesita)
@@ -429,29 +1073,66 @@ async function startServer() {
   app.get("/api/config", (_req, res) => {
     res.json({
       deleteToken: DELETE_TOKEN || null,
-      demoMaxUploads: DEMO_MAX_UPLOADS,
-      demoCurrentUploads: countUserContent(),
     });
   });
 
   // -------------------------------------------------------------------------
   // Files: upload / download / delete
   // -------------------------------------------------------------------------
-  app.post("/api/upload", upload.single("file"), (req, res) => {
+  // Cuenta los items de contenido (con archivo subido) del usuario actual.
+  async function countUserContent(userId: string): Promise<number> {
+    if (!supabase) return 0;
+    const { data, error } = await supabase
+      .from("library_items")
+      .select("data")
+      .eq("user_id", userId);
+    if (error || !data) return 0;
+    return data.filter((row) => {
+      const source = (row.data as any)?.source as string | undefined;
+      return !!source && source.startsWith("/api/files/");
+    }).length;
+  }
+
+  // GET /api/upload-quota — devuelve el límite de contenidos del usuario
+  // actual y cuántos lleva subidos. El admin no tiene límite (max: null).
+  app.get("/api/upload-quota", async (req: any, res) => {
+    if (req.user?.role === "admin" || !supabase) {
+      return res.json({ max: null, current: 0 });
+    }
+    const { data: limits } = await supabase
+      .from("user_limits")
+      .select("max_uploads")
+      .eq("user_id", req.user.id)
+      .maybeSingle();
+    const max = limits?.max_uploads ?? 3;
+    const current = await countUserContent(req.user.id);
+    res.json({ max, current });
+  });
+
+  app.post("/api/upload", upload.single("file"), async (req: any, res) => {
     if (!req.file) {
       return res.status(400).json({ error: "No se recibió archivo" });
     }
 
-    // Para archivos de contenido (PDF/EPUB), aplicar límite de la demo.
+    // Para archivos de contenido (PDF/EPUB/TXT), aplicar el límite que el
+    // admin haya asignado al usuario (user_limits.max_uploads). El admin no
+    // tiene límite.
     const ext = path.extname(req.file.filename).toLowerCase();
     const isContent = ext === ".pdf" || ext === ".epub" || ext === ".txt";
-    if (isContent && DEMO_MAX_UPLOADS > 0 && countUserContent() > DEMO_MAX_UPLOADS) {
-      // El archivo ya fue escrito por multer — borrarlo antes de rechazar.
-      try { fs.unlinkSync(path.join(UPLOAD_DIR, req.file.filename)); } catch { /* ignore */ }
-      return res.status(429).json({
-        error: `La demo permite un máximo de ${DEMO_MAX_UPLOADS} contenidos. Elimina uno antes de subir otro.`,
-        code: "DEMO_LIMIT",
-      });
+    if (isContent && supabase && req.user?.role !== "admin") {
+      const { data: limits } = await supabase
+        .from("user_limits")
+        .select("max_uploads")
+        .eq("user_id", req.user.id)
+        .maybeSingle();
+      const maxUploads = limits?.max_uploads ?? 3;
+      if (maxUploads > 0 && (await countUserContent(req.user.id)) >= maxUploads) {
+        try { fs.unlinkSync(path.join(UPLOAD_DIR, req.file.filename)); } catch { /* ignore */ }
+        return res.status(429).json({
+          error: `Has alcanzado el límite de ${maxUploads} contenidos. Elimina uno antes de subir otro.`,
+          code: "UPLOAD_LIMIT",
+        });
+      }
     }
 
     res.json({
@@ -1112,28 +1793,37 @@ Para cada campo del schema sigue estas instrucciones:
 - veredicto_general: 2-3 oraciones que resuman la solidez global del estudio. Sé directo: ¿es fiable, parcialmente fiable o cuestionable? ¿Por qué?
 - nivel_credibilidad: UNA sola palabra: "alto", "medio" o "bajo". Basado en la suma de todos los criterios.
 
+SEMÁFORO POR CRITERIO: Cada criterio de las secciones de auditoria_epistemologica,
+diseccion_teorica_y_conceptual, escrutinio_metodologico_y_estadistico,
+auditoria_de_sesgos_y_datos_faltantes y detector_de_cientificismo_y_banderas_rojas tiene,
+además de su texto explicativo, un campo "_nivel" hermano con uno de estos 3 valores:
+- "verde": no se detecta problema en ese aspecto, está bien.
+- "amarillo": hay matices, limitaciones menores o incertidumbre a considerar.
+- "rojo": problema significativo detectado en ese aspecto.
+Asigna el nivel según lo que realmente describas en el texto, sin sesgo hacia ningún color.
+
 SECCIÓN auditoria_epistemologica:
-- grado_de_corroboracion_objetiva: ¿Cuántos estudios independientes corroboran los resultados? ¿Son replicables? Menciona si hay corroboración alta, moderada o baja y por qué.
-- infradeterminacion_explicaciones_alternativas: ¿Existen explicaciones alternativas igualmente válidas que el estudio ignora o descarta sin justificación?
+- grado_de_corroboracion_objetiva (+ grado_de_corroboracion_objetiva_nivel): ¿Cuántos estudios independientes corroboran los resultados? ¿Son replicables? Menciona si hay corroboración alta, moderada o baja y por qué.
+- infradeterminacion_explicaciones_alternativas (+ infradeterminacion_explicaciones_alternativas_nivel): ¿Existen explicaciones alternativas igualmente válidas que el estudio ignora o descarta sin justificación?
 
 SECCIÓN diseccion_teorica_y_conceptual:
-- falsabilidad_y_riesgo_popperiano: ¿La hipótesis central podría ser refutada por algún experimento posible? ¿O está formulada de forma que siempre sea "verdadera"?
-- brecha_de_validez_de_constructo: ¿Las métricas usadas miden realmente lo que dicen medir? Evalúa si los constructos teóricos están bien operacionalizados.
-- hipotesis_ad_hoc_lakatosianas: ¿El estudio añade suposiciones auxiliares para salvar su teoría cuando los datos no encajan? Identifica ejemplos concretos si los hay.
+- falsabilidad_y_riesgo_popperiano (+ falsabilidad_y_riesgo_popperiano_nivel): ¿La hipótesis central podría ser refutada por algún experimento posible? ¿O está formulada de forma que siempre sea "verdadera"?
+- brecha_de_validez_de_constructo (+ brecha_de_validez_de_constructo_nivel): ¿Las métricas usadas miden realmente lo que dicen medir? Evalúa si los constructos teóricos están bien operacionalizados.
+- hipotesis_ad_hoc_lakatosianas (+ hipotesis_ad_hoc_lakatosianas_nivel): ¿El estudio añade suposiciones auxiliares para salvar su teoría cuando los datos no encajan? Identifica ejemplos concretos si los hay.
 
 SECCIÓN escrutinio_metodologico_y_estadistico:
-- adecuacion_y_omision_de_controles: ¿Se usaron grupos control adecuados? ¿Qué variables confusoras no se controlaron? Sé específico.
-- robustez_y_relevancia_real: ¿El tamaño del efecto es clínicamente/prácticamente significativo, o solo estadísticamente significativo? ¿Cuál es el intervalo de confianza real?
-- rastros_de_p_hacking: ¿Hay señales de selección de variables post-hoc, análisis múltiples no reportados, umbrales p ajustados o muestras ampliadas hasta obtener p<0.05?
+- adecuacion_y_omision_de_controles (+ adecuacion_y_omision_de_controles_nivel): ¿Se usaron grupos control adecuados? ¿Qué variables confusoras no se controlaron? Sé específico.
+- robustez_y_relevancia_real (+ robustez_y_relevancia_real_nivel): ¿El tamaño del efecto es clínicamente/prácticamente significativo, o solo estadísticamente significativo? ¿Cuál es el intervalo de confianza real?
+- rastros_de_p_hacking (+ rastros_de_p_hacking_nivel): ¿Hay señales de selección de variables post-hoc, análisis múltiples no reportados, umbrales p ajustados o muestras ampliadas hasta obtener p<0.05?
 
 SECCIÓN auditoria_de_sesgos_y_datos_faltantes:
-- sesgo_de_reporte_interno: ¿Se reportan todos los resultados o solo los favorables? ¿Hay discrepancias entre métodos declarados y resultados reportados?
-- alineacion_de_incentivos: ¿Quién financia el estudio? ¿Los autores tienen conflictos de interés? ¿El diseño favorece sistemáticamente un resultado?
+- sesgo_de_reporte_interno (+ sesgo_de_reporte_interno_nivel): ¿Se reportan todos los resultados o solo los favorables? ¿Hay discrepancias entre métodos declarados y resultados reportados?
+- alineacion_de_incentivos (+ alineacion_de_incentivos_nivel): ¿Quién financia el estudio? ¿Los autores tienen conflictos de interés? ¿El diseño favorece sistemáticamente un resultado?
 
 SECCIÓN detector_de_cientificismo_y_banderas_rojas:
-- brecha_causal_y_extrapolacion: ¿El estudio infiere causalidad de datos correlacionales? ¿Generaliza a poblaciones/contextos no estudiados?
-- cherry_picking_contextual: ¿Se ignoran estudios previos contradictorios? ¿Se seleccionan solo los datos que confirman la hipótesis?
-- opacidad_para_refutacion: ¿Los datos crudos son accesibles? ¿El protocolo fue pre-registrado? ¿Es reproducible el análisis?
+- brecha_causal_y_extrapolacion (+ brecha_causal_y_extrapolacion_nivel): ¿El estudio infiere causalidad de datos correlacionales? ¿Generaliza a poblaciones/contextos no estudiados?
+- cherry_picking_contextual (+ cherry_picking_contextual_nivel): ¿Se ignoran estudios previos contradictorios? ¿Se seleccionan solo los datos que confirman la hipótesis?
+- opacidad_para_refutacion (+ opacidad_para_refutacion_nivel): ¿Los datos crudos son accesibles? ¿El protocolo fue pre-registrado? ¿Es reproducible el análisis?
 
 SECCIÓN sintesis_para_el_pensamiento_critico:
 - la_realidad_de_los_datos_crudos: En 1-2 oraciones contundentes: ¿qué dicen realmente los datos, sin el spin del resumen de los autores?
@@ -1156,44 +1846,75 @@ SECCIÓN guia_de_aprendizaje:
                 type: Type.OBJECT,
                 properties: {
                   grado_de_corroboracion_objetiva: { type: Type.STRING },
+                  grado_de_corroboracion_objetiva_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                   infradeterminacion_explicaciones_alternativas: { type: Type.STRING },
+                  infradeterminacion_explicaciones_alternativas_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                 },
-                required: ["grado_de_corroboracion_objetiva", "infradeterminacion_explicaciones_alternativas"],
+                required: [
+                  "grado_de_corroboracion_objetiva", "grado_de_corroboracion_objetiva_nivel",
+                  "infradeterminacion_explicaciones_alternativas", "infradeterminacion_explicaciones_alternativas_nivel",
+                ],
               },
               diseccion_teorica_y_conceptual: {
                 type: Type.OBJECT,
                 properties: {
                   falsabilidad_y_riesgo_popperiano: { type: Type.STRING },
+                  falsabilidad_y_riesgo_popperiano_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                   brecha_de_validez_de_constructo: { type: Type.STRING },
+                  brecha_de_validez_de_constructo_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                   hipotesis_ad_hoc_lakatosianas: { type: Type.STRING },
+                  hipotesis_ad_hoc_lakatosianas_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                 },
-                required: ["falsabilidad_y_riesgo_popperiano", "brecha_de_validez_de_constructo", "hipotesis_ad_hoc_lakatosianas"],
+                required: [
+                  "falsabilidad_y_riesgo_popperiano", "falsabilidad_y_riesgo_popperiano_nivel",
+                  "brecha_de_validez_de_constructo", "brecha_de_validez_de_constructo_nivel",
+                  "hipotesis_ad_hoc_lakatosianas", "hipotesis_ad_hoc_lakatosianas_nivel",
+                ],
               },
               escrutinio_metodologico_y_estadistico: {
                 type: Type.OBJECT,
                 properties: {
                   adecuacion_y_omision_de_controles: { type: Type.STRING },
+                  adecuacion_y_omision_de_controles_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                   robustez_y_relevancia_real: { type: Type.STRING },
+                  robustez_y_relevancia_real_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                   rastros_de_p_hacking: { type: Type.STRING },
+                  rastros_de_p_hacking_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                 },
-                required: ["adecuacion_y_omision_de_controles", "robustez_y_relevancia_real", "rastros_de_p_hacking"],
+                required: [
+                  "adecuacion_y_omision_de_controles", "adecuacion_y_omision_de_controles_nivel",
+                  "robustez_y_relevancia_real", "robustez_y_relevancia_real_nivel",
+                  "rastros_de_p_hacking", "rastros_de_p_hacking_nivel",
+                ],
               },
               auditoria_de_sesgos_y_datos_faltantes: {
                 type: Type.OBJECT,
                 properties: {
                   sesgo_de_reporte_interno: { type: Type.STRING },
+                  sesgo_de_reporte_interno_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                   alineacion_de_incentivos: { type: Type.STRING },
+                  alineacion_de_incentivos_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                 },
-                required: ["sesgo_de_reporte_interno", "alineacion_de_incentivos"],
+                required: [
+                  "sesgo_de_reporte_interno", "sesgo_de_reporte_interno_nivel",
+                  "alineacion_de_incentivos", "alineacion_de_incentivos_nivel",
+                ],
               },
               detector_de_cientificismo_y_banderas_rojas: {
                 type: Type.OBJECT,
                 properties: {
                   brecha_causal_y_extrapolacion: { type: Type.STRING },
+                  brecha_causal_y_extrapolacion_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                   cherry_picking_contextual: { type: Type.STRING },
+                  cherry_picking_contextual_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                   opacidad_para_refutacion: { type: Type.STRING },
+                  opacidad_para_refutacion_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
                 },
-                required: ["brecha_causal_y_extrapolacion", "cherry_picking_contextual", "opacidad_para_refutacion"],
+                required: [
+                  "brecha_causal_y_extrapolacion", "brecha_causal_y_extrapolacion_nivel",
+                  "cherry_picking_contextual", "cherry_picking_contextual_nivel",
+                  "opacidad_para_refutacion", "opacidad_para_refutacion_nivel",
+                ],
               },
               sintesis_para_el_pensamiento_critico: {
                 type: Type.OBJECT,
@@ -1282,6 +2003,9 @@ SECCIÓN guia_de_aprendizaje:
     if (ALLOW_PROXY_HOSTS.length > 0) {
       console.log(`Proxy whitelist: ${ALLOW_PROXY_HOSTS.join(", ")}`);
     }
+    checkDbConnection().then(r => {
+      console.log(r.ok ? `[DB] Conectado a Supabase (usuarios: ${r.count})` : `[DB] Sin conexión a Supabase: ${r.error}`);
+    });
   });
 }
 

@@ -12,11 +12,11 @@
 //   - `targetPage` permite saltar a una página desde fuera (citas, bookmark).
 // =============================================================================
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { Document, Page, Outline, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
-import { ZoomIn, ZoomOut, List, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ZoomIn, ZoomOut, List, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { get } from 'idb-keyval';
 
@@ -26,6 +26,16 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
+// Virtualización del visor: si es `true`, solo se montan (dibujan) las páginas
+// dentro del rango visible (± OVERSCAN); el resto son placeholders con la altura
+// reservada. Esto evita tener cientos de <canvas> vivos a la vez (causa del
+// freeze). Poner en `false` para revertir EXACTAMENTE al comportamiento anterior
+// (todas las páginas montadas).
+const VIRTUALIZE = true;
+// Páginas extra a montar antes/después de la página visible (margen para que el
+// scroll no muestre huecos en blanco antes de que se dibuje la siguiente).
+const OVERSCAN = 2;
+
 interface PDFReaderProps {
   url: string;
   hideControls?: boolean;
@@ -34,27 +44,39 @@ interface PDFReaderProps {
   // Desplaza la barra flotante de zoom/paginación hacia arriba para que no
   // quede tapada por el reproductor TTS cuando está visible.
   bottomOffset?: number;
+  // Controla la visibilidad de la barra (auto-ocultado por inactividad,
+  // controlado desde ReaderView). Por defecto siempre visible.
+  controlsVisible?: boolean;
 }
 
-export function PDFReader({ url, hideControls = false, onPageChange, targetPage, bottomOffset = 0 }: PDFReaderProps) {
+function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPage, bottomOffset = 0, controlsVisible = true }: PDFReaderProps) {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
+  const [manuallyHidden, setManuallyHidden] = useState(false);
   
   const [scrollingPage, setScrollingPage] = useState<boolean>(false);
   const visiblePagesHeight = useRef<Record<number, number>>({});
+
+  // Rango de páginas a montar realmente (1-based, inclusivo) cuando VIRTUALIZE.
+  const [renderRange, setRenderRange] = useState<{ start: number; end: number }>({ start: 1, end: 1 + OVERSCAN });
   
   const handlePageChange = useCallback((newPage: number) => {
     if (newPage < 1 || newPage > (numPages || 1)) return;
     setScrollingPage(true);
     setPageNumber(newPage);
-    const pageEl = document.getElementById(`pdf-page-${newPage}`);
-    if (pageEl) {
-       pageEl.scrollIntoView({ behavior: 'smooth' });
-       setTimeout(() => setScrollingPage(false), 800);
-    } else {
-       setScrollingPage(false);
-    }
+    // setPageNumber dispara el efecto que amplía renderRange para incluir newPage,
+    // de modo que su <Page> real se monte. El placeholder ya tiene el mismo id y
+    // altura, así que el scroll inicial aterriza en la posición correcta; tras el
+    // montaje re-scrolleamos una vez para corregir cualquier ajuste de altura.
+    const scrollToPage = (smooth: boolean) => {
+      const pageEl = document.getElementById(`pdf-page-${newPage}`);
+      if (pageEl) pageEl.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' });
+    };
+    scrollToPage(true);
+    const t1 = setTimeout(() => scrollToPage(false), 350);
+    const t2 = setTimeout(() => setScrollingPage(false), 800);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [numPages]);
 
   useEffect(() => {
@@ -67,6 +89,16 @@ export function PDFReader({ url, hideControls = false, onPageChange, targetPage,
     // Sync page change up
     if (onPageChange) onPageChange(pageNumber);
   }, [pageNumber, onPageChange]);
+
+  // Mantener el rango virtualizado centrado en la página visible. Solo se amplía
+  // (nunca se reduce por debajo de lo ya montado en este "vecindario") para
+  // evitar parpadeos al hacer micro-scroll; React desmonta lo que queda fuera.
+  useEffect(() => {
+    if (numPages === null) return;
+    const start = Math.max(1, pageNumber - OVERSCAN);
+    const end = Math.min(numPages, pageNumber + OVERSCAN);
+    setRenderRange(prev => (prev.start === start && prev.end === end ? prev : { start, end }));
+  }, [pageNumber, numPages]);
 
   useEffect(() => {
     if (numPages === null) return;
@@ -326,23 +358,43 @@ export function PDFReader({ url, hideControls = false, onPageChange, targetPage,
               onTouchEnd={handleTouchEnd}
            >
               <div className="flex flex-col items-center gap-4 md:gap-8 pb-10">
-                 {Array.from(new Array(numPages || 1), (el, index) => {
+                 {Array.from(new Array(numPages || 1), (_el, index) => {
+                    const pageNum = index + 1;
                     const TOOLBAR_BOTTOM = 64;   // 44 px toolbar + márgenes
                     const VERTICAL_PADDING = 64; // pt-4 + pb-12 + breathing room
                     const availableHeight = Math.max((containerHeight || 800) - TOOLBAR_BOTTOM - VERTICAL_PADDING, 320);
                     const widthCap = Math.max((containerWidth || 600) - 32, 280);
+
+                    // El contenedor externo (id, data-page-number, sombra/borde) se
+                    // renderiza SIEMPRE para no romper el IntersectionObserver, el
+                    // scrollIntoView ni el resaltado de citas (que buscan por id).
+                    // Solo se monta el <Page> real (canvas + text-layer) si la
+                    // página está dentro del rango visible — o si VIRTUALIZE=false.
+                    const shouldRender = !VIRTUALIZE || (pageNum >= renderRange.start && pageNum <= renderRange.end);
+
                     return (
-                      <div key={`page_${index + 1}`} id={`pdf-page-${index + 1}`} data-page-number={index + 1} className="shadow-lg border border-[var(--border-card)] rounded-sm">
-                        <Page
-                           pageNumber={index + 1}
-                           scale={scale}
-                           height={availableHeight}
-                           width={undefined as unknown as number}
-                           renderTextLayer={true}
-                           renderAnnotationLayer={true}
-                           className="bg-white"
-                           {...(widthCap < availableHeight * 0.6 ? { width: widthCap, height: undefined } : {})}
-                        />
+                      <div key={`page_${pageNum}`} id={`pdf-page-${pageNum}`} data-page-number={pageNum} className="shadow-lg border border-[var(--border-card)] rounded-sm">
+                        {shouldRender ? (
+                          <Page
+                             pageNumber={pageNum}
+                             scale={scale}
+                             height={availableHeight}
+                             width={undefined as unknown as number}
+                             renderTextLayer={true}
+                             renderAnnotationLayer={true}
+                             className="bg-white"
+                             {...(widthCap < availableHeight * 0.6 ? { width: widthCap, height: undefined } : {})}
+                          />
+                        ) : (
+                          // Placeholder con la altura reservada: mantiene el layout y
+                          // el scroll estables sin pintar el canvas.
+                          <div
+                            className="bg-white flex items-center justify-center text-slate-300"
+                            style={{ height: `${availableHeight}px`, width: `${Math.min(widthCap, availableHeight * 0.75)}px` }}
+                          >
+                            <span className="text-xs">{pageNum}</span>
+                          </div>
+                        )}
                       </div>
                     );
                  })}
@@ -352,44 +404,47 @@ export function PDFReader({ url, hideControls = false, onPageChange, targetPage,
          {/* Toolbar Static at Bottom */}
          {!hideControls && (
            <div
-             className="absolute left-1/2 -translate-x-1/2 flex items-center justify-center pointer-events-auto z-30 w-max max-w-[95%] transition-[bottom] duration-300"
+             className={cn(
+               "absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none z-30 w-[calc(100%-1.5rem)] sm:w-auto sm:max-w-xl transition-all duration-300",
+               (controlsVisible && !manuallyHidden) ? "opacity-100" : "opacity-0 translate-y-2"
+             )}
              style={{ bottom: `${16 + bottomOffset}px` }}
            >
-             <div className="flex items-center gap-1 sm:gap-4 px-2 sm:px-4 py-2 bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-main)] shadow-2xl rounded-full backdrop-blur-md justify-center transition-all min-h-[44px] whitespace-nowrap">
-              
+             <div className="flex items-center justify-center gap-1 sm:gap-4 px-2 sm:px-4 py-2.5 sm:py-3 w-full sm:w-auto bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-main)] shadow-2xl rounded-full backdrop-blur-md transition-all min-h-[48px] whitespace-nowrap pointer-events-auto">
+
               <div className="flex items-center">
-                 <button 
-                   onClick={() => setShowOutline(!showOutline)} 
+                 <button
+                   onClick={() => setShowOutline(!showOutline)}
                    className={cn(
-                     "p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
+                     "p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
                      showOutline && "text-[var(--primary)] bg-[var(--primary)]/10"
-                   )} 
+                   )}
                    title="Índice"
                  >
-                    <List className="w-4 h-4 sm:w-[18px] sm:h-[18px]" />
+                    <List className="w-5 h-5" />
                  </button>
               </div>
 
               <div className="w-px h-4 bg-[var(--border-card)]" />
 
               <div className="flex items-center gap-1">
-                 <button 
-                   disabled={pageNumber <= 1} 
-                   onClick={() => handlePageChange(pageNumber - 1)} 
-                   className="p-1 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
+                 <button
+                   disabled={pageNumber <= 1}
+                   onClick={() => handlePageChange(pageNumber - 1)}
+                   className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
                    title="Página Anterior"
                  >
                    <ChevronLeft className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
                  </button>
-                 
-                 <span className="text-xs sm:text-sm font-mono font-bold min-w-[3.5rem] text-center px-1 tabular-nums whitespace-nowrap">
-                   {pageNumber} <span className="opacity-40 font-normal text-[10px] sm:text-xs">/ {numPages || '--'}</span>
+
+                 <span className="text-sm font-mono font-bold min-w-[3.5rem] text-center px-1 tabular-nums whitespace-nowrap">
+                   {pageNumber} <span className="opacity-40 font-normal text-xs">/ {numPages || '--'}</span>
                  </span>
 
-                 <button 
-                   disabled={pageNumber >= (numPages || 1)} 
-                   onClick={() => handlePageChange(pageNumber + 1)} 
-                   className="p-1 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
+                 <button
+                   disabled={pageNumber >= (numPages || 1)}
+                   onClick={() => handlePageChange(pageNumber + 1)}
+                   className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
                    title="Siguiente Página"
                  >
                    <ChevronRight className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
@@ -399,26 +454,55 @@ export function PDFReader({ url, hideControls = false, onPageChange, targetPage,
               <div className="w-px h-4 bg-[var(--border-card)]" />
 
               <div className="flex items-center gap-1">
-                 <button 
-                   onClick={zoomOut} 
-                   className="p-1 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+                 <button
+                   onClick={zoomOut}
+                   className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
                    title="Alejar Zoom"
                  >
-                   <ZoomOut className="w-4 h-4 sm:w-[18px] sm:h-[18px]" />
+                   <ZoomOut className="w-5 h-5" />
                  </button>
-                 <span className="text-[10px] sm:text-xs font-mono font-semibold w-9 text-center tabular-nums">{Math.round(scale * 100)}%</span>
-                 <button 
-                   onClick={zoomIn} 
-                   className="p-1 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+                 <span className="text-xs font-mono font-semibold w-9 text-center tabular-nums">{Math.round(scale * 100)}%</span>
+                 <button
+                   onClick={zoomIn}
+                   className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
                    title="Acercar Zoom"
                  >
-                   <ZoomIn className="w-4 h-4 sm:w-[18px] sm:h-[18px]" />
+                   <ZoomIn className="w-5 h-5" />
                  </button>
               </div>
+
+              <div className="w-px h-4 bg-[var(--border-card)]" />
+
+              <button
+                onClick={() => setManuallyHidden(true)}
+                className="p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+                title="Ocultar controles"
+              >
+                <ChevronDown className="w-5 h-5" />
+              </button>
              </div>
            </div>
+         )}
+
+         {/* Asa para volver a mostrar la barra cuando se ocultó manualmente */}
+         {!hideControls && manuallyHidden && (
+           <button
+             onClick={() => setManuallyHidden(false)}
+             className="absolute left-1/2 -translate-x-1/2 z-30 p-2 rounded-full bg-[var(--bg-card)]/70 border border-[var(--border-card)] text-[var(--text-muted)] shadow-md backdrop-blur-md pointer-events-auto transition-all"
+             style={{ bottom: `${8 + bottomOffset}px` }}
+             title="Mostrar controles"
+           >
+             <ChevronUp className="w-4 h-4" />
+           </button>
          )}
         </div>
     </Document>
   );
 }
+
+// Memoizado: evita que el PDF se vuelva a renderizar (y reconcilie todas sus
+// páginas) cuando ReaderView re-renderiza por causas ajenas al visor (abrir
+// "Administrar Citas", panel de notas, TTS, etc.). Las props que recibe son
+// estables (url string, handlePageChange en useCallback, primitivos, y
+// targetPage que solo cambia al navegar).
+export const PDFReader = memo(PDFReaderComponent);

@@ -2,23 +2,22 @@
 // useLibrary.tsx — Estado global de la Biblioteca (Context API)
 // -----------------------------------------------------------------------------
 // Único provider de la app. Mantiene en memoria todas las colecciones
-// (items, playlists, categories, tags, stages) + preferencias de UI
-// (theme, fontFamily, cardSettings) y las sincroniza con localStorage.
+// (items, playlists, categories, stages) + preferencias de UI (theme,
+// fontFamily, cardSettings) y las sincroniza con el backend (Supabase) vía
+// /api/library/*.
 //
-// CLAVES EN localStorage:
-//   - library_items, library_playlists, library_categories, library_tags
-//   - library_theme, library_font, library_card_settings
+// Al montar, hace GET /api/library/state (que crea valores por defecto si el
+// usuario es nuevo) y luego cada mutación llama al endpoint correspondiente,
+// actualizando el estado local con la respuesta del servidor.
 //
 // LIMITACIONES ACTUALES:
-//   - Los archivos PDF/EPUB grandes NO viven aquí: se persisten aparte vía
-//     idb-keyval (clave 'idb://...'). Solo la metadata vive en localStorage.
-//   - No hay sincronización entre dispositivos (todo es local-first).
+//   - Los archivos PDF/EPUB grandes NO viven aquí: se persisten aparte
+//     (servidor / idb-keyval legado). Solo la metadata vive en library_items.
 //   - Las stages son fijas (initialStages, no se persisten).
 // =============================================================================
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { BookItem, PlaylistData, StageData, CategoryData, CardSettings } from '../types';
-import { v4 as uuidv4 } from 'uuid';
 import { deleteUploadedFile } from '../lib/uploadFile';
 
 // Temas disponibles (ver index.css → [data-theme="..."] para los tokens CSS).
@@ -33,6 +32,8 @@ interface LibraryContextType {
   theme: ThemeMode;
   fontFamily: FontFamily;
   cardSettings: CardSettings;
+  viewMode: 'covers' | 'grid' | 'grid-compact' | 'list';
+  sortBy: 'manual' | 'recent' | 'oldest' | 'alpha';
 
   addItem: (item: Omit<BookItem, 'id' | 'timestamp'>) => void;
   updateItem: (id: string, updates: Partial<BookItem>) => void;
@@ -49,6 +50,8 @@ interface LibraryContextType {
   setTheme: (theme: ThemeMode) => void;
   setFontFamily: (font: FontFamily) => void;
   setCardSettings: (settings: CardSettings) => void;
+  setViewMode: (mode: 'covers' | 'grid' | 'grid-compact' | 'list') => void;
+  setSortBy: (sort: 'manual' | 'recent' | 'oldest' | 'alpha') => void;
 
   reorderItems: (activeId: string, overId: string) => void;
 }
@@ -63,133 +66,60 @@ const initialStages: StageData[] = [
   { id: '5', name: 'Edad Contemporánea' },
 ];
 
-const initialPlaylists: PlaylistData[] = [
-  { id: 'p1', name: 'Filosofía Política', color: 'bg-[#00558F]' },
-  { id: 'p2', name: 'Economía Clásica', color: 'bg-[#FFA300]' },
-];
+const DEFAULT_CARD_SETTINGS: CardSettings = {
+  showAuthor: true,
+  showYear: true,
+  showProgress: true,
+  showType: true,
+  showPhysicalStatus: true,
+  showRating: true,
+};
 
-// Listas temáticas añadidas a petición del usuario, con los colores de su
-// captura de referencia. Se agregan vía migración para que también aparezcan
-// en bibliotecas ya existentes (ver bloque de migración de playlists abajo).
-const newThematicPlaylists: PlaylistData[] = [
-  { id: 'pl-historia', name: 'Historia', color: 'bg-[#C9A227]' },
-  { id: 'pl-negocios', name: 'Negocios', color: 'bg-[#4FBF9F]' },
-  { id: 'pl-matematicas', name: 'Matemáticas', color: 'bg-[#B5651D]' },
-  { id: 'pl-ciencia', name: 'Ciencia', color: 'bg-[#8CC152]' },
-  { id: 'pl-politica', name: 'Política', color: 'bg-[#5C1A1B]' },
-  { id: 'pl-musica', name: 'Música', color: 'bg-[#C0392B]' },
-  { id: 'pl-religion', name: 'Religión', color: 'bg-[#E8806B]' },
-  { id: 'pl-arte', name: 'Arte', color: 'bg-[#7B4F9E]' },
-  { id: 'pl-filosofia', name: 'Filosofía', color: 'bg-[#7A3B5E]' },
-  { id: 'pl-geopolitica', name: 'Geopolítica', color: 'bg-[#4A4A4A]' },
-];
-
-const initialCategories: CategoryData[] = [
-  { id: 'libros', name: 'Libros' },
-  { id: 'revistas', name: 'Revistas' },
-  { id: 'articulos', name: 'Artículos' }
-];
+async function apiFetch(url: string, options?: RequestInit) {
+  const res = await fetch(url, {
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Error en ${url}`);
+  }
+  return res.json();
+}
 
 export function LibraryProvider({ children }: { children: ReactNode }) {
-  // MIGRACIÓN: el sistema de etiquetas se eliminó durante el desarrollo.
-  // - Borramos el almacén `library_tags`.
-  // - Quitamos el array `tags` de cada item existente.
-  // Se ejecuta una vez por sesión sin marcar versión; es idempotente.
-  const [items, setItems] = useState<BookItem[]>(() => {
-    const saved = localStorage.getItem('library_items');
-    return saved ? JSON.parse(saved) : [];
-  });
-  
-  const [playlists, setPlaylists] = useState<PlaylistData[]>(() => {
-    const saved = localStorage.getItem('library_playlists');
-    const parsed: PlaylistData[] = saved ? JSON.parse(saved) : [...initialPlaylists];
-
-    // Agrega las nuevas listas temáticas si aún no existen (por nombre).
-    const existingNames = new Set(parsed.map(p => p.name.toLowerCase()));
-    for (const pl of newThematicPlaylists) {
-      if (!existingNames.has(pl.name.toLowerCase())) {
-        parsed.push(pl);
-      }
-    }
-
-    return parsed;
-  });
-
-  // MIGRACIÓN DE CATEGORÍAS: versiones antiguas guardaban 'libro' / 'articulo'
-  // (singular) o nombres distintos. Este bloque normaliza a 'libros', 'revistas',
-  // 'articulos' y garantiza que las tres categorías base existan siempre.
-  const [categories, setCategories] = useState<CategoryData[]>(() => {
-    const saved = localStorage.getItem('library_categories');
-    let parsed: CategoryData[] = saved ? JSON.parse(saved) : [...initialCategories];
-
-    // Check if we need to migrate old or missing items to match the user's explicit request
-    const hasLibros = parsed.some(c => c.name.toLowerCase() === 'libros' || c.name.toLowerCase() === 'mis libros');
-    const hasRevistas = parsed.some(c => c.name.toLowerCase() === 'revistas');
-    const hasArticulos = parsed.some(c => c.name.toLowerCase() === 'artículos' || c.name.toLowerCase() === 'mis artículos' || c.name.toLowerCase() === 'artículos web');
-    
-    if (!hasLibros) {
-      const oldLib = parsed.find(c => c.id === 'libro');
-      if (oldLib) {
-        oldLib.name = 'Libros';
-      } else {
-        parsed.unshift({ id: 'libros', name: 'Libros' });
-      }
-    } else {
-      const oldLib = parsed.find(c => c.name.toLowerCase() === 'libros' || c.name.toLowerCase() === 'mis libros');
-      if (oldLib) {
-        oldLib.id = 'libros';
-        oldLib.name = 'Libros';
-      }
-    }
-    
-    if (!hasRevistas) {
-      parsed.push({ id: 'revistas', name: 'Revistas' });
-    }
-    
-    if (!hasArticulos) {
-      const oldArt = parsed.find(c => c.id === 'articulo');
-      if (oldArt) {
-        oldArt.name = 'Artículos';
-      } else {
-        parsed.push({ id: 'articulos', name: 'Artículos' });
-      }
-    } else {
-      const oldArt = parsed.find(c => c.name.toLowerCase() === 'artículos' || c.name.toLowerCase() === 'mis artículos' || c.name.toLowerCase() === 'artículos web');
-      if (oldArt) {
-        oldArt.id = 'articulos';
-        oldArt.name = 'Artículos';
-      }
-    }
-    
-    // Filter duplicates
-    parsed = parsed.filter((c, index, self) => self.findIndex(t => t.id === c.id || t.name === c.name) === index);
-    
-    return parsed;
-  });
-  
-  const [theme, setTheme] = useState<ThemeMode>(() => {
-    return (localStorage.getItem('library_theme') as ThemeMode) || 'blue';
-  });
-
-  const [fontFamily, setFontFamily] = useState<FontFamily>(() => {
-    return (localStorage.getItem('library_font') as FontFamily) || 'Inter';
-  });
-
-  const [cardSettings, setCardSettings] = useState<CardSettings>(() => {
-    const saved = localStorage.getItem('library_card_settings');
-    const defaults: CardSettings = { showAuthor: true, showYear: true, showProgress: true, showType: true, showPhysicalStatus: true, showRating: true };
-    if (!saved) return defaults;
-    // Filtramos campos obsoletos como showTags al rehidratar.
-    const parsed = JSON.parse(saved) as Partial<CardSettings> & { showTags?: boolean };
-    delete parsed.showTags;
-    return { ...defaults, ...parsed };
-  });
-
+  const [items, setItems] = useState<BookItem[]>([]);
+  const [playlists, setPlaylists] = useState<PlaylistData[]>([]);
+  const [categories, setCategories] = useState<CategoryData[]>([]);
+  const [theme, setThemeState] = useState<ThemeMode>('blue');
+  const [fontFamily, setFontFamilyState] = useState<FontFamily>('Inter');
+  const [cardSettings, setCardSettingsState] = useState<CardSettings>(DEFAULT_CARD_SETTINGS);
+  const [viewMode, setViewModeState] = useState<'covers' | 'grid' | 'grid-compact' | 'list'>('grid');
+  const [sortBy, setSortByState] = useState<'manual' | 'recent' | 'oldest' | 'alpha'>('manual');
   const [stages] = useState<StageData[]>(initialStages);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    apiFetch('/api/library/state')
+      .then((data) => {
+        setItems(data.items ?? []);
+        setPlaylists(data.playlists ?? []);
+        setCategories(data.categories ?? []);
+        if (data.settings) {
+          setThemeState(data.settings.theme || 'blue');
+          setFontFamilyState(data.settings.fontFamily || 'Inter');
+          setCardSettingsState({ ...DEFAULT_CARD_SETTINGS, ...(data.settings.cardSettings || {}) });
+          if (data.settings.viewMode) setViewModeState(data.settings.viewMode);
+          if (data.settings.sortBy) setSortByState(data.settings.sortBy);
+        }
+      })
+      .catch((err) => console.error('No se pudo cargar la biblioteca:', err))
+      .finally(() => setLoaded(true));
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem('library_theme', theme);
   }, [theme]);
 
   useEffect(() => {
@@ -199,59 +129,61 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     if (fontFamily === 'Poppins') fontValue = '"Poppins", sans-serif';
     if (fontFamily === 'Roboto') fontValue = '"Roboto", sans-serif';
     document.documentElement.style.setProperty('--app-font', fontValue);
-    localStorage.setItem('library_font', fontFamily);
   }, [fontFamily]);
 
-  useEffect(() => {
-    localStorage.setItem('library_card_settings', JSON.stringify(cardSettings));
-  }, [cardSettings]);
+  const setTheme = (next: ThemeMode) => {
+    setThemeState(next);
+    apiFetch('/api/library/settings', { method: 'PUT', body: JSON.stringify({ theme: next }) }).catch((err) => console.error(err));
+  };
 
-  useEffect(() => {
-    localStorage.setItem('library_items', JSON.stringify(items));
-  }, [items]);
+  const setFontFamily = (next: FontFamily) => {
+    setFontFamilyState(next);
+    apiFetch('/api/library/settings', { method: 'PUT', body: JSON.stringify({ fontFamily: next }) }).catch((err) => console.error(err));
+  };
 
-  useEffect(() => {
-    localStorage.setItem('library_playlists', JSON.stringify(playlists));
-  }, [playlists]);
+  const setCardSettings = (next: CardSettings) => {
+    setCardSettingsState(next);
+    apiFetch('/api/library/settings', { method: 'PUT', body: JSON.stringify({ cardSettings: next }) }).catch((err) => console.error(err));
+  };
 
-  useEffect(() => {
-    localStorage.setItem('library_categories', JSON.stringify(categories));
-  }, [categories]);
+  const setViewMode = (next: 'covers' | 'grid' | 'grid-compact' | 'list') => {
+    setViewModeState(next);
+    apiFetch('/api/library/settings', { method: 'PUT', body: JSON.stringify({ viewMode: next }) }).catch((err) => console.error(err));
+  };
+
+  const setSortBy = (next: 'manual' | 'recent' | 'oldest' | 'alpha') => {
+    setSortByState(next);
+    apiFetch('/api/library/settings', { method: 'PUT', body: JSON.stringify({ sortBy: next }) }).catch((err) => console.error(err));
+  };
 
   const addItem = (item: Omit<BookItem, 'id' | 'timestamp'>) => {
-    const newItem: BookItem = {
-      ...item,
-      id: uuidv4(),
-      timestamp: Date.now(),
-      listIndex: items.length,
-    };
-    setItems((prev) => [newItem, ...prev]);
+    const payload = { ...item, timestamp: Date.now(), listIndex: 0 };
+    apiFetch('/api/library/items', { method: 'POST', body: JSON.stringify(payload) })
+      .then((data) => setItems((prev) => [data.item, ...prev]))
+      .catch((err) => console.error('No se pudo crear el item:', err));
   };
 
   const updateItem = (id: string, updates: Partial<BookItem>) => {
-    setItems((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, ...updates } : item))
-    );
+    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...updates } : item)));
+    apiFetch(`/api/library/items/${id}`, { method: 'PUT', body: JSON.stringify(updates) })
+      .catch((err) => console.error('No se pudo actualizar el item:', err));
   };
 
-  // FIX (§7.3): al borrar un item hay que limpiar:
-  //   1. Su entrada en library_items (estado react).
-  //   2. Sus notas      → localStorage[`notes-${id}`].
-  //   3. Su paleta      → localStorage[`color-palette-${id}`].
-  //   4. Sus archivos en el servidor (PDF/EPUB + portada) si están en /api/files/.
-  // Si no se limpia, las notas quedan huérfanas para siempre y los PDFs
-  // ocupan espacio en disco aunque ya no haya referencia a ellos.
+  // Al borrar un item hay que limpiar:
+  //   1. Su entrada en library_items.
+  //   2. Sus notas/paleta/marcadores asociados (document_notes + document_settings).
+  //   3. Sus archivos en el servidor (PDF/EPUB + portada) si están en /api/files/.
   const deleteItem = (id: string) => {
     const itemToDelete = items.find((i) => i.id === id);
     setItems((prev) => prev.filter((item) => item.id !== id));
 
-    try {
-      localStorage.removeItem(`notes-${id}`);
-      localStorage.removeItem(`color-palette-${id}`);
-      localStorage.removeItem(`bookmarks-${id}`);
-    } catch (err) {
-      console.warn('No se pudieron limpiar datos locales del item borrado:', err);
-    }
+    apiFetch(`/api/library/items/${id}`, { method: 'DELETE' })
+      .catch((err) => console.error('No se pudo borrar el item:', err));
+
+    apiFetch(`/api/documents/${id}`, { method: 'DELETE' })
+      .catch((err) => console.error('No se pudieron borrar las notas del documento:', err));
+    apiFetch(`/api/documents/${encodeURIComponent(`${id}::bookmarks`)}`, { method: 'DELETE' })
+      .catch((err) => console.error('No se pudieron borrar los marcadores del documento:', err));
 
     if (itemToDelete?.source?.startsWith('/api/files/')) {
       deleteUploadedFile(itemToDelete.source);
@@ -262,53 +194,64 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   };
 
   const addPlaylist = (playlist: Omit<PlaylistData, 'id'>) => {
-    setPlaylists((prev) => [
-      ...prev,
-      { ...playlist, id: uuidv4() },
-    ]);
+    apiFetch('/api/library/playlists', { method: 'POST', body: JSON.stringify(playlist) })
+      .then((data) => setPlaylists((prev) => [...prev, data.playlist]))
+      .catch((err) => console.error('No se pudo crear la lista:', err));
   };
 
   const updatePlaylist = (id: string, updates: Partial<PlaylistData>) => {
-    setPlaylists((prev) =>
-      prev.map((pl) => (pl.id === id ? { ...pl, ...updates } : pl))
-    );
+    setPlaylists((prev) => prev.map((pl) => (pl.id === id ? { ...pl, ...updates } : pl)));
+    apiFetch(`/api/library/playlists/${id}`, { method: 'PUT', body: JSON.stringify(updates) })
+      .catch((err) => console.error('No se pudo actualizar la lista:', err));
   };
 
   const deletePlaylist = (id: string) => {
     setPlaylists((prev) => prev.filter((pl) => pl.id !== id));
-    // Remove from all items
-    setItems((prev) => 
-      prev.map(item => ({
-        ...item,
-        folderIds: item.folderIds.filter(fId => fId !== id)
-      }))
-    );
+    setItems((prev) => prev.map((item) => ({ ...item, folderIds: item.folderIds.filter((fId) => fId !== id) })));
+    apiFetch(`/api/library/playlists/${id}`, { method: 'DELETE' })
+      .catch((err) => console.error('No se pudo borrar la lista:', err));
   };
 
   const addCategory = (category: Omit<CategoryData, 'id'>) => {
-    setCategories((prev) => [...prev, { ...category, id: uuidv4() }]);
+    apiFetch('/api/library/categories', { method: 'POST', body: JSON.stringify(category) })
+      .then((data) => setCategories((prev) => [...prev, data.category]))
+      .catch((err) => console.error('No se pudo crear la categoría:', err));
   };
 
   const updateCategory = (id: string, updates: Partial<CategoryData>) => {
     setCategories((prev) => prev.map((c) => (c.id === id ? { ...c, ...updates } : c)));
+    apiFetch(`/api/library/categories/${id}`, { method: 'PUT', body: JSON.stringify(updates) })
+      .catch((err) => console.error('No se pudo actualizar la categoría:', err));
   };
 
   const deleteCategory = (id: string) => {
     setCategories((prev) => prev.filter((c) => c.id !== id));
+    apiFetch(`/api/library/categories/${id}`, { method: 'DELETE' })
+      .catch((err) => console.error('No se pudo borrar la categoría:', err));
   };
 
   const reorderItems = (activeId: string, overId: string) => {
     setItems((items) => {
       const oldIndex = items.findIndex((i) => i.id === activeId);
       const newIndex = items.findIndex((i) => i.id === overId);
-      
+
       const newItems = [...items];
       const [removed] = newItems.splice(oldIndex, 1);
       newItems.splice(newIndex, 0, removed);
-      
+
       return newItems.map((item, index) => ({ ...item, listIndex: index }));
     });
+    apiFetch('/api/library/items/reorder', { method: 'PUT', body: JSON.stringify({ activeId, overId }) })
+      .catch((err) => console.error('No se pudo reordenar:', err));
   };
+
+  if (!loaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[var(--bg-app)]">
+        <div className="w-8 h-8 border-2 border-[var(--primary)] border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <LibraryContext.Provider
@@ -320,6 +263,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         theme,
         fontFamily,
         cardSettings,
+        viewMode,
+        sortBy,
         addItem,
         updateItem,
         deleteItem,
@@ -332,6 +277,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         setTheme,
         setFontFamily,
         setCardSettings,
+        setViewMode,
+        setSortBy,
         reorderItems,
       }}
     >

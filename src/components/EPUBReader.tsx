@@ -3,7 +3,7 @@ import { ReactReader } from 'react-reader';
 import type { Rendition } from 'epubjs';
 import type { NavItem } from 'epubjs';
 import { get } from 'idb-keyval';
-import { List, ZoomIn, ZoomOut, ChevronLeft } from 'lucide-react';
+import { List, ZoomIn, ZoomOut, ChevronLeft, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface EPUBReaderProps {
@@ -12,10 +12,14 @@ interface EPUBReaderProps {
   // Desplaza la barra flotante de zoom/índice hacia arriba para que no quede
   // tapada por el reproductor TTS cuando está visible.
   bottomOffset?: number;
+  // Controla la visibilidad de la barra (auto-ocultado por inactividad,
+  // controlado desde ReaderView). Por defecto siempre visible.
+  controlsVisible?: boolean;
 }
 
 const FONT_SIZES = [80, 90, 100, 110, 125, 150, 175, 200];
 const DEFAULT_FONT_SIZE_INDEX = 2; // 100%
+const MOBILE_DEFAULT_FONT_SIZE_INDEX = 4; // 125%
 
 // El layout "paginado" de epubjs reparte el texto en columnas cuyo ancho se
 // fija en píxeles según el contenedor en el momento del render; al
@@ -29,18 +33,24 @@ const DEFAULT_FONT_SIZE_INDEX = 2; // 100%
 // Como el EPUB no maneja "páginas" (las citas tampoco las usan), esto es
 // válido en todos los tamaños de pantalla y con o sin el panel de notas abierto.
 
-export function EPUBReader({ url, getRendition, bottomOffset = 0 }: EPUBReaderProps) {
+export function EPUBReader({ url, getRendition, bottomOffset = 0, controlsVisible = true }: EPUBReaderProps) {
   const [location, setLocation] = useState<string | number>(0);
   const [actualUrl, setActualUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<boolean>(false);
   const [toc, setToc] = useState<NavItem[]>([]);
   const [showToc, setShowToc] = useState(false);
   const [fontSizeIndex, setFontSizeIndex] = useState(DEFAULT_FONT_SIZE_INDEX);
+  const [manuallyHidden, setManuallyHidden] = useState(false);
   const renditionRef = useRef<Rendition | null>(null);
 
   const handleGetRendition = useCallback((rendition: Rendition) => {
     renditionRef.current = rendition;
-    rendition.themes.fontSize(`${FONT_SIZES[DEFAULT_FONT_SIZE_INDEX]}%`);
+    // En móvil el texto al 100% resulta pequeño; arrancamos con una fuente
+    // mayor para que sea legible sin necesidad de ajustar el zoom manualmente.
+    const isMobile = window.innerWidth < 768;
+    const initialIndex = isMobile ? MOBILE_DEFAULT_FONT_SIZE_INDEX : DEFAULT_FONT_SIZE_INDEX;
+    setFontSizeIndex(initialIndex);
+    rendition.themes.fontSize(`${FONT_SIZES[initialIndex]}%`);
     rendition.book.loaded.navigation.then((nav) => setToc(nav.toc));
     getRendition?.(rendition);
   }, [getRendition]);
@@ -104,7 +114,7 @@ export function EPUBReader({ url, getRendition, bottomOffset = 0 }: EPUBReaderPr
         <li key={navItem.id}>
           <button
             onClick={() => goToTocItem(navItem.href)}
-            className="block w-full text-left text-sm text-slate-700 hover:text-[var(--primary)] py-1.5 px-1 rounded hover:bg-[var(--primary)]/5 transition-colors truncate"
+            className="block w-full text-left text-base md:text-sm text-slate-700 hover:text-[var(--primary)] py-2 md:py-1.5 px-1 rounded hover:bg-[var(--primary)]/5 transition-colors truncate"
             title={navItem.label?.trim()}
           >
             {navItem.label?.trim()}
@@ -142,17 +152,18 @@ export function EPUBReader({ url, getRendition, bottomOffset = 0 }: EPUBReaderPr
               }}
             />
 
-            {/* Panel de Índice (TOC): overlay a pantalla completa en móvil,
+            {/* Panel de Índice (TOC): overlay a pantalla completa por encima de
+                cualquier otro contenido (incluido el reproductor TTS) en móvil,
                 panel lateral en tablet/PC — mismo patrón que el outline del PDF. */}
             {showToc && (
-              <div className="absolute inset-0 z-40 flex">
+              <div className="fixed inset-0 z-50 flex">
                 <div className="absolute inset-0 bg-black/30 md:hidden" onClick={() => setShowToc(false)} />
                 <div className="relative z-10 w-full md:w-72 h-full bg-[var(--bg-card)] border-r border-[var(--border-card)] shadow-2xl flex flex-col">
                   <div className="p-4 border-b border-[var(--border-card)] bg-[var(--bg-app)]/50 flex-none flex items-center justify-between">
                     <h3 className="font-bold text-[var(--text-main)] text-sm flex items-center gap-2">
                       <List className="w-4 h-4" /> Índice
                     </h3>
-                    <button onClick={() => setShowToc(false)} className="text-[var(--text-muted)] hover:text-[var(--primary)] p-1 transition-colors">
+                    <button onClick={() => setShowToc(false)} className="text-[var(--text-muted)] hover:text-[var(--primary)] p-2 transition-colors">
                       <ChevronLeft className="w-5 h-5" />
                     </button>
                   </div>
@@ -167,19 +178,22 @@ export function EPUBReader({ url, getRendition, bottomOffset = 0 }: EPUBReaderPr
 
             {/* Barra flotante: índice + zoom — mismo estilo que la barra del PDF */}
             <div
-              className="absolute left-1/2 -translate-x-1/2 flex items-center justify-center pointer-events-auto z-30 transition-[bottom] duration-300"
+              className={cn(
+                "absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none z-30 w-[calc(100%-1.5rem)] sm:w-auto sm:max-w-xl transition-all duration-300",
+                (controlsVisible && !manuallyHidden) ? "opacity-100" : "opacity-0 translate-y-2"
+              )}
               style={{ bottom: `${16 + bottomOffset}px` }}
             >
-              <div className="flex items-center gap-2 px-4 py-2 bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-main)] shadow-2xl rounded-full backdrop-blur-md min-h-[44px] whitespace-nowrap">
+              <div className="flex items-center justify-center gap-2 px-3 sm:px-4 py-2.5 sm:py-3 w-full sm:w-auto bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-main)] shadow-2xl rounded-full backdrop-blur-md min-h-[48px] whitespace-nowrap pointer-events-auto">
                 <button
                   onClick={() => setShowToc(v => !v)}
                   className={cn(
-                    "p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
+                    "p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
                     showToc && "text-[var(--primary)] bg-[var(--primary)]/10"
                   )}
                   title="Índice"
                 >
-                  <List className="w-4 h-4 sm:w-[18px] sm:h-[18px]" />
+                  <List className="w-5 h-5" />
                 </button>
 
                 <div className="w-px h-4 bg-[var(--border-card)]" />
@@ -188,23 +202,45 @@ export function EPUBReader({ url, getRendition, bottomOffset = 0 }: EPUBReaderPr
                   <button
                     disabled={fontSizeIndex <= 0}
                     onClick={() => applyFontSize(fontSizeIndex - 1)}
-                    className="p-1 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
+                    className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
                     title="Reducir texto"
                   >
-                    <ZoomOut className="w-4 h-4 sm:w-[18px] sm:h-[18px]" />
+                    <ZoomOut className="w-5 h-5" />
                   </button>
-                  <span className="text-[10px] sm:text-xs font-mono font-semibold w-9 text-center tabular-nums">{FONT_SIZES[fontSizeIndex]}%</span>
+                  <span className="text-xs font-mono font-semibold w-9 text-center tabular-nums">{FONT_SIZES[fontSizeIndex]}%</span>
                   <button
                     disabled={fontSizeIndex >= FONT_SIZES.length - 1}
                     onClick={() => applyFontSize(fontSizeIndex + 1)}
-                    className="p-1 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
+                    className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
                     title="Aumentar texto"
                   >
-                    <ZoomIn className="w-4 h-4 sm:w-[18px] sm:h-[18px]" />
+                    <ZoomIn className="w-5 h-5" />
                   </button>
                 </div>
+
+                <div className="w-px h-4 bg-[var(--border-card)]" />
+
+                <button
+                  onClick={() => setManuallyHidden(true)}
+                  className="p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+                  title="Ocultar controles"
+                >
+                  <ChevronDown className="w-5 h-5" />
+                </button>
               </div>
             </div>
+
+            {/* Asa para volver a mostrar la barra cuando se ocultó manualmente */}
+            {manuallyHidden && (
+              <button
+                onClick={() => setManuallyHidden(false)}
+                className="absolute left-1/2 -translate-x-1/2 z-30 p-2 rounded-full bg-[var(--bg-card)]/70 border border-[var(--border-card)] text-[var(--text-muted)] shadow-md backdrop-blur-md pointer-events-auto transition-all"
+                style={{ bottom: `${8 + bottomOffset}px` }}
+                title="Mostrar controles"
+              >
+                <ChevronUp className="w-4 h-4" />
+              </button>
+            )}
            </>
          )}
       </div>

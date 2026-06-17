@@ -10,7 +10,7 @@
 //       · Input con placeholder "Marcador Pág. N".
 //       · Si se deja vacío al guardar, se usa ese mismo valor por defecto.
 //
-// La lista se persiste por documento en localStorage[`bookmarks-${docId}`].
+// La lista se persiste por documento en Supabase, vía bookmarks.ts.
 // =============================================================================
 
 import { useEffect, useRef, useState } from 'react';
@@ -22,23 +22,31 @@ import {
   addBookmark,
   removeBookmark,
   defaultBookmarkName,
+  defaultBookmarkNameFromLabel,
 } from '../lib/bookmarks';
 
 interface Props {
   documentId: string;
   currentPage: number | string;
   onNavigate: (page: number | string) => void;
+  // EPUB no tiene número de página: el marcador se ancla a la posición visible
+  // (CFI) y se etiqueta con el texto de esa posición, sin mencionar página.
+  isEpub?: boolean;
+  // Devuelve el ancla (CFI + etiqueta) de la posición actualmente visible.
+  getEpubAnchor?: () => Promise<{ cfi: string; label: string } | null>;
 }
 
-export function BookmarksMenu({ documentId, currentPage, onNavigate }: Props) {
+export function BookmarksMenu({ documentId, currentPage, onNavigate, isEpub = false, getEpubAnchor }: Props) {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<BookmarkData[]>([]);
   const [namingPage, setNamingPage] = useState<number | string | null>(null);
   const [draftName, setDraftName] = useState('');
+  // En EPUB guardamos el ancla (CFI + etiqueta) capturada al iniciar el alta.
+  const [epubAnchor, setEpubAnchor] = useState<{ cfi: string; label: string } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setList(loadBookmarks(documentId));
+    loadBookmarks(documentId).then(setList);
   }, [documentId]);
 
   // Cerrar al hacer click fuera.
@@ -54,29 +62,45 @@ export function BookmarksMenu({ documentId, currentPage, onNavigate }: Props) {
     return () => document.removeEventListener('mousedown', onClick);
   }, [open]);
 
-  const startAdd = () => {
-    setNamingPage(currentPage);
+  const startAdd = async () => {
     setDraftName('');
+    if (isEpub && getEpubAnchor) {
+      const anchor = await getEpubAnchor();
+      if (!anchor) return; // sin posición visible aún: no abrir el alta
+      setEpubAnchor(anchor);
+      setNamingPage(anchor.cfi); // se usa solo como bandera de "alta abierta"
+    } else {
+      setEpubAnchor(null);
+      setNamingPage(currentPage);
+    }
   };
 
   const confirmAdd = () => {
     if (namingPage === null) return;
-    const updated = addBookmark(documentId, namingPage, draftName);
-    setList(updated);
+    if (isEpub && epubAnchor) {
+      // EPUB: anclar al CFI capturado, con el fragmento de texto como etiqueta.
+      addBookmark(documentId, epubAnchor.cfi, draftName, epubAnchor.label).then(setList);
+    } else {
+      addBookmark(documentId, namingPage, draftName).then(setList);
+    }
     setNamingPage(null);
     setDraftName('');
+    setEpubAnchor(null);
   };
 
   const cancelAdd = () => {
     setNamingPage(null);
     setDraftName('');
+    setEpubAnchor(null);
   };
 
   const handleDelete = (id: string) => {
-    setList(removeBookmark(documentId, id));
+    removeBookmark(documentId, id).then(setList);
   };
 
-  const hasOnCurrent = list.some(b => String(b.page) === String(currentPage));
+  // En PDF se evita duplicar el marcador de la página actual. En EPUB siempre se
+  // permite añadir (cada posición visible es distinta y no hay "página actual").
+  const hasOnCurrent = !isEpub && list.some(b => String(b.page) === String(currentPage));
 
   return (
     <div ref={containerRef} className="relative">
@@ -103,7 +127,7 @@ export function BookmarksMenu({ documentId, currentPage, onNavigate }: Props) {
         >
           <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between">
             <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Marcadores</span>
-            <span className="text-[10px] text-slate-400">Pág. actual: {currentPage}</span>
+            {!isEpub && <span className="text-[10px] text-slate-400">Pág. actual: {currentPage}</span>}
           </div>
 
           <div className="max-h-64 overflow-y-auto">
@@ -125,7 +149,15 @@ export function BookmarksMenu({ documentId, currentPage, onNavigate }: Props) {
                     className="flex-1 text-left min-w-0"
                   >
                     <div className="text-sm font-medium text-slate-700 truncate">{b.name}</div>
-                    <div className="text-[10px] text-slate-400">Pág. {b.page}</div>
+                    {isEpub ? (
+                      // EPUB: sin número de página; muestra el fragmento anclado si
+                      // el nombre fue personalizado (para no repetirlo).
+                      b.label && b.name !== defaultBookmarkNameFromLabel(b.label) && (
+                        <div className="text-[10px] text-slate-400 truncate italic">{defaultBookmarkNameFromLabel(b.label)}</div>
+                      )
+                    ) : (
+                      <div className="text-[10px] text-slate-400">Pág. {b.page}</div>
+                    )}
                   </button>
                   <button
                     onClick={() => handleDelete(b.id)}
@@ -142,7 +174,7 @@ export function BookmarksMenu({ documentId, currentPage, onNavigate }: Props) {
           {namingPage !== null ? (
             <div className="border-t border-slate-100 bg-slate-50 p-3">
               <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
-                Nuevo marcador (pág. {namingPage})
+                {isEpub ? 'Nuevo marcador (posición actual)' : `Nuevo marcador (pág. ${namingPage})`}
               </div>
               <input
                 autoFocus
@@ -153,7 +185,7 @@ export function BookmarksMenu({ documentId, currentPage, onNavigate }: Props) {
                   if (e.key === 'Enter') confirmAdd();
                   if (e.key === 'Escape') cancelAdd();
                 }}
-                placeholder={defaultBookmarkName(namingPage)}
+                placeholder={isEpub ? defaultBookmarkNameFromLabel(epubAnchor?.label) : defaultBookmarkName(namingPage)}
                 className="w-full text-sm px-3 py-2 rounded-lg border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent"
               />
               <div className="flex justify-end gap-2 mt-2">
@@ -184,7 +216,7 @@ export function BookmarksMenu({ documentId, currentPage, onNavigate }: Props) {
               title={hasOnCurrent ? 'Ya hay un marcador en esta página' : undefined}
             >
               <Plus className="w-4 h-4" />
-              Añadir marcador en pág. {currentPage}
+              {isEpub ? 'Añadir marcador aquí' : `Añadir marcador en pág. ${currentPage}`}
             </button>
           )}
         </div>

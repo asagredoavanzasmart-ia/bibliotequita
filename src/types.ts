@@ -22,6 +22,7 @@ export type ResourceType = 'pdf' | 'epub' | 'txt' | 'externa';
 export interface CategoryData {
   id: string;
   name: string;
+  hidden?: boolean;   // Oculta de la barra lateral (no se borra). Categorías base.
 }
 
 // Sistema de etiquetas (TagData) eliminado durante el desarrollo.

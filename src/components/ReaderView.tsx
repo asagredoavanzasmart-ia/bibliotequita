@@ -39,9 +39,29 @@ interface ReaderViewProps {
   onClose: () => void;
 }
 
+// Convierte un color hex (#rgb o #rrggbb) a rgba(r,g,b,alpha). Si el color ya
+// viene en otro formato (rgb/rgba/nombre), lo devuelve tal cual.
+// Se usa para resaltar citas SIN la propiedad `opacity` (que rompe el
+// mix-blend-mode: multiply al crear un stacking context aislado). Metiendo el
+// alfa dentro del color, el multiply sigue mezclándose con el texto negro del
+// canvas que está debajo y el negro no queda cubierto.
+function toRgba(color: string, alpha: number): string {
+  const hex = color.trim();
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex);
+  if (!m) return color;
+  let h = m[1];
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 export function ReaderView({ bookId, onClose }: ReaderViewProps) {
-  const { items, updateItem } = useLibrary();
+  const { items, updateItem, categories } = useLibrary();
   const item = items.find(i => i.id === bookId);
+  // Nombre de la categoría del item (BookItem.category guarda el id).
+  const itemCategoryName = categories.find(c => c.id === item?.category)?.name ?? '';
 
   // Registra tiempo de lectura diario mientras este libro está abierto.
   useReadingTimeTracker(!!item);
@@ -66,6 +86,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   );
   
   const [totalPages, setTotalPages ] = useState<number>(100);
+
+  // Resaltado pendiente al navegar desde una cita guardada (CitationsManager):
+  // se aplica una vez que la página/sección destino termina de renderizarse.
+  const [pendingHighlight, setPendingHighlight] = useState<{ text: string; color: string } | null>(null);
 
   // --- Estados de Lector de Voz (TTS ElevenLabs) ------------------------------
   const [showTtsWidget, setShowTtsWidget] = useState(false);
@@ -205,6 +229,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   // Timeout del reintento de resaltado EPUB (ver highlightPhraseInEpub más abajo)
   const epubHighlightRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Timeout del reintento de resaltado PDF (la página destino puede no estar
+  // montada todavía si el visor virtualiza páginas — ver highlightPhraseInDOM).
+  const pdfHighlightRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Texto visible en los iframes internos de la rendition de epubjs (vista
   // de página única o doble — concatena todas las páginas activas).
@@ -350,6 +377,31 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
   }, []);
 
+  // Captura la posición actualmente visible en el EPUB como ancla de marcador:
+  // el CFI de epubjs (posición exacta) + un fragmento de texto (primera palabra/
+  // frase visible) como etiqueta legible. No usa número de página.
+  const getEpubBookmarkAnchor = useCallback(async (): Promise<{ cfi: string; label: string } | null> => {
+    const rendition = epubRenditionRef.current as any;
+    if (!rendition) return null;
+    try {
+      const location = await rendition.currentLocation();
+      const cfi: string | undefined = location?.start?.cfi;
+      if (!cfi) return null;
+      const label = (await getEpubVisibleTextFromLocation()) || '';
+      return { cfi, label };
+    } catch {
+      return null;
+    }
+  }, [getEpubVisibleTextFromLocation]);
+
+  // Navega a una posición del EPUB a partir de su CFI.
+  const navigateEpubToCfi = useCallback((cfi: string) => {
+    const rendition = epubRenditionRef.current as any;
+    if (rendition && cfi) {
+      try { rendition.display(cfi); } catch { /* CFI inválido: se ignora */ }
+    }
+  }, []);
+
   // Determina el índice de la frase visible actualmente en pantalla para
   // comenzar la lectura desde ahí en vez de desde el inicio de la página.
   const getVisiblePhraseStartIndex = useCallback(async (phraseList: string[]): Promise<number> => {
@@ -425,81 +477,80 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
   }, []);
 
-  // Resalta de manera no destructiva y súper premium la frase actual en el DOM del PDF
-  const highlightPhraseInDOM = useCallback((phraseText: string, color: string = '#fbbf24') => {
-    const activePageEl = document.getElementById(`pdf-page-${currentPage}`);
-    if (!activePageEl) return;
-
-    // Evitar iterar el DOM si solo se pide limpiar y no hay nada que limpiar
-    const spans = activePageEl.querySelectorAll('.react-pdf__Page__textContent span[style]');
-    if (spans.length > 0) {
-      spans.forEach((span: any) => {
-        span.style.backgroundColor = '';
-        span.style.borderRadius = '';
-        span.style.transition = '';
-        span.style.mixBlendMode = '';
-        span.style.opacity = '';
-      });
+  // Resalta de manera no destructiva y súper premium la frase actual en el DOM del PDF.
+  // persistent=true marca los spans con data-citation-highlight="true" para que el
+  // resaltado de una cita guardada no sea borrado por el siguiente paso del TTS
+  // (que solo limpia spans sin esa marca).
+  const highlightPhraseInDOM = useCallback((phraseText: string, color: string = '#fbbf24', persistent: boolean = false, retriesLeft: number = 8) => {
+    // Cancelar cualquier reintento pendiente de una llamada anterior.
+    if (pdfHighlightRetryRef.current) {
+      clearTimeout(pdfHighlightRetryRef.current);
+      pdfHighlightRetryRef.current = null;
     }
+
+    // Limpiar resaltados NO persistentes en TODAS las páginas montadas (no solo
+    // en la página actual: con el visor virtualizado y la actualización asíncrona
+    // de currentPage no es fiable saber de antemano en qué página está la cita).
+    document.querySelectorAll('.react-pdf__Page__textContent span[style]').forEach((span: any) => {
+      if (span.dataset?.citationHighlight === 'true') return;
+      span.style.backgroundColor = '';
+      span.style.borderRadius = '';
+      span.style.transition = '';
+      span.style.mixBlendMode = '';
+      span.style.opacity = '';
+    });
 
     if (!phraseText || phraseText.trim().length === 0) return;
 
-    // Normalizar espacios para una búsqueda robusta
     const cleanPhrase = phraseText.replace(/\s+/g, ' ').trim().toLowerCase();
     if (cleanPhrase.length < 3) return;
 
-    // 2. Construir el texto completo y registrar los rangos de caracteres de cada span
-    let fullText = '';
-    const spanRanges: { span: any; start: number; end: number }[] = [];
+    // Buscar la frase en cada página montada hasta encontrarla y resaltarla.
+    const pageEls = Array.from(document.querySelectorAll('.react-pdf__Page'));
+    let highlightedAny = false;
 
-    spans.forEach((span: any) => {
-      const text = span.textContent || '';
-      const start = fullText.length;
-      fullText += text;
-      const end = fullText.length;
-      spanRanges.push({ span, start, end });
-    });
+    for (const pageEl of pageEls) {
+      const spans = pageEl.querySelectorAll('.react-pdf__Page__textContent span[style]');
+      if (spans.length === 0) continue;
 
-    // Normalizar el texto completo
-    const normalizedFullText = fullText.toLowerCase().replace(/\s+/g, ' ');
-    const normalizedPhrase = cleanPhrase;
+      let fullText = '';
+      const spanRanges: { span: any; start: number; end: number }[] = [];
+      spans.forEach((span: any) => {
+        const text = span.textContent || '';
+        const start = fullText.length;
+        fullText += text;
+        spanRanges.push({ span, start, end: fullText.length });
+      });
 
-    // 3. Buscar la frase en el texto completo de la página
-    const matchIndex = normalizedFullText.indexOf(normalizedPhrase);
-    if (matchIndex === -1) {
-      // Coincidencia parcial si no hay coincidencia exacta (respaldo)
-      const firstWords = normalizedPhrase.split(' ').slice(0, 3).join(' ');
-      const partialMatchIndex = normalizedFullText.indexOf(firstWords);
-      if (partialMatchIndex !== -1) {
-        highlightRanges(partialMatchIndex, partialMatchIndex + normalizedPhrase.length);
+      const normalizedFullText = fullText.toLowerCase().replace(/\s+/g, ' ');
+      let matchIndex = normalizedFullText.indexOf(cleanPhrase);
+      let matchLen = cleanPhrase.length;
+      if (matchIndex === -1) {
+        // Respaldo: coincidencia por las primeras palabras.
+        const firstWords = cleanPhrase.split(' ').slice(0, 3).join(' ');
+        const partial = normalizedFullText.indexOf(firstWords);
+        if (partial === -1) continue;
+        matchIndex = partial;
       }
-      return;
-    }
 
-    const startCharPos = matchIndex;
-    const endCharPos = matchIndex + normalizedPhrase.length;
-    highlightRanges(startCharPos, endCharPos);
-
-    function highlightRanges(startPos: number, endPos: number) {
-      let highlightedAny = false;
+      const startPos = matchIndex;
+      const endPos = matchIndex + matchLen;
       let currentPos = 0;
-
       spanRanges.forEach(({ span, start, end }) => {
         const spanLength = end - start;
         const spanStartNormalized = normalizedFullText.indexOf(span.textContent?.toLowerCase() || '', currentPos);
         if (spanStartNormalized !== -1) {
           currentPos = spanStartNormalized + spanLength;
           const spanEndNormalized = spanStartNormalized + spanLength;
-
-          // Verificar solapamiento de rangos de caracteres
           const overlaps = (spanStartNormalized < endPos && spanEndNormalized > startPos);
           if (overlaps) {
-            span.style.transition = 'background-color 0.25s ease-in-out, opacity 0.25s ease-in-out';
-            span.style.backgroundColor = color;
-            span.style.opacity = '0.5';             // 50% de opacidad requerida
-            span.style.mixBlendMode = 'multiply';   // Mantiene los negros absolutos del fondo
+            span.style.transition = 'background-color 0.25s ease-in-out';
+            // Alfa dentro del color (NO usar opacity: crea stacking context y
+            // desactiva el mix-blend-mode, dejando el color opaco sobre el negro).
+            span.style.backgroundColor = toRgba(color, 0.5);
+            span.style.mixBlendMode = 'darken';     // El negro del texto siempre gana → letras intactas
             span.style.borderRadius = '3px';
-
+            if (persistent) span.dataset.citationHighlight = 'true';
             if (!highlightedAny) {
               span.scrollIntoView({ behavior: 'smooth', block: 'center' });
               highlightedAny = true;
@@ -507,8 +558,19 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           }
         }
       });
+
+      if (highlightedAny) break;
     }
-  }, [currentPage]);
+
+    // Si no se encontró en ninguna página montada, la página destino puede estar
+    // todavía montándose tras un salto a la cita: reintentar unas pocas veces.
+    if (!highlightedAny && retriesLeft > 0) {
+      pdfHighlightRetryRef.current = setTimeout(() => {
+        pdfHighlightRetryRef.current = null;
+        highlightPhraseInDOM(phraseText, color, persistent, retriesLeft - 1);
+      }, 250);
+    }
+  }, []);
 
   // Resalta la frase actual dentro del/los iframe(s) del EPUB visible.
   // A diferencia del PDF (que ya tiene spans por carácter del text layer),
@@ -516,7 +578,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // texto, se busca la frase con una regex tolerante a espacios/saltos y se
   // envuelve el rango encontrado en un <mark> temporal con el mismo estilo
   // premium usado en PDF.
-  const highlightPhraseInEpub = useCallback((phraseText: string, color: string = '#fbbf24', retriesLeft: number = 3) => {
+  const highlightPhraseInEpub = useCallback((phraseText: string, color: string = '#fbbf24', retriesLeft: number = 3, persistent: boolean = false) => {
     // Cancelar cualquier reintento pendiente de una llamada anterior
     if (epubHighlightRetryRef.current) {
       clearTimeout(epubHighlightRetryRef.current);
@@ -584,12 +646,16 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         range.setEnd(node, sliceEnd);
 
         const mark = doc.createElement('mark');
-        mark.className = '__tts-highlight__';
-        mark.style.backgroundColor = color;
-        mark.style.opacity = '0.5';
+        mark.className = persistent ? '__citation-highlight__' : '__tts-highlight__';
+        // Alfa dentro del color (NO usar opacity: rompe el multiply). En EPUB el
+        // <mark> sí puede partirse en varias líneas, así que box-decoration-break:
+        // clone mantiene el resaltado continuo entre líneas.
+        mark.style.backgroundColor = toRgba(color, 0.5);
         mark.style.mixBlendMode = 'multiply';
+        mark.style.boxDecorationBreak = 'clone';
+        (mark.style as any).webkitBoxDecorationBreak = 'clone';
         mark.style.borderRadius = '3px';
-        mark.style.transition = 'background-color 0.25s ease-in-out, opacity 0.25s ease-in-out';
+        mark.style.transition = 'background-color 0.25s ease-in-out';
 
         try {
           range.surroundContents(mark);
@@ -636,19 +702,53 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     if (!matchedInAnySection && retriesLeft > 0 && phraseText && phraseText.replace(/\s+/g, ' ').trim().length >= 3) {
       epubHighlightRetryRef.current = setTimeout(() => {
         epubHighlightRetryRef.current = null;
-        highlightPhraseInEpub(phraseText, color, retriesLeft - 1);
+        highlightPhraseInEpub(phraseText, color, retriesLeft - 1, persistent);
       }, 400);
     }
   }, []);
 
-  // Despacha el resaltado al lector correspondiente (PDF o EPUB)
-  const highlightCurrentPhrase = useCallback((phraseText: string, color?: string) => {
+  // Despacha el resaltado al lector correspondiente (PDF o EPUB).
+  // persistent=true crea un resaltado permanente (cita guardada) que no se
+  // borra en el siguiente paso del TTS.
+  const highlightCurrentPhrase = useCallback((phraseText: string, color?: string, persistent: boolean = false) => {
     if (item?.type === 'epub') {
-      highlightPhraseInEpub(phraseText, color);
+      highlightPhraseInEpub(phraseText, color, 3, persistent);
     } else {
-      highlightPhraseInDOM(phraseText, color);
+      highlightPhraseInDOM(phraseText, color, persistent);
     }
   }, [item?.type, highlightPhraseInEpub, highlightPhraseInDOM]);
+
+  // Borra TODOS los resaltados de cita persistentes (data-citation-highlight en
+  // PDF, mark.__citation-highlight__ en EPUB). El resaltado normal de
+  // highlightPhraseInDOM/Epub NO los limpia a propósito (para no borrar la cita
+  // mientras el TTS avanza), pero al navegar a OTRA cita hay que partir de cero;
+  // si no, el color de la cita anterior queda pegado y se ve un color distinto
+  // al de la cita destino.
+  const clearPersistentHighlights = useCallback(() => {
+    if (item?.type === 'epub') {
+      const contentsList = (epubRenditionRef.current as any)?.manager?.getContents?.() || [];
+      contentsList.forEach((contents: any) => {
+        const doc: Document = contents?.document;
+        if (!doc?.body) return;
+        doc.querySelectorAll('mark.__citation-highlight__').forEach((mark) => {
+          const parent = mark.parentNode;
+          if (!parent) return;
+          while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+          parent.removeChild(mark);
+          parent.normalize();
+        });
+      });
+    } else {
+      document.querySelectorAll('.react-pdf__Page__textContent span[data-citation-highlight="true"]').forEach((span: any) => {
+        span.style.backgroundColor = '';
+        span.style.borderRadius = '';
+        span.style.transition = '';
+        span.style.mixBlendMode = '';
+        span.style.opacity = '';
+        delete span.dataset.citationHighlight;
+      });
+    }
+  }, [item?.type]);
 
   // Crea una nota/cita a partir de la frase que el TTS está leyendo actualmente,
   // marcándola con el color elegido — sin abrir el panel de Anotaciones.
@@ -669,8 +769,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       page: item?.type === 'epub' ? undefined : currentPage,
     });
 
-    // Resalta visualmente la frase en el color elegido (además de crear la nota)
-    highlightCurrentPhrase(phraseText, hex);
+    // Resalta visualmente la frase en el color elegido de forma persistente,
+    // para que no se borre cuando el TTS avance a la siguiente frase.
+    highlightCurrentPhrase(phraseText, hex, true);
   }, [phrases, currentPhraseIndex, item?.type, currentPage, highlightCurrentPhrase]);
 
   // Detener la reproducción de voz
@@ -822,8 +923,22 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       };
 
       setCurrentAudio(audio);
-      audio.play();
-      setTtsStatus('playing');
+      audio.play().then(() => {
+        setTtsStatus('playing');
+      }).catch((err) => {
+        // play() puede rechazar si el audio precargado aún no estaba listo
+        // (NotAllowedError/AbortError). Reintentar una vez tras recargarlo
+        // evita que la lectura se quede "trabada" en silencio sin avanzar.
+        console.warn('[WARN] audio.play() rechazada, reintentando:', err?.name || err);
+        audio.load();
+        audio.play().then(() => {
+          setTtsStatus('playing');
+        }).catch((err2) => {
+          console.error('Error al reproducir audio tras reintento:', err2);
+          setTtsStatus('error');
+          setTtsErrorMessage('Error al reproducir esta frase.');
+        });
+      });
 
       // 2. Pre-cargar la siguiente frase de forma totalmente asíncrona y transparente
       const nextIndex = index + 1;
@@ -1163,29 +1278,40 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   const [activePalette, setActivePalette ] = useState<{ id: string, color: string, bgClass: string, borderClass: string, textClass: string, name: string, hex: string }[]>([]);
 
+  const DEFAULT_PALETTE = [
+    { id: 'rose-400', color: 'rose-400', bgClass: 'bg-rose-50/50', borderClass: 'border-rose-400', textClass: 'text-rose-600', name: 'Rojo', hex: '#fb7185' },
+    { id: 'sky-400', color: 'sky-400', bgClass: 'bg-sky-50/50', borderClass: 'border-sky-400', textClass: 'text-sky-600', name: 'Azul', hex: '#38bdf8' },
+    { id: 'emerald-400', color: 'emerald-400', bgClass: 'bg-emerald-50/50', borderClass: 'border-emerald-400', textClass: 'text-emerald-600', name: 'Verde', hex: '#34d399' },
+    { id: 'amber-400', color: 'amber-400', bgClass: 'bg-amber-50/50', borderClass: 'border-amber-400', textClass: 'text-amber-600', name: 'Amarillo', hex: '#fbbf24' }
+  ];
+
   useEffect(() => {
     if (!bookId) return;
-    const savedPalette = localStorage.getItem(`color-palette-${bookId}`);
-    if (savedPalette) {
-      try {
-        setActivePalette(JSON.parse(savedPalette));
-      } catch (e) {
-        setActivePalette([
-          { id: 'rose-400', color: 'rose-400', bgClass: 'bg-rose-50/50', borderClass: 'border-rose-400', textClass: 'text-rose-600', name: 'Rojo', hex: '#fb7185' },
-          { id: 'sky-400', color: 'sky-400', bgClass: 'bg-sky-50/50', borderClass: 'border-sky-400', textClass: 'text-sky-600', name: 'Azul', hex: '#38bdf8' },
-          { id: 'emerald-400', color: 'emerald-400', bgClass: 'bg-emerald-50/50', borderClass: 'border-emerald-400', textClass: 'text-emerald-600', name: 'Verde', hex: '#34d399' },
-          { id: 'amber-400', color: 'amber-400', bgClass: 'bg-amber-50/50', borderClass: 'border-amber-400', textClass: 'text-amber-600', name: 'Amarillo', hex: '#fbbf24' }
-        ]);
-      }
-    } else {
-      setActivePalette([
-        { id: 'rose-400', color: 'rose-400', bgClass: 'bg-rose-50/50', borderClass: 'border-rose-400', textClass: 'text-rose-600', name: 'Rojo', hex: '#fb7185' },
-        { id: 'sky-400', color: 'sky-400', bgClass: 'bg-sky-50/50', borderClass: 'border-sky-400', textClass: 'text-sky-600', name: 'Azul', hex: '#38bdf8' },
-        { id: 'emerald-400', color: 'emerald-400', bgClass: 'bg-emerald-50/50', borderClass: 'border-emerald-400', textClass: 'text-emerald-600', name: 'Verde', hex: '#34d399' },
-        { id: 'amber-400', color: 'amber-400', bgClass: 'bg-amber-50/50', borderClass: 'border-amber-400', textClass: 'text-amber-600', name: 'Amarillo', hex: '#fbbf24' }
-      ]);
-    }
+    fetch(`/api/documents/${bookId}/settings`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => {
+        setActivePalette(d.settings?.colorPalette ?? DEFAULT_PALETTE);
+      })
+      .catch(() => setActivePalette(DEFAULT_PALETTE));
   }, [bookId]);
+
+  // Aplica el resaltado pendiente al navegar desde una cita guardada
+  // (CitationsManager). Para PDF se espera a que la página destino termine de
+  // renderizarse; para EPUB, highlightPhraseInEpub ya reintenta mientras la
+  // sección se monta.
+  useEffect(() => {
+    if (!pendingHighlight) return;
+    const { text, color } = pendingHighlight;
+
+    // Limpia el resaltado de la cita anterior antes de pintar la nueva, para que
+    // no se quede pegado un color distinto al de la cita a la que navegamos.
+    clearPersistentHighlights();
+
+    // Tanto PDF como EPUB resaltan con reintentos internos mientras la página/
+    // sección destino termina de montarse, así que se puede llamar de inmediato.
+    highlightCurrentPhrase(text, color, true);
+    setPendingHighlight(null);
+  }, [pendingHighlight, item?.type, highlightCurrentPhrase, clearPersistentHighlights]);
 
   // New states for fullscreen and split view
   const [isFullscreen, setIsFullscreen] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
@@ -1224,6 +1350,28 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       handleTtsStopRef.current();
     };
   }, []);
+
+  // Auto-ocultado de la barra flotante de página/zoom tras 5s sin interacción.
+  // Reaparece al tocar/hacer click en cualquier parte del lector.
+  const [pageControlsVisible, setPageControlsVisible] = useState(true);
+  useEffect(() => {
+    const resetTimer = () => {
+      setPageControlsVisible(true);
+    };
+    let timer = setTimeout(() => setPageControlsVisible(false), 5000);
+    const handleActivity = () => {
+      setPageControlsVisible(true);
+      clearTimeout(timer);
+      timer = setTimeout(() => setPageControlsVisible(false), 5000);
+    };
+    resetTimer();
+    const container = containerRef.current;
+    container?.addEventListener('pointerdown', handleActivity);
+    return () => {
+      clearTimeout(timer);
+      container?.removeEventListener('pointerdown', handleActivity);
+    };
+  }, [bookId]);
 
   // Mide la altura real de la barra del reproductor TTS para que los
   // controles de página/zoom del PDF se desplacen hacia arriba y no queden
@@ -1346,11 +1494,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         onClick={handleScreenClick}
      >
         <div className="flex-1 overflow-hidden pointer-events-auto">
-          {item.type === 'pdf' && <PDFReader url={item.source} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} bottomOffset={showTtsWidget ? ttsWidgetHeight : 0} />}
+          {item.type === 'pdf' && <PDFReader url={item.source} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} bottomOffset={showTtsWidget ? ttsWidgetHeight : 0} controlsVisible={pageControlsVisible} />}
           {item.type === 'epub' && (
             <EPUBReader
               url={item.source}
               bottomOffset={showTtsWidget ? ttsWidgetHeight : 0}
+              controlsVisible={pageControlsVisible}
               getRendition={(rendition) => {
                 epubRenditionRef.current = rendition;
                 rendition.on('selected', (_cfiRange: string, contents: any) => {
@@ -1640,15 +1789,6 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
                    </div>
 
-                   {/* Indicador de estado / progreso */}
-                   <div className="text-center h-4 mt-1.5">
-                      <span className="text-[10px] text-[var(--text-muted)] italic">
-                         {ttsStatus === 'loading' && 'Generando voz natural...'}
-                         {ttsStatus === 'paused' && 'Lectura de voz pausada'}
-                         {ttsStatus === 'idle' && 'Presiona Play para leer'}
-                         {ttsStatus === 'error' && 'Error al procesar el audio'}
-                      </span>
-                   </div>
                 </div>
              </div>
           )}
@@ -1671,13 +1811,30 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         }}
         onBlur={() => setIsNotesFocused(false)}
      >
-        <NotesPanel 
-            documentId={bookId} 
+        <NotesPanel
+            documentId={bookId}
             selectedText={selectedText}
             selectedCitation={selectedCitation}
             clearSelection={handleClearSelection}
             currentPage={currentPage}
             onNavigateToPage={(page) => setTargetPage({ page: Number(page), t: Date.now() })}
+            onNavigateToCitation={(note) => {
+              const colorDef = activePalette.find(c => c.id === note.color);
+              if (note.quote) {
+                setPendingHighlight({ text: note.quote, color: colorDef?.hex || '#fbbf24' });
+              }
+              if (item?.type !== 'epub' && note.pageReference) {
+                setTargetPage({ page: Number(note.pageReference), t: Date.now() });
+              }
+            }}
+            onRecolorCitation={(note) => {
+              if (!note.quote) return;
+              const colorDef = activePalette.find(c => c.id === note.color);
+              // Re-pinta en sitio (sin scroll): limpia el resaltado anterior y
+              // aplica el nuevo color sobre la frase actualmente visible.
+              clearPersistentHighlights();
+              highlightCurrentPhrase(note.quote, colorDef?.hex || '#fbbf24', true);
+            }}
         />
      </div>
   );
@@ -1747,8 +1904,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                      >
                          <BookOpen className="w-4 h-4 sm:w-5 sm:h-5" />
                      </button>
-                     <button 
-                         onClick={() => setActiveTab(activeTab === 'citations' ? 'reader' : 'citations')}
+                     <button
+                         onClick={() => {
+                             const opening = activeTab !== 'citations';
+                             setActiveTab(opening ? 'citations' : 'reader');
+                             if (opening) setShowNotes(false);
+                         }}
                          className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'citations' ? "bg-white text-[#00558F] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
                          title="Administrar citas"
                      >
@@ -1761,7 +1922,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                      >
                          <Info className="w-4 h-4 sm:w-5 sm:h-5" />
                      </button>
-                     {item.type === 'pdf' && item.source?.startsWith('/api/files/') && (
+                     {item.type === 'pdf' && item.source?.startsWith('/api/files/') && itemCategoryName.toLowerCase() === 'estudio' && (
                        <button
                          onClick={() => setActiveTab(activeTab === 'auditor' ? 'reader' : 'auditor')}
                          className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'auditor' ? "bg-white text-[#00558F] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
@@ -1811,7 +1972,16 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                   <BookmarksMenu
                      documentId={bookId}
                      currentPage={currentPage}
-                     onNavigate={(page) => setTargetPage({ page: Number(page), t: Date.now() })}
+                     isEpub={item?.type === 'epub'}
+                     getEpubAnchor={getEpubBookmarkAnchor}
+                     onNavigate={(page) => {
+                       // EPUB: el "page" guardado es un CFI → navegar por CFI.
+                       if (item?.type === 'epub' && typeof page === 'string' && page.startsWith('epubcfi(')) {
+                         navigateEpubToCfi(page);
+                       } else {
+                         setTargetPage({ page: Number(page), t: Date.now() });
+                       }
+                     }}
                   />
 
                   <button 
@@ -1877,10 +2047,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                          setShowTtsWidget(true);
                          handleTtsPlayPause();
                        }}
-                       className="w-5 h-5 flex items-center justify-center text-white hover:scale-110 active:scale-95 transition-transform border-l border-white/20 pl-3 ml-1"
+                       className="w-7 h-7 flex items-center justify-center text-white hover:scale-110 active:scale-95 transition-transform border-l border-white/20 pl-3 ml-1 shrink-0"
                        title="Leer en voz alta"
                      >
-                        <Volume2 className="w-4 h-4" />
+                        <Volume2 className="w-5 h-5" />
                      </button>
                   )}
                </div>
@@ -1938,11 +2108,21 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
           {/* Citations Administration View */}
           {activeTab === 'citations' && (
-             <CitationsManager 
-               documentId={item.id} 
-               onClose={() => setActiveTab('reader')} 
+             <CitationsManager
+               documentId={item.id}
+               onClose={() => setActiveTab('reader')}
                onNavigateToPage={(page) => {
                  setTargetPage({ page: Number(page), t: Date.now() });
+                 setActiveTab('reader');
+               }}
+               onNavigateToCitation={(note) => {
+                 const colorDef = activePalette.find(c => c.id === note.color);
+                 if (note.quote) {
+                   setPendingHighlight({ text: note.quote, color: colorDef?.hex || '#fbbf24' });
+                 }
+                 if (item?.type !== 'epub' && note.pageReference) {
+                   setTargetPage({ page: Number(note.pageReference), t: Date.now() });
+                 }
                  setActiveTab('reader');
                }}
                currentPage={currentPage}

@@ -1,4 +1,4 @@
-import { Book, Globe, UploadCloud, Link as LinkIcon, LayoutGrid, Grid3x3, GalleryVerticalEnd, List as ListIcon, Save, Search, Settings, Menu, LogOut } from 'lucide-react';
+import { Book, Globe, UploadCloud, Link as LinkIcon, LayoutGrid, Grid3x3, GalleryVerticalEnd, List as ListIcon, Save, Search, Settings, Menu, LogOut, MoreVertical } from 'lucide-react';
 import React, { useState } from 'react';
 import { useLibrary } from '../hooks/useLibrary';
 import { cn } from '../lib/utils';
@@ -23,6 +23,7 @@ interface ToolbarProps {
 
 export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setViewMode, sortBy, setSortBy, filters, setFilters, searchQuery, setSearchQuery, onOpenAddManual, user }: ToolbarProps) {
   const [showSettings, setShowSettings] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const { addItem, items } = useLibrary();
 
   // Create suggestions for search
@@ -35,26 +36,63 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
           
           <div className="flex-1 w-full flex items-center gap-2">
              {onOpenSidebar && (
-               <button 
-                 className="lg:hidden p-2 text-[var(--text-muted)] hover:bg-[var(--bg-card-hover)] rounded-lg shrink-0 transition-colors -ml-2"
+               <button
+                 className="lg:hidden p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-card-hover)] rounded-lg shrink-0 transition-colors -ml-2"
                  onClick={onOpenSidebar}
                >
-                 <Menu className="w-6 h-6" />
+                 <Menu className="w-7 h-7" />
                </button>
              )}
              <div className="flex items-center w-full max-w-2xl relative group">
                <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-[var(--primary)] transition-colors" />
-               <input 
-                 type="text" 
+               <input
+                 type="text"
                  value={searchQuery}
                  onChange={(e) => setSearchQuery(e.target.value)}
-                 placeholder="Buscar títulos, autores, materias o etiquetas..." 
+                 placeholder="Buscar títulos, autores, materias o etiquetas..."
                  list="search-suggestions"
                  className="w-full pl-12 pr-4 py-3 border-2 border-transparent bg-[var(--bg-card)]/80 backdrop-blur-md rounded-2xl text-base focus:outline-none focus:border-[var(--primary)] focus:bg-[var(--bg-card-hover)] text-[var(--text-main)] shadow-sm hover:bg-[var(--bg-card-hover)] transition-all font-medium placeholder-slate-400"
                />
                <datalist id="search-suggestions">
                  {suggestions.map((s, i) => <option key={i} value={s as string} />)}
                </datalist>
+             </div>
+             {/* Menú de overflow móvil: orden + cerrar sesión (el resto de
+                 funciones ya son accesibles desde el Sidebar en móvil). */}
+             <div className="relative sm:hidden shrink-0">
+               <button
+                 className="p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-card-hover)] rounded-lg transition-colors"
+                 onClick={() => setShowMobileMenu(v => !v)}
+               >
+                 <MoreVertical className="w-6 h-6" />
+               </button>
+               {showMobileMenu && (
+                 <>
+                   <div className="fixed inset-0 z-10" onClick={() => setShowMobileMenu(false)} />
+                   <div className="absolute right-0 top-full mt-2 z-20 w-56 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl shadow-xl p-3 flex flex-col gap-3">
+                     <label className="flex flex-col gap-1 text-xs font-medium text-[var(--text-muted)]">
+                       Ordenar por
+                       <select
+                         value={sortBy}
+                         onChange={(e) => setSortBy(e.target.value as any)}
+                         className="text-sm font-medium border border-slate-200/50 rounded-xl px-3 py-2 text-[var(--text-main)] bg-[var(--bg-card)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+                       >
+                         <option value="manual">Orden Manual</option>
+                         <option value="recent">Más recientes</option>
+                         <option value="oldest">Más antiguos</option>
+                         <option value="alpha">Alfabético</option>
+                       </select>
+                     </label>
+                     {user && (
+                       <a href="/auth/logout" title="Cerrar sesión"
+                         className="flex items-center gap-2 text-sm font-medium text-red-500 hover:bg-red-50 rounded-lg px-3 py-2 transition-colors"
+                       >
+                         <LogOut className="w-4 h-4" /> Cerrar sesión
+                       </a>
+                     )}
+                   </div>
+                 </>
+               )}
              </div>
           </div>
 

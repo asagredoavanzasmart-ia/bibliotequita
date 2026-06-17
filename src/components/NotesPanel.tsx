@@ -1,16 +1,16 @@
 // =============================================================================
 // NotesPanel.tsx — Panel de notas/citas dentro del lector
 // -----------------------------------------------------------------------------
-// Cada documento tiene su propio listado de notas, persistido en
-// localStorage[`notes-${documentId}`]. La paleta de colores activa también es
-// por-documento (`color-palette-${documentId}`).
+// Cada documento tiene su propio listado de notas, persistido en Supabase vía
+// /api/documents/:docId/notes. La paleta de colores activa también es
+// por-documento, vía /api/documents/:docId/settings.
 //
 // Tipos de "Note":
 //   - 'note'     → texto libre escrito por el usuario o cita capturada al
 //                  resaltar texto del PDF (selectedCitation desde ReaderView).
 //   - 'bookmark' → marcador rápido a la página actual.
 //
-// IMPORTANTE: el componente <CitationsManager> usa el MISMO storage key y
+// IMPORTANTE: el componente <CitationsManager> usa los MISMOS endpoints y
 // estructura → cualquier cambio aquí debe replicarse allá.
 // =============================================================================
 
@@ -46,13 +46,17 @@ const parsePageNum = (ref: any): number => {
 interface NotesPanelProps {
   documentId: string;
   onNavigateToPage?: (page: number | string) => void;
+  onNavigateToCitation?: (note: Note) => void;
+  // Re-pinta el resaltado de una cita con su nuevo color SIN desplazar la vista
+  // (a diferencia de onNavigateToCitation, que sí centra). Se usa al recolorear.
+  onRecolorCitation?: (note: Note) => void;
   selectedText?: string;
   selectedCitation?: { text: string, color: string, timestamp: number, page?: number | string };
   clearSelection?: () => void;
   currentPage?: number | string;
 }
 
-export function NotesPanel({ documentId, onNavigateToPage, selectedText, selectedCitation, clearSelection, currentPage }: NotesPanelProps) {
+export function NotesPanel({ documentId, onNavigateToPage, onNavigateToCitation, onRecolorCitation, selectedText, selectedCitation, clearSelection, currentPage }: NotesPanelProps) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [editorContent, setEditorContent] = useState('');
   const [showSavedFeedback, setShowSavedFeedback] = useState(false);
@@ -65,33 +69,29 @@ export function NotesPanel({ documentId, onNavigateToPage, selectedText, selecte
 
   // Load color palette
   useEffect(() => {
-    const savedPalette = localStorage.getItem(`color-palette-${documentId}`);
-    if (savedPalette) {
-      try {
-        setActivePalette(JSON.parse(savedPalette));
-      } catch (e) {
-        // Fallback
-      }
-    } else {
-      setActivePalette([
-        { id: 'rose-400', color: 'rose-400', bgClass: 'bg-rose-50/50', borderClass: 'border-rose-400', textClass: 'text-rose-600', name: 'Rojo', hex: '#fb7185' },
-        { id: 'sky-400', color: 'sky-400', bgClass: 'bg-sky-50/50', borderClass: 'border-sky-400', textClass: 'text-sky-600', name: 'Azul', hex: '#38bdf8' },
-        { id: 'emerald-400', color: 'emerald-400', bgClass: 'bg-emerald-50/50', borderClass: 'border-emerald-400', textClass: 'text-emerald-600', name: 'Verde', hex: '#34d399' },
-        { id: 'amber-400', color: 'amber-400', bgClass: 'bg-amber-50/50', borderClass: 'border-amber-400', textClass: 'text-amber-600', name: 'Amarillo', hex: '#fbbf24' }
-      ]);
-    }
+    fetch(`/api/documents/${documentId}/settings`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.settings?.colorPalette) {
+          setActivePalette(d.settings.colorPalette);
+        } else {
+          setActivePalette([
+            { id: 'rose-400', color: 'rose-400', bgClass: 'bg-rose-50/50', borderClass: 'border-rose-400', textClass: 'text-rose-600', name: 'Rojo', hex: '#fb7185' },
+            { id: 'sky-400', color: 'sky-400', bgClass: 'bg-sky-50/50', borderClass: 'border-sky-400', textClass: 'text-sky-600', name: 'Azul', hex: '#38bdf8' },
+            { id: 'emerald-400', color: 'emerald-400', bgClass: 'bg-emerald-50/50', borderClass: 'border-emerald-400', textClass: 'text-emerald-600', name: 'Verde', hex: '#34d399' },
+            { id: 'amber-400', color: 'amber-400', bgClass: 'bg-amber-50/50', borderClass: 'border-amber-400', textClass: 'text-amber-600', name: 'Amarillo', hex: '#fbbf24' }
+          ]);
+        }
+      })
+      .catch(() => {});
   }, [documentId]);
 
   // Load notes
   useEffect(() => {
-    const saved = localStorage.getItem(`notes-${documentId}`);
-    if (saved) {
-      try {
-        setNotes(JSON.parse(saved));
-      } catch (e) {
-        console.error("Error loading notes");
-      }
-    }
+    fetch(`/api/documents/${documentId}/notes`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => setNotes(Array.isArray(d.notes) ? d.notes : []))
+      .catch(() => console.error("Error loading notes"));
   }, [documentId]);
 
   // Save notes
@@ -101,10 +101,10 @@ export function NotesPanel({ documentId, onNavigateToPage, selectedText, selecte
       const sorted = [...updated].sort((a, b) => {
         const pageA = parsePageNum(a.pageReference);
         const pageB = parsePageNum(b.pageReference);
-        
+
         const hasPageA = pageA > 0;
         const hasPageB = pageB > 0;
-        
+
         if (hasPageA && hasPageB) {
           if (pageA !== pageB) return pageA - pageB;
         } else if (hasPageA) {
@@ -114,7 +114,12 @@ export function NotesPanel({ documentId, onNavigateToPage, selectedText, selecte
         }
         return a.timestamp - b.timestamp;
       });
-      localStorage.setItem(`notes-${documentId}`, JSON.stringify(sorted));
+      fetch(`/api/documents/${documentId}/notes`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes: sorted }),
+      }).catch(err => console.error('No se pudieron guardar las notas:', err));
       return sorted;
     });
     setShowSavedFeedback(true);
@@ -133,7 +138,16 @@ export function NotesPanel({ documentId, onNavigateToPage, selectedText, selecte
         color: selectedCitation.color,
         type: 'note'
       };
-      saveNotes(prev => [...prev, newNote]);
+      // No crear la misma cita más de una vez: se considera duplicada si ya
+      // existe una nota (no marcador) con el mismo contenido y la misma página.
+      // (Cubre tanto el re-montaje de StrictMode con el mismo timestamp como la
+      // selección repetida del mismo fragmento en momentos distintos.)
+      const isDuplicate = (list: Note[]) => list.some(n =>
+        n.type !== 'bookmark' &&
+        n.content.trim() === newNote.content.trim() &&
+        String(n.pageReference ?? '') === String(newNote.pageReference ?? '')
+      );
+      saveNotes(prev => isDuplicate(prev) ? prev : [...prev, newNote]);
       if (clearSelection) clearSelection();
     }
   }, [selectedCitation, documentId, clearSelection]);
@@ -258,7 +272,7 @@ export function NotesPanel({ documentId, onNavigateToPage, selectedText, selecte
                      <div className="flex items-center gap-2 min-w-0 flex-1">
                        <Tag className="w-3.5 h-3.5 text-white/90 shrink-0" />
                        <span className="text-xs font-semibold truncate text-white">{note.content}</span>
-                       {note.pageReference && (
+                       {note.pageReference && parsePageNum(note.pageReference) > 0 && (
                          <span className="text-[10px] font-bold text-white/95 shrink-0 bg-white/20 px-1.5 py-0.5 rounded ml-1">
                            pág. {note.pageReference}
                          </span>
@@ -306,10 +320,28 @@ export function NotesPanel({ documentId, onNavigateToPage, selectedText, selecte
                       </div>
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                          <>
-                             <button onClick={() => saveNotes(notes.map(n => n.id === note.id ? { ...n, color: 'emerald-400' } : n))} className="w-3 h-3 rounded-full bg-emerald-400 border border-emerald-500 hover:scale-110 transition-transform" />
-                             <button onClick={() => saveNotes(notes.map(n => n.id === note.id ? { ...n, color: 'amber-400' } : n))} className="w-3 h-3 rounded-full bg-amber-400 border border-amber-500 hover:scale-110 transition-transform" />
-                             <button onClick={() => saveNotes(notes.map(n => n.id === note.id ? { ...n, color: 'sky-400' } : n))} className="w-3 h-3 rounded-full bg-sky-400 border border-sky-500 hover:scale-110 transition-transform" />
-                             <button onClick={() => saveNotes(notes.map(n => n.id === note.id ? { ...n, color: 'rose-400' } : n))} className="w-3 h-3 rounded-full bg-rose-400 border border-rose-500 hover:scale-110 transition-transform" />
+                             {(['emerald-400', 'amber-400', 'sky-400', 'rose-400'] as const).map((colorId) => {
+                               const dot: Record<string, string> = {
+                                 'emerald-400': 'bg-emerald-400 border-emerald-500',
+                                 'amber-400': 'bg-amber-400 border-amber-500',
+                                 'sky-400': 'bg-sky-400 border-sky-500',
+                                 'rose-400': 'bg-rose-400 border-rose-500',
+                               };
+                               return (
+                                 <button
+                                   key={colorId}
+                                   onClick={() => {
+                                     saveNotes(notes.map(n => n.id === note.id ? { ...n, color: colorId } : n));
+                                     // Re-pinta el resaltado en el documento con el nuevo color.
+                                     if (onRecolorCitation) {
+                                       const quote = note.quote || (note.content.startsWith('>') ? note.content.replace(/^>\s*/, '') : undefined);
+                                       if (quote) onRecolorCitation({ ...note, color: colorId, quote });
+                                     }
+                                   }}
+                                   className={cn("w-3 h-3 rounded-full border hover:scale-110 transition-transform", dot[colorId])}
+                                 />
+                               );
+                             })}
                              <div className="w-px h-3 bg-slate-300 mx-0.5" />
                          </>
                         <button onClick={() => { setEditingNoteId(note.id); setEditContent(note.content); setEditPage(note.pageReference || ''); }} className="p-1 text-slate-400 hover:text-[#00558F] hover:bg-[#00558F]/10 rounded">
@@ -333,8 +365,15 @@ export function NotesPanel({ documentId, onNavigateToPage, selectedText, selecte
                         {note.pageReference && (
                           <>
                             {' '}
-                            <button 
-                              onClick={() => { if (onNavigateToPage) onNavigateToPage(note.pageReference!); }} 
+                            <button
+                              onClick={() => {
+                                const quote = note.quote || (note.content.startsWith('>') ? note.content.replace(/^>\s*/, '') : undefined);
+                                if (quote && onNavigateToCitation) {
+                                  onNavigateToCitation({ ...note, quote });
+                                } else if (onNavigateToPage) {
+                                  onNavigateToPage(note.pageReference!);
+                                }
+                              }}
                               className="text-xs text-[#00558F] font-semibold hover:underline inline"
                             >
                               (pag.{note.pageReference})

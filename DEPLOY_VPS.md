@@ -202,3 +202,117 @@ Certbot configura HTTPS automáticamente y renueva el certificado cada 90 días.
 | Eliminar contenedor | `docker rm bibliotequita` |
 | Ver contenedores activos | `docker ps` |
 | Ver uso de disco | `docker system df` |
+
+---
+
+## Opcional — Supabase autoalojado en el VPS (almacenamiento de archivos)
+
+Esta sección instala un stack de **Supabase self-hosted** (Postgres + Storage API + Kong + Auth + Studio) en el mismo VPS, usando Docker Compose. Sirve para mover los PDF/EPUB/portadas que hoy se guardan en `~/bibliotequita-uploads` a un bucket de Supabase Storage. **Esta instalación es independiente del contenedor `bibliotequita`** — corre en sus propios contenedores y puertos.
+
+> Requiere al menos 2 GB de RAM libres en el VPS (idealmente 4 GB+). Si tu VPS es muy pequeño, considera ampliarlo antes de seguir.
+
+### Paso S1 — Clonar el repositorio oficial de Supabase
+
+```bash
+cd ~
+git clone --depth 1 https://github.com/supabase/supabase.git supabase-src
+cd supabase-src/docker
+```
+
+### Paso S2 — Crear el archivo `.env`
+
+```bash
+cp .env.example .env
+```
+
+Genera las claves y contraseñas necesarias. Supabase necesita:
+
+- `POSTGRES_PASSWORD` — contraseña de la base de datos.
+- `JWT_SECRET` — secreto para firmar los tokens (mínimo 32 caracteres).
+- `ANON_KEY` y `SERVICE_ROLE_KEY` — claves JWT derivadas del `JWT_SECRET`.
+- `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` — acceso al panel Studio.
+
+Genera un `JWT_SECRET` aleatorio:
+
+```bash
+openssl rand -base64 48 | tr -d '\n' | cut -c1-40
+```
+
+Para generar `ANON_KEY` y `SERVICE_ROLE_KEY` a partir de ese `JWT_SECRET`, usa el generador oficial de Supabase:
+[https://supabase.com/docs/guides/self-hosting/docker#securing-your-services](https://supabase.com/docs/guides/self-hosting/docker#securing-your-services)
+(pega tu `JWT_SECRET` ahí y copia las dos claves generadas).
+
+Edita el `.env`:
+
+```bash
+nano .env
+```
+
+Como mínimo, ajusta estas variables:
+
+```
+POSTGRES_PASSWORD=elige-una-contraseña-fuerte
+JWT_SECRET=el-secreto-de-32+-caracteres-que-generaste
+ANON_KEY=la-clave-anon-generada
+SERVICE_ROLE_KEY=la-clave-service-role-generada
+
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=elige-otra-contraseña-fuerte
+
+# URLs públicas: si no tienes dominio propio, usa la IP del VPS
+SITE_URL=http://IP_DE_TU_VPS:8000
+API_EXTERNAL_URL=http://IP_DE_TU_VPS:8000
+SUPABASE_PUBLIC_URL=http://IP_DE_TU_VPS:8000
+```
+
+> Las claves `ANON_KEY` y `SERVICE_ROLE_KEY` son secretas. No las compartas ni las subas a GitHub — guárdalas igual que las del `.env` de Bibliotequita.
+
+### Paso S3 — Levantar el stack
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+La primera vez descarga varias imágenes (Postgres, Kong, GoTrue, Storage API, Studio, etc.) y puede tardar varios minutos.
+
+Verifica que todos los servicios estén corriendo:
+
+```bash
+docker compose ps
+```
+
+### Paso S4 — Acceder a Studio y crear el bucket de almacenamiento
+
+Abre `http://IP_DE_TU_VPS:8000` en el navegador (puerto del proxy Kong) e inicia sesión con `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD`.
+
+1. Ve a **Storage** en el menú lateral.
+2. Crea un nuevo bucket llamado, por ejemplo, `library-files`.
+3. Déjalo **privado** (no público) — Bibliotequita accederá a los archivos a través del backend usando la `SERVICE_ROLE_KEY`, no directamente desde el navegador.
+
+### Paso S5 — Abrir el puerto en el firewall (si aplica)
+
+```bash
+sudo ufw allow 8000/tcp
+```
+
+Si solo vas a usar Supabase desde el propio servidor (el contenedor `bibliotequita` accede por red interna), puedes omitir este paso y mantener el puerto 8000 cerrado al exterior.
+
+### Datos que necesitarás para el siguiente paso
+
+Cuando este stack esté corriendo, ten a mano (sin compartirlos en texto plano si es posible):
+
+- **URL de Supabase**: `http://IP_DE_TU_VPS:8000` (o tu dominio si configuraste Nginx).
+- **`SERVICE_ROLE_KEY`** generada en el paso S2.
+- **Nombre del bucket**: `library-files`.
+
+Con estos tres datos se actualizará `server.ts` para que `/api/upload`, `/api/files/:name` y el resto de endpoints que leen archivos lean y escriban en este bucket en lugar del disco local.
+
+### Comandos útiles de Supabase
+
+| Acción | Comando |
+|---|---|
+| Ver logs en vivo | `docker compose logs -f` |
+| Detener el stack | `docker compose down` |
+| Reiniciar el stack | `docker compose restart` |
+| Actualizar imágenes | `docker compose pull && docker compose up -d` |

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Trash2, 
   Edit2, 
@@ -56,6 +56,7 @@ interface CitationsManagerProps {
   documentId: string;
   onClose: () => void;
   onNavigateToPage?: (page: number | string) => void;
+  onNavigateToCitation?: (note: CitationNote) => void;
   currentPage?: number | string;
 }
 
@@ -82,7 +83,7 @@ const LOADING_MESSAGES = [
   "Generando el documento de resumen definitivo..."
 ];
 
-export function CitationsManager({ documentId, onClose, onNavigateToPage, currentPage }: CitationsManagerProps) {
+export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavigateToCitation, currentPage }: CitationsManagerProps) {
   const [notes, setNotes] = useState<CitationNote[]>([]);
   const [activePalette, setActivePalette] = useState<ColorDefinition[]>([]);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
@@ -91,6 +92,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
   
   const [selectedColorFilter, setSelectedColorFilter] = useState<string>('all');
   const [showConfigModal, setShowConfigModal] = useState(false);
+  const [colorToDelete, setColorToDelete] = useState<ColorDefinition | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   // Gemini Summary state
@@ -106,6 +108,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
   const [loadingMsg, setLoadingMsg] = useState(LOADING_MESSAGES[0]);
   const [copyFeedback, setCopyFeedback] = useState(false);
   const [saveNoteFeedback, setSaveNoteFeedback] = useState(false);
+  const [summarySaveStatus, setSummarySaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
 
   // New states for export dropdown, color picking, and Google Doc link
   const [activeColorPickerNoteId, setActiveColorPickerNoteId] = useState<string | null>(null);
@@ -113,13 +116,18 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
   const [googleDocLink, setGoogleDocLink] = useState<string | null>(null);
   const [isExportingGoogleDoc, setIsExportingGoogleDoc] = useState(false);
 
-  // Group by color toggle state (persisted in localStorage)
-  const [isGroupedByColor, setIsGroupedByColor] = useState<boolean>(() => {
-    return localStorage.getItem(`group-by-color-${documentId}`) === 'true';
-  });
+  // Group by color toggle state (persistido en document_settings)
+  const [isGroupedByColor, setIsGroupedByColor] = useState<boolean>(false);
+  const groupByColorLoadedRef = useRef(false);
 
   useEffect(() => {
-    localStorage.setItem(`group-by-color-${documentId}`, String(isGroupedByColor));
+    if (!groupByColorLoadedRef.current) return;
+    fetch(`/api/documents/${documentId}/settings`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ groupByColor: isGroupedByColor }),
+    }).catch(err => console.error('No se pudo guardar el agrupado por color:', err));
   }, [isGroupedByColor, documentId]);
 
   // Close color picker when clicking anywhere else
@@ -144,41 +152,49 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
 
   // Autosave when summary changes to persist "la proxima vez que entre debe estar"
   useEffect(() => {
-    if (generatedSummary) {
-      localStorage.setItem(`summary-gen-${documentId}`, generatedSummary);
-    } else {
-      localStorage.removeItem(`summary-gen-${documentId}`);
-    }
+    if (!groupByColorLoadedRef.current) return;
+    fetch(`/api/documents/${documentId}/settings`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ summaryGen: generatedSummary || null }),
+    }).catch(err => console.error('No se pudo guardar el resumen generado:', err));
   }, [generatedSummary, documentId]);
 
   useEffect(() => {
-    if (editedSummary) {
-      localStorage.setItem(`summary-edit-${documentId}`, editedSummary);
-    } else {
-      localStorage.removeItem(`summary-edit-${documentId}`);
-    }
+    if (!groupByColorLoadedRef.current) return;
+    fetch(`/api/documents/${documentId}/settings`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ summaryEdit: editedSummary || null }),
+    }).catch(err => console.error('No se pudo guardar el resumen editado:', err));
   }, [editedSummary, documentId]);
 
   // Load citations and saved summaries
-  const loadCitations = () => {
-    const saved = localStorage.getItem(`notes-${documentId}`);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as CitationNote[];
-        setNotes(parsed);
-      } catch (e) {
-        console.error("Error loading notes in Citations Manager", e);
-      }
+  const loadCitations = async () => {
+    try {
+      const res = await fetch(`/api/documents/${documentId}/notes`, { credentials: 'include' });
+      const d = await res.json();
+      if (Array.isArray(d.notes)) setNotes(d.notes);
+    } catch (e) {
+      console.error("Error loading notes in Citations Manager", e);
     }
+  };
 
-    // Load saved summaries if they exist
-    const savedGen = localStorage.getItem(`summary-gen-${documentId}`);
-    const savedEdit = localStorage.getItem(`summary-edit-${documentId}`);
-    if (savedGen) {
-      setGeneratedSummary(savedGen);
-    }
-    if (savedEdit) {
-      setEditedSummary(savedEdit);
+  const loadSummaries = async () => {
+    try {
+      const res = await fetch(`/api/documents/${documentId}/settings`, { credentials: 'include' });
+      const d = await res.json();
+      if (d.settings?.summaryGen) setGeneratedSummary(d.settings.summaryGen);
+      if (d.settings?.summaryEdit) setEditedSummary(d.settings.summaryEdit);
+      if (typeof d.settings?.groupByColor === 'boolean') setIsGroupedByColor(d.settings.groupByColor);
+    } catch (e) {
+      console.error("Error loading document settings", e);
+    } finally {
+      // Esperar al siguiente tick para que los setState de carga ya hayan
+      // disparado los efectos de autosave antes de "armarlos".
+      setTimeout(() => { groupByColorLoadedRef.current = true; }, 0);
     }
   };
 
@@ -213,23 +229,21 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
   };
 
   // Load color palette configuration
-  const loadPalette = () => {
-    const savedPalette = localStorage.getItem(`color-palette-${documentId}`);
-    if (savedPalette) {
-      try {
-        setActivePalette(JSON.parse(savedPalette));
-      } catch (e) {
-        // Fallback to initial 4 colors
-        setActivePalette(ALL_POSSIBLE_COLORS.slice(0, 4));
-      }
-    } else {
+  const loadPalette = async () => {
+    try {
+      const res = await fetch(`/api/documents/${documentId}/settings`, { credentials: 'include' });
+      const d = await res.json();
+      setActivePalette(d.settings?.colorPalette ?? ALL_POSSIBLE_COLORS.slice(0, 4));
+    } catch (e) {
       setActivePalette(ALL_POSSIBLE_COLORS.slice(0, 4));
     }
   };
 
   useEffect(() => {
+    groupByColorLoadedRef.current = false;
     loadCitations();
     loadPalette();
+    loadSummaries();
   }, [documentId]);
 
   const saveNotes = (updatedNotes: CitationNote[]) => {
@@ -244,10 +258,10 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
     const sorted = [...updatedNotes].sort((a, b) => {
       const pageA = parsePageNum(a.pageReference);
       const pageB = parsePageNum(b.pageReference);
-      
+
       const hasPageA = pageA > 0;
       const hasPageB = pageB > 0;
-      
+
       if (hasPageA && hasPageB) {
         if (pageA !== pageB) return pageA - pageB;
       } else if (hasPageA) {
@@ -258,12 +272,22 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
       return a.timestamp - b.timestamp;
     });
 
-    localStorage.setItem(`notes-${documentId}`, JSON.stringify(sorted));
+    fetch(`/api/documents/${documentId}/notes`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: sorted }),
+    }).catch(err => console.error('No se pudieron guardar las notas:', err));
     setNotes(sorted);
   };
 
   const savePalette = (updatedPalette: ColorDefinition[]) => {
-    localStorage.setItem(`color-palette-${documentId}`, JSON.stringify(updatedPalette));
+    fetch(`/api/documents/${documentId}/settings`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ colorPalette: updatedPalette }),
+    }).catch(err => console.error('No se pudo guardar la paleta de colores:', err));
     setActivePalette(updatedPalette);
   };
 
@@ -346,8 +370,16 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
       showFeedback("La paleta debe tener al menos un color activo.");
       return;
     }
-    const updated = activePalette.filter(c => c.id !== id);
+    const color = activePalette.find(c => c.id === id);
+    if (color) setColorToDelete(color);
+  };
+
+  const confirmRemoveColor = () => {
+    if (!colorToDelete) return;
+    const updated = activePalette.filter(c => c.id !== colorToDelete.id);
     savePalette(updated);
+    if (selectedColorFilter === colorToDelete.id) setSelectedColorFilter('all');
+    setColorToDelete(null);
   };
 
   const addColorToPalette = (colorId: string) => {
@@ -621,6 +653,25 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
     setTimeout(() => setCopyFeedback(false), 2000);
   };
 
+  // Guarda de forma explícita el resumen editado en document_settings,
+  // como respaldo al autoguardado para que el usuario tenga confirmación visual.
+  const handleSaveSummaryNow = async () => {
+    setSummarySaveStatus('saving');
+    try {
+      await fetch(`/api/documents/${documentId}/settings`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ summaryGen: generatedSummary || null, summaryEdit: editedSummary || null }),
+      });
+      setSummarySaveStatus('saved');
+      setTimeout(() => setSummarySaveStatus('idle'), 2000);
+    } catch (e) {
+      console.error('No se pudo guardar el resumen:', e);
+      setSummarySaveStatus('idle');
+    }
+  };
+
   const handleSaveSummaryAsNote = () => {
     if (!editedSummary) return;
     const typeLabel = summaryType === 'breve' ? 'Breve' : summaryType === 'descriptivo' ? 'Descriptivo' : 'Personalizado';
@@ -734,8 +785,16 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
                       {note.pageReference && (
                          <>
                             {' '}
-                            <button 
-                              onClick={() => { if (onNavigateToPage) { onNavigateToPage(note.pageReference!); onClose(); } }} 
+                            <button
+                              onClick={() => {
+                                const quote = note.quote || (note.content.startsWith('>') ? note.content.replace(/^>\s*/, '') : undefined);
+                                if (quote && onNavigateToCitation) {
+                                  onNavigateToCitation({ ...note, quote });
+                                } else if (onNavigateToPage) {
+                                  onNavigateToPage(note.pageReference!);
+                                }
+                                onClose();
+                              }}
                               className="text-[10px] sm:text-xs text-[#00558F]/90 hover:text-[#00558F] font-semibold hover:underline inline"
                             >
                                (pag.{note.pageReference})
@@ -819,6 +878,17 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
 
   const documentCitationsCount = notes.filter(n => n.type !== 'bookmark' && n.content.trim()).length;
   const filteredCitations = notes.filter(n => n.type !== 'bookmark' && (selectedColorFilter === 'all' || n.color === selectedColorFilter));
+
+  // Memoizado: getSortedCitations() filtra+ordena TODAS las notas, y se
+  // necesitaba en varios puntos del render (incluido dentro de .map() por
+  // cada cita para hallar su índice), repitiendo el filtro+sort O(N) veces
+  // por cada una de las N citas — un freeze notable con muchas citas.
+  const sortedCitations = useMemo(() => getSortedCitations(), [notes, selectedColorFilter]);
+  const sortedCitationIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    sortedCitations.forEach((n, i) => map.set(n.id, i));
+    return map;
+  }, [sortedCitations]);
 
   return (
     <div className="absolute inset-0 z-50 bg-slate-50 flex flex-col overflow-hidden animate-in fade-in duration-200">
@@ -1211,6 +1281,29 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
 
                            <div className="flex items-center gap-2 w-full sm:w-auto">
                              <button
+                               onClick={handleSaveSummaryNow}
+                               disabled={summarySaveStatus === 'saving'}
+                               className="flex-1 sm:flex-initial text-xs font-bold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 border border-slate-250 px-4 py-2.5 rounded-xl transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
+                               title="Guardar el resumen editado"
+                             >
+                               {summarySaveStatus === 'saving' ? (
+                                 <>
+                                   <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500" />
+                                   Guardando...
+                                 </>
+                               ) : summarySaveStatus === 'saved' ? (
+                                 <>
+                                   <Check className="w-3.5 h-3.5 text-green-500" />
+                                   Guardado
+                                 </>
+                               ) : (
+                                 <>
+                                   <Save className="w-3.5 h-3.5 text-slate-500" />
+                                   Guardar
+                                 </>
+                               )}
+                             </button>
+                             <button
                                onClick={handleCopySummary}
                                className="flex-1 sm:flex-initial text-xs font-bold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 border border-slate-250 px-4 py-2.5 rounded-xl transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
                              >
@@ -1255,9 +1348,20 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
                {/* Desktop Left Controls/Filters Panel - Hidden on Mobile */}
                <aside className="hidden md:flex w-64 bg-white border-r border-slate-200 p-4 shrink-0 flex-col gap-4">
                   <div>
-                     <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2.5">Filtrar por Color</h4>
+                     <div className="flex items-center justify-between mb-2.5">
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Filtrar por Color</h4>
+                        {activePalette.length < 6 && (
+                           <button
+                             onClick={() => setShowConfigModal(true)}
+                             className="p-1 rounded-md text-slate-400 hover:text-[#00558F] hover:bg-[#00558F]/5 transition-colors cursor-pointer"
+                             title="Añadir color"
+                           >
+                              <Plus className="w-3.5 h-3.5" />
+                           </button>
+                        )}
+                     </div>
                      <div className="flex flex-col gap-1.5">
-                        <button 
+                        <button
                           onClick={() => setSelectedColorFilter('all')}
                           className={cn(
                             "text-left text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-2 w-full transition-all border",
@@ -1377,6 +1481,15 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
                          </button>
                        );
                      })}
+                     {activePalette.length < 6 && (
+                        <button
+                          onClick={() => setShowConfigModal(true)}
+                          className="text-[10px] font-bold p-1 rounded-full border border-slate-200 text-slate-500 hover:text-[#00558F] hover:border-[#00558F]/30 hover:bg-[#00558F]/5 transition-all shrink-0 flex items-center justify-center cursor-pointer w-5 h-5"
+                          title="Añadir color"
+                        >
+                           <Plus className="w-3 h-3" />
+                        </button>
+                     )}
                   </div>
 
                   {/* Ultra compact ordering button in mobile */}
@@ -1397,7 +1510,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
 
                {/* Content Area / List of citations */}
                <main className="flex-1 overflow-y-auto px-2.5 py-3 sm:px-6 md:px-8 space-y-1.5 sm:space-y-4">
-            {getSortedCitations().length === 0 ? (
+            {sortedCitations.length === 0 ? (
                <div className="bg-white border rounded-2xl p-12 text-center shadow-sm max-w-xl mx-auto mt-8">
                   <AlertCircle className="w-10 h-10 text-slate-300 mx-auto mb-3" />
                   <h3 className="font-bold text-slate-700 text-sm mb-1">Sin elementos</h3>
@@ -1406,9 +1519,9 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
             ) : isGroupedByColor ? (
                <div className="max-w-4xl mx-auto space-y-6">
                  {activePalette.map(color => {
-                   const colorCitations = getSortedCitations().filter(n => n.color === color.id);
+                   const colorCitations = sortedCitations.filter(n => n.color === color.id);
                    if (colorCitations.length === 0) return null;
-                   
+
                    return (
                      <div key={color.id} className="space-y-2 animate-in fade-in duration-200">
                        {/* Color Group Header */}
@@ -1418,22 +1531,22 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
                            {color.name} <span className="text-[10px] text-slate-400 font-semibold lowercase">({colorCitations.length} {colorCitations.length === 1 ? 'cita' : 'citas'})</span>
                          </h3>
                        </div>
-                       
+
                        <div className="space-y-1.5 sm:space-y-3">
                          {colorCitations.map((note) => {
-                           const noteIndex = getSortedCitations().findIndex(n => n.id === note.id);
+                           const noteIndex = sortedCitationIndexById.get(note.id) ?? 0;
                            return renderNoteRow(note, noteIndex);
                          })}
                        </div>
                      </div>
                    );
                  })}
-                 
+
                  {/* Uncolored notes group if any exist */}
                  {(() => {
-                   const noColorCitations = getSortedCitations().filter(n => !n.color || !activePalette.some(ap => ap.id === n.color));
+                   const noColorCitations = sortedCitations.filter(n => !n.color || !activePalette.some(ap => ap.id === n.color));
                    if (noColorCitations.length === 0) return null;
-                   
+
                    return (
                      <div className="space-y-2 animate-in fade-in duration-200">
                        <div className="flex items-center gap-2 pb-1 border-b border-slate-100 mt-4 select-none">
@@ -1442,10 +1555,10 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
                            Sin Color <span className="text-[10px] text-slate-400 font-semibold lowercase">({noColorCitations.length})</span>
                          </h3>
                        </div>
-                       
+
                        <div className="space-y-1.5 sm:space-y-3">
                          {noColorCitations.map((note) => {
-                           const noteIndex = getSortedCitations().findIndex(n => n.id === note.id);
+                           const noteIndex = sortedCitationIndexById.get(note.id) ?? 0;
                            return renderNoteRow(note, noteIndex);
                          })}
                        </div>
@@ -1455,7 +1568,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
                </div>
             ) : (
                <div className="max-w-4xl mx-auto space-y-1.5 sm:space-y-3">
-                  {getSortedCitations().map((note, index) => renderNoteRow(note, index))}
+                  {sortedCitations.map((note, index) => renderNoteRow(note, index))}
                </div>
             )}
          </main>
@@ -1538,11 +1651,50 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, curren
                </div>
 
                <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
-                  <button 
+                  <button
                     onClick={() => setShowConfigModal(false)}
                     className="text-xs font-bold bg-[#00558F] text-white px-4 py-2 rounded-xl hover:bg-[#004d80] transition-colors shadow-sm"
                   >
                      Listo
+                  </button>
+               </div>
+            </div>
+         </div>
+      )}
+
+      {/* Confirmación de borrado de color */}
+      {colorToDelete && (
+         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4 animate-in fade-in duration-150">
+            <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden flex flex-col border border-slate-100 animate-in zoom-in-95 duration-200">
+               <div className="p-5 space-y-3">
+                  <div className="flex items-center gap-3">
+                     <div className="w-9 h-9 rounded-full bg-red-50 text-red-500 flex items-center justify-center shrink-0">
+                        <AlertCircle className="w-5 h-5" />
+                     </div>
+                     <h3 className="font-bold text-slate-800 text-sm">Eliminar color de la paleta</h3>
+                  </div>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                     ¿Seguro que deseas eliminar el color
+                     {' '}
+                     <span className="font-bold inline-flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-full border border-black/10 inline-block" style={{ backgroundColor: colorToDelete.hex }} />
+                        {colorToDelete.name}
+                     </span>
+                     {' '}de la paleta? Las citas que ya tengan este color asignado conservarán su etiqueta, pero dejará de estar disponible para nuevas selecciones.
+                  </p>
+               </div>
+               <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+                  <button
+                    onClick={() => setColorToDelete(null)}
+                    className="text-xs font-bold text-slate-600 bg-white border border-slate-200 px-4 py-2 rounded-xl hover:bg-slate-100 transition-colors"
+                  >
+                     Cancelar
+                  </button>
+                  <button
+                    onClick={confirmRemoveColor}
+                    className="text-xs font-bold bg-red-500 text-white px-4 py-2 rounded-xl hover:bg-red-600 transition-colors shadow-sm"
+                  >
+                     Eliminar
                   </button>
                </div>
             </div>

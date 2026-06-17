@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Settings2, Palette, Library, Plus, Trash2, Edit2, AppWindow } from 'lucide-react';
+import { X, Settings2, Palette, Library, Plus, Trash2, Edit2, AppWindow, Eye, EyeOff } from 'lucide-react';
 import { cn, colorSwatchProps } from '../lib/utils';
 import { useLibrary, ThemeMode } from '../hooks/useLibrary';
 
@@ -167,20 +167,33 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                       </button>
                    </div>
                    
+                   <p className="text-xs text-[var(--text-muted)] -mt-3">
+                      Las categorías base (Libros, Revistas, Artículos, Estudio) no se
+                      pueden borrar, pero puedes ocultarlas de la barra lateral.
+                   </p>
                    <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
-                      {categories.map(cat => (
-                         <div key={cat.id} className="flex items-center justify-between p-3 rounded-lg border border-slate-200/50 bg-[var(--bg-card)]">
+                      {categories.map(cat => {
+                         const isBase = ['libros', 'revistas', 'artículos', 'articulos', 'estudio'].includes(cat.name.toLowerCase());
+                         return (
+                         <div key={cat.id} className={cn("flex items-center justify-between p-3 rounded-lg border border-slate-200/50 bg-[var(--bg-card)]", cat.hidden && "opacity-50")}>
                             {editCatId === cat.id ? (
                                <input autoFocus value={editCatName} onChange={e => setEditCatName(e.target.value)} onBlur={() => { updateCategory(cat.id, { name: editCatName || cat.name }); setEditCatId(null); }} onKeyDown={e => e.key === 'Enter' && e.currentTarget.blur()} className="flex-1 bg-transparent outline-none text-sm font-medium" />
                             ) : (
-                               <span className="text-sm font-medium">{cat.name}</span>
+                               <span className="text-sm font-medium">{cat.name}{isBase && <span className="ml-2 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">base</span>}</span>
                             )}
                             <div className="flex items-center gap-1">
-                               <button onClick={() => { setEditCatId(cat.id); setEditCatName(cat.name); }} className="p-1.5 text-slate-400 hover:text-[var(--primary)] rounded-md"><Edit2 className="w-4 h-4" /></button>
-                               <button onClick={() => deleteCategory(cat.id)} className="p-1.5 text-slate-400 hover:text-rose-500 rounded-md"><Trash2 className="w-4 h-4" /></button>
+                               <button onClick={() => { setEditCatId(cat.id); setEditCatName(cat.name); }} className="p-1.5 text-slate-400 hover:text-[var(--primary)] rounded-md" title="Renombrar"><Edit2 className="w-4 h-4" /></button>
+                               {isBase ? (
+                                  <button onClick={() => updateCategory(cat.id, { hidden: !cat.hidden })} className="p-1.5 text-slate-400 hover:text-[var(--primary)] rounded-md" title={cat.hidden ? 'Mostrar en la barra lateral' : 'Ocultar de la barra lateral'}>
+                                     {cat.hidden ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                  </button>
+                               ) : (
+                                  <button onClick={() => deleteCategory(cat.id)} className="p-1.5 text-slate-400 hover:text-rose-500 rounded-md" title="Borrar"><Trash2 className="w-4 h-4" /></button>
+                               )}
                             </div>
                          </div>
-                      ))}
+                         );
+                      })}
                    </div>
                 </div>
               )}

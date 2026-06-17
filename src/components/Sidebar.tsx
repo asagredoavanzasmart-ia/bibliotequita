@@ -15,7 +15,7 @@
 // (ver DroppablePlaylist y Dashboard.handleDragEnd).
 // =============================================================================
 
-import { Library, Folder, Plus, Edit2, Trash2, X, Check, ChevronDown, ChevronRight, Pin, BarChart2, LayoutGrid, GalleryVerticalEnd, List, Settings, BookOpen, Newspaper, FileText, Book, Laptop, Layers } from 'lucide-react';
+import { Library, Folder, Plus, Edit2, Trash2, X, Check, ChevronDown, ChevronRight, Pin, BarChart2, LayoutGrid, GalleryVerticalEnd, List, Settings, BookOpen, Newspaper, FileText, Book, Laptop, Layers, ShieldCheck } from 'lucide-react';
 import { useLibrary } from '../hooks/useLibrary';
 import { useState, FormEvent } from 'react';
 import { cn, colorSwatchProps } from '../lib/utils';
@@ -44,6 +44,7 @@ interface SidebarProps {
   collapsed?: boolean;
   setCollapsed?: (c: boolean) => void;
   onOpenSettings?: () => void;
+  onOpenAdmin?: () => void;
   onClose?: () => void;
 }
 
@@ -87,7 +88,7 @@ const THEME_COLORS = [
   'bg-slate-800'
 ];
 
-export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlaylist, activeStage, setActiveStage, filters, setFilters, viewMode, setViewMode, collapsed, setCollapsed, onOpenSettings, onClose }: SidebarProps) {
+export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlaylist, activeStage, setActiveStage, filters, setFilters, viewMode, setViewMode, collapsed, setCollapsed, onOpenSettings, onOpenAdmin, onClose }: SidebarProps) {
   const { playlists, stages, categories, addPlaylist, updatePlaylist, deletePlaylist, items } = useLibrary();
   const [isCreating, setIsCreating] = useState(false);
   const [isCategoriesExpanded, setIsCategoriesExpanded] = useState(false);
@@ -150,16 +151,8 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
     <aside className={cn("bg-[var(--sidebar-bg)] text-white shadow-xl h-full w-full flex flex-col overflow-y-auto z-20 sidebar-scrollbar transition-all duration-300")} style={{ direction: 'rtl' }}>
       <div className="flex-1 w-full" style={{ direction: 'ltr' }}>
       <div className={cn("p-6 border-b border-white/10 relative group", collapsed ? "p-3 pt-6" : "p-6")}>
-        {setCollapsed && (
-          <button 
-            onClick={() => setCollapsed(!collapsed)}
-            className={cn("hidden lg:block absolute right-2 top-2 p-1.5 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition-colors opacity-0 group-hover:opacity-100", collapsed && "opacity-100 left-1/2 -translate-x-1/2 mt-1 top-0 right-auto")}
-          >
-            {collapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronRight className="w-5 h-5 rotate-180" />}
-          </button>
-        )}
         {onClose && (
-          <button 
+          <button
             onClick={onClose}
             className="lg:hidden absolute right-4 top-4 p-2 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition-colors"
           >
@@ -171,44 +164,52 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
           </div>
           {!collapsed && (
-            <div>
-              <h1 className="text-sm font-extrabold tracking-tight uppercase leading-none">Biblioteca</h1>
+            <div className="min-w-0 flex-1">
+              <h1 className="text-sm font-extrabold tracking-tight uppercase leading-none truncate">Biblioteca</h1>
               <span className="text-[10px] opacity-70 uppercase tracking-widest">Personal</span>
             </div>
           )}
+          {setCollapsed && (
+            <button
+              onClick={() => setCollapsed(!collapsed)}
+              className={cn("hidden lg:block p-1.5 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition-colors shrink-0", !collapsed && "opacity-0 group-hover:opacity-100", collapsed && "mx-auto")}
+            >
+              {collapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronRight className="w-5 h-5 rotate-180" />}
+            </button>
+          )}
         </div>
-        
+
         {viewMode && setViewMode && !collapsed && (
           <>
             {/* Mobile view toggles */}
-            <div className="lg:hidden flex bg-white/5 border border-white/10 p-1 rounded-xl mb-6">
+            <div className="lg:hidden grid grid-cols-2 gap-1 bg-white/5 border border-white/10 p-1 rounded-xl mb-6">
              <button
                 onClick={() => setViewMode('covers')}
-                className={cn("flex-1 py-2 flex items-center justify-center gap-2 rounded-lg transition-colors text-xs font-bold", viewMode === 'covers' ? "bg-white/10 text-white" : "text-white/50 hover:text-white")}
+                className={cn("py-2.5 flex items-center justify-center gap-2 rounded-lg transition-colors text-xs font-bold", viewMode === 'covers' ? "bg-white/10 text-white" : "text-white/50 hover:text-white")}
              >
-                <GalleryVerticalEnd className="w-4 h-4" />
+                <GalleryVerticalEnd className="w-4 h-4 shrink-0" />
                 Portadas
              </button>
              <button
-                onClick={() => setViewMode('grid-compact')}
-                className={cn("flex-1 py-2 flex items-center justify-center gap-2 rounded-lg transition-colors text-xs font-bold", viewMode === 'grid-compact' ? "bg-white/10 text-white" : "text-white/50 hover:text-white")}
+                onClick={() => setViewMode('list')}
+                className={cn("py-2.5 flex items-center justify-center gap-2 rounded-lg transition-colors text-xs font-bold", viewMode === 'list' ? "bg-white/10 text-white" : "text-white/50 hover:text-white")}
              >
-                <div className="w-4 h-4 grid grid-cols-2 gap-0.5"><div className="bg-current rounded-[1px] col-span-2"></div><div className="bg-current rounded-[1px] col-span-2"></div></div>
-                1 Col
+                <List className="w-4 h-4 shrink-0" />
+                Lista
              </button>
              <button
                 onClick={() => setViewMode('grid')}
-                className={cn("flex-1 py-2 flex items-center justify-center gap-2 rounded-lg transition-colors text-xs font-bold", viewMode === 'grid' ? "bg-white/10 text-white" : "text-white/50 hover:text-white")}
+                className={cn("py-2.5 flex items-center justify-center gap-2 rounded-lg transition-colors text-xs font-bold", viewMode === 'grid' ? "bg-white/10 text-white" : "text-white/50 hover:text-white")}
              >
-                <LayoutGrid className="w-4 h-4" />
-                2 Col
+                <div className="w-4 h-4 grid grid-cols-1 gap-0.5 shrink-0"><div className="bg-current rounded-[1px]"></div><div className="bg-current rounded-[1px]"></div></div>
+                1 Columna
              </button>
              <button
-                onClick={() => setViewMode('list')}
-                className={cn("flex-1 py-2 flex items-center justify-center gap-2 rounded-lg transition-colors text-xs font-bold", viewMode === 'list' ? "bg-white/10 text-white" : "text-white/50 hover:text-white")}
+                onClick={() => setViewMode('grid-compact')}
+                className={cn("py-2.5 flex items-center justify-center gap-2 rounded-lg transition-colors text-xs font-bold", viewMode === 'grid-compact' ? "bg-white/10 text-white" : "text-white/50 hover:text-white")}
              >
-                <List className="w-4 h-4" />
-                List
+                <LayoutGrid className="w-4 h-4 shrink-0" />
+                2 Columnas
              </button>
            </div>
           </>
@@ -229,7 +230,7 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
         </button>
 
         <div className={cn("space-y-1 mt-1.5 mb-3", !collapsed ? "pl-4 border-l border-white/5 ml-3.5" : "")}>
-          {categories.map(cat => {
+          {categories.filter(cat => !cat.hidden).map(cat => {
             const CatIcon = getCategoryIcon(cat.name);
             const isSelected = activeTab === cat.id && !activePlaylist && !activeStage;
             return (
@@ -439,12 +440,12 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
                 {subjects.map(s => <option key={s} value={s} className="text-slate-800">{s}</option>)}
              </select>
              <div className="flex gap-2">
-                <select className="text-xs border border-white/20 rounded bg-white/10 text-white px-3 py-2 w-1/2 focus:ring-[#A0CFEB] focus:outline-none appearance-none" value={filters.read} onChange={(e) => setFilters({...filters, read: e.target.value})}>
+                <select className="text-xs border border-white/20 rounded bg-white/10 text-white px-2 py-2 w-1/2 min-w-0 focus:ring-[#A0CFEB] focus:outline-none appearance-none" value={filters.read} onChange={(e) => setFilters({...filters, read: e.target.value})}>
                    <option value="" className="text-slate-800">Leídos</option>
                    <option value="true" className="text-slate-800">Sí</option>
                    <option value="false" className="text-slate-800">No</option>
                 </select>
-                <select className="text-xs border border-white/20 rounded bg-white/10 text-white px-3 py-2 w-1/2 focus:ring-[#A0CFEB] focus:outline-none appearance-none" value={filters.toBuy} onChange={(e) => setFilters({...filters, toBuy: e.target.value})}>
+                <select className="text-xs border border-white/20 rounded bg-white/10 text-white px-2 py-2 w-1/2 min-w-0 focus:ring-[#A0CFEB] focus:outline-none appearance-none" value={filters.toBuy} onChange={(e) => setFilters({...filters, toBuy: e.target.value})}>
                    <option value="" className="text-slate-800">Deseados</option>
                    <option value="true" className="text-slate-800">Sí</option>
                    <option value="false" className="text-slate-800">No</option>
@@ -592,6 +593,20 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
 
       {/* Bottom Actions & Storage Indicator */}
       <div className="mt-auto px-6 pb-6 pt-4 space-y-4">
+      {onOpenAdmin && (
+         <button
+           onClick={onOpenAdmin}
+           className={cn(
+             "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full",
+             collapsed ? "justify-center" : "",
+             "text-white/80 hover:bg-white/5 hover:text-white font-medium"
+           )}
+           title={collapsed ? "Administración" : undefined}
+         >
+           <ShieldCheck className="w-5 h-5 opacity-80 shrink-0" />
+           {!collapsed && <span className="truncate text-sm">Administración</span>}
+         </button>
+      )}
       {onOpenSettings && (
          <button
            onClick={onOpenSettings}
