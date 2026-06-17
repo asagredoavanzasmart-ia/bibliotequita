@@ -1629,14 +1629,14 @@ ${text}
     return null;
   }
 
-  // Generar archivo de credenciales físicas si están disponibles en la variable de entorno y el archivo no existe
+  // Generar archivo de credenciales físicas si están disponibles en la variable de entorno
   try {
     const defaultCredentialsPath = process.env.GOOGLE_TTS_CREDENTIALS || "./google-tts-credentials.json";
-    if (process.env.GOOGLE_TTS_CREDENTIALS_JSON && !fs.existsSync(defaultCredentialsPath)) {
+    if (process.env.GOOGLE_TTS_CREDENTIALS_JSON) {
       const resolved = resolveGoogleTtsCredentials(defaultCredentialsPath);
       if (resolved && resolved.credentials) {
         fs.writeFileSync(defaultCredentialsPath, JSON.stringify(resolved.credentials, null, 2), "utf8");
-        console.log(`[TTS Init] Archivo de credenciales físicas creado dinámicamente en: ${defaultCredentialsPath}`);
+        console.log(`[TTS Init] Archivo de credenciales físicas sincronizado dinámicamente en: ${defaultCredentialsPath}`);
       }
     }
   } catch (err: any) {
