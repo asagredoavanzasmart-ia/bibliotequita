@@ -314,6 +314,7 @@ async function startServer() {
               "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],
               "img-src": ["'self'", "data:", "blob:", "https:"],
               "connect-src": ["'self'", "https://generativelanguage.googleapis.com"],
+              "media-src": ["'self'", "blob:", "data:", "https:"],
               "worker-src": ["'self'", "blob:"],
               "frame-src": ["'self'", "https:"],
             },

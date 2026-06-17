@@ -88,6 +88,54 @@ function getCorroborationLevel(text: string): CredLevel {
   return 'medio';
 }
 
+function getTrafficLightLevel(result: AuditResult): CredLevel {
+  const conclusion = (result.guia_de_aprendizaje?.conclusion_para_el_lector || '').toLowerCase();
+  const veredicto = (result.veredicto_general || '').toLowerCase();
+  const cred = (result.nivel_credibilidad || '').toLowerCase();
+
+  // 1. Si la conclusión, veredicto o credibilidad contienen "cautela", "cuidado" o "precaución"
+  if (
+    conclusion.includes('cautela') ||
+    conclusion.includes('precaución') ||
+    conclusion.includes('precaucion') ||
+    conclusion.includes('cuidado') ||
+    veredicto.includes('cautela') ||
+    veredicto.includes('precaución') ||
+    veredicto.includes('precaucion') ||
+    veredicto.includes('cuidado') ||
+    cred.includes('cautela')
+  ) {
+    return 'medio';
+  }
+
+  // 2. Si la conclusión o veredicto indican descartar o bajo nivel
+  if (
+    conclusion.includes('descartar') ||
+    conclusion.includes('bajo') ||
+    veredicto.includes('descartar') ||
+    veredicto.includes('bajo') ||
+    cred.includes('bajo')
+  ) {
+    return 'bajo';
+  }
+
+  // 3. Si indica confiar o credibilidad alta
+  if (
+    conclusion.includes('confiar') ||
+    cred.includes('alto') ||
+    cred.includes('high')
+  ) {
+    return 'alto';
+  }
+
+  // 4. Fallback al grado de corroboración
+  const corroText = (result.auditoria_epistemologica?.grado_de_corroboracion_objetiva || '').toLowerCase();
+  if (corroText.includes('alta') || corroText.includes('alto')) return 'alto';
+  if (corroText.includes('baja') || corroText.includes('bajo')) return 'bajo';
+
+  return 'medio';
+}
+
 function Semaforo({ level }: { level: CredLevel }) {
   return (
     <div className="bg-slate-900 p-3 rounded-full border border-slate-800 flex flex-col gap-2.5 shadow-inner">
@@ -334,6 +382,7 @@ ${r.veredicto_general}
 
   const credLevel = result ? getCredLevel(result.nivel_credibilidad) : null;
   const corroLevel = result ? getCorroborationLevel(result.auditoria_epistemologica.grado_de_corroboracion_objetiva) : null;
+  const trafficLightLevel = result ? getTrafficLightLevel(result) : null;
 
   return (
     <div className="flex flex-col min-h-full">
@@ -479,15 +528,15 @@ ${r.veredicto_general}
                   </div>
                   {/* Semáforo */}
                   <div className="shrink-0 flex sm:flex-col items-center justify-center gap-2 sm:gap-2 sm:border-l sm:border-white/15 sm:pl-5 pt-2 sm:pt-0">
-                    <Semaforo level={corroLevel} />
+                    <Semaforo level={trafficLightLevel || 'medio'} />
                     <div className="flex flex-col items-center">
                       <p className={cn(
                         "text-xs font-black uppercase tracking-wider",
-                        corroLevel === 'alto' ? 'text-emerald-400' : corroLevel === 'bajo' ? 'text-rose-400' : 'text-amber-400'
+                        trafficLightLevel === 'alto' ? 'text-emerald-400' : trafficLightLevel === 'bajo' ? 'text-rose-400' : 'text-amber-400'
                       )}>
-                        {corroLevel === 'alto' ? 'Alta' : corroLevel === 'bajo' ? 'Baja' : 'Moderada'}
+                        {trafficLightLevel === 'alto' ? 'Confiar' : trafficLightLevel === 'bajo' ? 'Descartar' : 'Cautela'}
                       </p>
-                      <p className="text-[10px] text-blue-300 text-center leading-tight">Corroboración</p>
+                      <p className="text-[10px] text-blue-300 text-center leading-tight">Recomendación</p>
                     </div>
                   </div>
                 </div>
