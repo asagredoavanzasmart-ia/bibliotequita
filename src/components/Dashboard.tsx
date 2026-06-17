@@ -25,6 +25,7 @@ import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { SettingsModal } from './SettingsModal';
 import { AddManualModal } from './AddManualModal';
 import { AdminPanel } from './AdminPanel';
+import { TrashPanel } from './TrashPanel';
 
 interface DemoQuota {
   max: number;
@@ -139,13 +140,15 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
       </div>
 
       <main className="flex-1 flex flex-col h-full overflow-hidden w-full relative">
-        <button
-           onClick={() => !demoQuota || demoQuota.current < demoQuota.max ? setShowManualAdd(true) : null}
-           disabled={!!demoQuota && demoQuota.current >= demoQuota.max}
-           className="lg:hidden fixed bottom-6 right-6 w-[56px] h-[56px] bg-[var(--primary)] text-white rounded-full shadow-lg shadow-[var(--primary)]/30 flex items-center justify-center z-[70] transition-transform active:scale-95 border-2 border-white/20 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-           <Plus className="w-7 h-7" />
-        </button>
+        {activeTab !== 'trash' && activeTab !== 'analytics' && (
+          <button
+             onClick={() => !demoQuota || demoQuota.current < demoQuota.max ? setShowManualAdd(true) : null}
+             disabled={!!demoQuota && demoQuota.current >= demoQuota.max}
+             className="lg:hidden fixed bottom-6 right-6 w-[56px] h-[56px] bg-[var(--primary)] text-white rounded-full shadow-lg shadow-[var(--primary)]/30 flex items-center justify-center z-[70] transition-transform active:scale-95 border-2 border-white/20 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+             <Plus className="w-7 h-7" />
+          </button>
+        )}
         {/* Background ambient blobs for frosted glass effect to shine */}
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-[#00558F]/10 blur-[120px] pointer-events-none z-0" />
         <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-[#A0CFEB]/30 blur-[120px] pointer-events-none z-0" />
@@ -186,6 +189,8 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
           <div className="flex-1 mt-4 overflow-y-auto no-scrollbar pr-2 pb-24 lg:pb-20">
             {activeTab === 'analytics' ? (
                 <AnalyticsDashboard />
+            ) : activeTab === 'trash' ? (
+                <TrashPanel />
             ) : (
                 <BookGrid 
                    category={activeTab}

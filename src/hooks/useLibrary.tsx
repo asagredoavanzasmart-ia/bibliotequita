@@ -38,6 +38,9 @@ interface LibraryContextType {
   addItem: (item: Omit<BookItem, 'id' | 'timestamp'>) => void;
   updateItem: (id: string, updates: Partial<BookItem>) => void;
   deleteItem: (id: string) => void;
+  trashItems: BookItem[];
+  restoreItem: (id: string) => void;
+  permanentlyDeleteItem: (id: string) => void;
 
   addPlaylist: (playlist: Omit<PlaylistData, 'id'>) => void;
   updatePlaylist: (id: string, updates: Partial<PlaylistData>) => void;
@@ -90,6 +93,7 @@ async function apiFetch(url: string, options?: RequestInit) {
 
 export function LibraryProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<BookItem[]>([]);
+  const [trashItems, setTrashItems] = useState<BookItem[]>([]);
   const [playlists, setPlaylists] = useState<PlaylistData[]>([]);
   const [categories, setCategories] = useState<CategoryData[]>([]);
   const [theme, setThemeState] = useState<ThemeMode>('blue');
@@ -116,6 +120,12 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       })
       .catch((err) => console.error('No se pudo cargar la biblioteca:', err))
       .finally(() => setLoaded(true));
+
+    apiFetch('/api/library/trash')
+      .then((data) => {
+        setTrashItems(data.items ?? []);
+      })
+      .catch((err) => console.error('No se pudo cargar la papelera:', err));
   }, []);
 
   useEffect(() => {
@@ -169,28 +179,38 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       .catch((err) => console.error('No se pudo actualizar el item:', err));
   };
 
-  // Al borrar un item hay que limpiar:
-  //   1. Su entrada en library_items.
-  //   2. Sus notas/paleta/marcadores asociados (document_notes + document_settings).
-  //   3. Sus archivos en el servidor (PDF/EPUB + portada) si están en /api/files/.
+  // Al borrar un item, se realiza un borrado lógico (mover a la papelera).
   const deleteItem = (id: string) => {
     const itemToDelete = items.find((i) => i.id === id);
+    if (!itemToDelete) return;
+
     setItems((prev) => prev.filter((item) => item.id !== id));
+    setTrashItems((prev) => [
+      { ...itemToDelete, deletedAt: new Date().toISOString() },
+      ...prev,
+    ]);
 
     apiFetch(`/api/library/items/${id}`, { method: 'DELETE' })
-      .catch((err) => console.error('No se pudo borrar el item:', err));
+      .catch((err) => console.error('No se pudo borrar el item (soft delete):', err));
+  };
 
-    apiFetch(`/api/documents/${id}`, { method: 'DELETE' })
-      .catch((err) => console.error('No se pudieron borrar las notas del documento:', err));
-    apiFetch(`/api/documents/${encodeURIComponent(`${id}::bookmarks`)}`, { method: 'DELETE' })
-      .catch((err) => console.error('No se pudieron borrar los marcadores del documento:', err));
+  const restoreItem = (id: string) => {
+    const itemToRestore = trashItems.find((i) => i.id === id);
+    if (!itemToRestore) return;
 
-    if (itemToDelete?.source?.startsWith('/api/files/')) {
-      deleteUploadedFile(itemToDelete.source);
-    }
-    if (itemToDelete?.thumbnailUrl?.startsWith('/api/files/')) {
-      deleteUploadedFile(itemToDelete.thumbnailUrl);
-    }
+    setTrashItems((prev) => prev.filter((item) => item.id !== id));
+    const { deletedAt, ...cleanItem } = itemToRestore;
+    setItems((prev) => [cleanItem, ...prev]);
+
+    apiFetch(`/api/library/items/${id}/restore`, { method: 'POST' })
+      .catch((err) => console.error('No se pudo restaurar el item:', err));
+  };
+
+  const permanentlyDeleteItem = (id: string) => {
+    setTrashItems((prev) => prev.filter((item) => item.id !== id));
+
+    apiFetch(`/api/library/items/${id}/permanent`, { method: 'DELETE' })
+      .catch((err) => console.error('No se pudo borrar permanentemente el item:', err));
   };
 
   const addPlaylist = (playlist: Omit<PlaylistData, 'id'>) => {
@@ -268,6 +288,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         addItem,
         updateItem,
         deleteItem,
+        trashItems,
+        restoreItem,
+        permanentlyDeleteItem,
         addPlaylist,
         updatePlaylist,
         deletePlaylist,

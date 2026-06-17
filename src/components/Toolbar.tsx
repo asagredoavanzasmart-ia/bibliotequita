@@ -98,12 +98,14 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
 
           <div className="flex flex-wrap items-center justify-end gap-3 w-full md:w-auto shrink-0">
             
-            <button 
-               onClick={onOpenAddManual}
-               className="hidden md:flex bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white px-8 py-3 rounded-xl text-sm font-bold shadow-md shadow-[var(--primary)]/20 items-center gap-2 transition-all hover:-translate-y-0.5 active:scale-95"
-            >
-               Añadir Recurso
-            </button>
+            {activeTab !== 'trash' && activeTab !== 'analytics' && (
+              <button 
+                 onClick={onOpenAddManual}
+                 className="hidden md:flex bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white px-8 py-3 rounded-xl text-sm font-bold shadow-md shadow-[var(--primary)]/20 items-center gap-2 transition-all hover:-translate-y-0.5 active:scale-95"
+              >
+                 Añadir Recurso
+              </button>
+            )}
 
             <div className="hidden sm:flex items-center gap-3 border-l border-slate-200/50 pl-4 ml-2">
               <select 

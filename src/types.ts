@@ -66,6 +66,7 @@ export interface BookItem {
   tags?: string[];              // Etiquetas del material
   bookmarkPage?: number | string; // Última página marcada → se reanuda lectura aquí
   purchaseLinks?: PurchaseLink[];
+  deletedAt?: string;
 }
 
 export interface PlaylistData {

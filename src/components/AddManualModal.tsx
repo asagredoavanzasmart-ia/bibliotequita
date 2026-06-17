@@ -9,7 +9,10 @@ import ePub from 'epubjs';
 // Migrado de idb-keyval a almacenamiento real en el servidor (ver src/lib/uploadFile.ts).
 import { uploadFile } from '../lib/uploadFile';
 
-pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString();
 
 interface DemoQuota {
   max: number;
@@ -126,6 +129,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
 
   const analyzePdfContent = async (source: string | ArrayBuffer) => {
      setIsAnalyzing(true);
+     let base64Cover: string | null = null;
      try {
        const loadingTask = typeof source === 'string' ? pdfjs.getDocument(source) : pdfjs.getDocument({ data: source });
        const pdf = await loadingTask.promise;
@@ -140,6 +144,10 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
               canvas.height = viewport.height;
               canvas.width = viewport.width;
               await page.render({ canvasContext: context, viewport } as any).promise;
+              
+              // Guardamos temporalmente el base64 de la portada por si es un PDF escaneado
+              base64Cover = canvas.toDataURL('image/jpeg', 0.8);
+
               // Convertimos a Blob y subimos al servidor en vez de meter el base64
               // en localStorage (evita reventar la cuota del navegador).
               const blob: Blob | null = await new Promise(res => canvas.toBlob(b => res(b), 'image/jpeg', 0.8));
@@ -164,7 +172,13 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
          const pageText = textContent.items.map((item: any) => item.str).join(' ');
          fullText.push(pageText);
        }
-       const textString = fullText.join(' \n');
+       const textString = fullText.join(' \n').trim();
+
+       // Si es un PDF escaneado (sin texto) y tenemos portada, analizamos la portada
+       if (textString.length < 50 && base64Cover) {
+         await analyzeImageContent(base64Cover);
+         return;
+       }
 
        const response = await fetch('/api/analyze-pdf', {
          method: 'POST',

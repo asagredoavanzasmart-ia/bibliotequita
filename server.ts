@@ -613,6 +613,9 @@ async function startServer() {
     if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
     const userId = req.user.id;
 
+    // Limpieza automática preventiva de elementos de papelera expirados
+    await cleanupExpiredTrash().catch(err => console.error("[TRASH] Error de autolimpieza en state:", err));
+
     let { data: categories, error: catError } = await supabase
       .from("library_categories")
       .select("id, name, sort_index, hidden")
@@ -660,6 +663,7 @@ async function startServer() {
       .from("library_items")
       .select("id, data, list_index")
       .eq("user_id", userId)
+      .is("deleted_at", null)
       .order("list_index", { ascending: true });
     if (itemsError) return res.status(500).json({ error: itemsError.message });
 
@@ -779,14 +783,115 @@ async function startServer() {
     res.json({ item: { ...(row.data as object), id: row.id, listIndex: row.list_index } });
   });
 
-  // DELETE /api/library/items/:id — borra un item.
+  // DELETE /api/library/items/:id — borra un item (borrado lógico/mover a la papelera).
   app.delete("/api/library/items/:id", async (req: any, res) => {
     if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
     const userId = req.user.id;
     const { id } = req.params;
 
-    const { error } = await supabase.from("library_items").delete().eq("id", id).eq("user_id", userId);
+    const { error } = await supabase
+      .from("library_items")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("id", id)
+      .eq("user_id", userId);
+
     if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ ok: true });
+  });
+
+  // GET /api/library/trash — obtiene los elementos en la papelera.
+  app.get("/api/library/trash", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+
+    await cleanupExpiredTrash().catch(err => console.error("[TRASH] Error de autolimpieza en trash:", err));
+
+    const { data: itemRows, error } = await supabase
+      .from("library_items")
+      .select("id, data, deleted_at")
+      .eq("user_id", userId)
+      .not("deleted_at", "is", null)
+      .order("deleted_at", { ascending: false });
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    const items = (itemRows ?? []).map((row) => ({
+      ...(row.data as object),
+      id: row.id,
+      deletedAt: row.deleted_at,
+    }));
+
+    res.json({ items });
+  });
+
+  // POST /api/library/items/:id/restore — restaura un item de la papelera.
+  app.post("/api/library/items/:id/restore", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    const { data: row, error } = await supabase
+      .from("library_items")
+      .update({ deleted_at: null })
+      .eq("id", id)
+      .eq("user_id", userId)
+      .select("id, data")
+      .single();
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ item: { ...(row.data as object), id: row.id } });
+  });
+
+  // DELETE /api/library/items/:id/permanent — elimina permanentemente un item y sus archivos del disco.
+  app.delete("/api/library/items/:id/permanent", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    // 1. Obtener la metadata para saber el nombre de los archivos a borrar
+    const { data: item, error: getError } = await supabase
+      .from("library_items")
+      .select("data")
+      .eq("id", id)
+      .eq("user_id", userId)
+      .single();
+
+    if (getError || !item) {
+      return res.status(404).json({ error: "Elemento no encontrado." });
+    }
+
+    const itemData = item.data as any;
+
+    // 2. Borrar archivos físicos si existen
+    if (itemData?.source?.startsWith("/api/files/")) {
+      const fileName = itemData.source.replace(/^\/api\/files\//, "");
+      const filePath = path.join(UPLOAD_DIR, fileName);
+      if (fs.existsSync(filePath)) {
+        try { fs.unlinkSync(filePath); } catch (e) { console.warn("No se pudo borrar archivo físico:", e); }
+      }
+    }
+    if (itemData?.thumbnailUrl?.startsWith("/api/files/")) {
+      const thumbName = itemData.thumbnailUrl.replace(/^\/api\/files\//, "");
+      const thumbPath = path.join(UPLOAD_DIR, thumbName);
+      if (fs.existsSync(thumbPath)) {
+        try { fs.unlinkSync(thumbPath); } catch (e) { console.warn("No se pudo borrar portada física:", e); }
+      }
+    }
+
+    // 3. Borrar notas y marcadores asociados en la base de datos
+    await supabase.from("document_notes").delete().in("document_id", [id, `${id}::bookmarks`]);
+    await supabase.from("document_settings").delete().in("document_id", [id, `${id}::bookmarks`]);
+
+    // 4. Borrar el ítem definitivo de la tabla library_items
+    const { error: delError } = await supabase
+      .from("library_items")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", userId);
+
+    if (delError) return res.status(400).json({ error: delError.message });
 
     res.json({ ok: true });
   });
@@ -1091,6 +1196,51 @@ async function startServer() {
       const source = (row.data as any)?.source as string | undefined;
       return !!source && source.startsWith("/api/files/");
     }).length;
+  }
+
+  // Busca y elimina permanentemente libros de la papelera con más de 5 días de antigüedad
+  async function cleanupExpiredTrash(): Promise<void> {
+    if (!supabase) return;
+    try {
+      const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: expiredItems, error } = await supabase
+        .from("library_items")
+        .select("id, data")
+        .lt("deleted_at", fiveDaysAgo);
+
+      if (error || !expiredItems || expiredItems.length === 0) return;
+
+      console.log(`[TRASH] Iniciando limpieza de ${expiredItems.length} recursos expirados...`);
+
+      for (const item of expiredItems) {
+        const itemData = item.data as any;
+        // 1. Borrar archivos físicos si existen
+        if (itemData?.source?.startsWith("/api/files/")) {
+          const fileName = itemData.source.replace(/^\/api\/files\//, "");
+          const filePath = path.join(UPLOAD_DIR, fileName);
+          if (fs.existsSync(filePath)) {
+            try { fs.unlinkSync(filePath); console.log(`[TRASH] Archivo eliminado: ${fileName}`); } catch (e) { console.warn(`[TRASH] No se pudo borrar archivo ${fileName}:`, e); }
+          }
+        }
+        if (itemData?.thumbnailUrl?.startsWith("/api/files/")) {
+          const thumbName = itemData.thumbnailUrl.replace(/^\/api\/files\//, "");
+          const thumbPath = path.join(UPLOAD_DIR, thumbName);
+          if (fs.existsSync(thumbPath)) {
+            try { fs.unlinkSync(thumbPath); console.log(`[TRASH] Portada eliminada: ${thumbName}`); } catch (e) { console.warn(`[TRASH] No se pudo borrar portada ${thumbName}:`, e); }
+          }
+        }
+
+        // 2. Borrar notas y ajustes relacionados en la base de datos
+        await supabase.from("document_notes").delete().in("document_id", [item.id, `${item.id}::bookmarks`]);
+        await supabase.from("document_settings").delete().in("document_id", [item.id, `${item.id}::bookmarks`]);
+
+        // 3. Borrar el ítem definitivo de la tabla library_items
+        await supabase.from("library_items").delete().eq("id", item.id);
+        console.log(`[TRASH] Recurso eliminado permanentemente de la base de datos: ${item.id}`);
+      }
+    } catch (e) {
+      console.error("[TRASH] Error durante la limpieza automática:", e);
+    }
   }
 
   // GET /api/upload-quota — devuelve el límite de contenidos del usuario
@@ -2006,6 +2156,8 @@ SECCIÓN guia_de_aprendizaje:
     checkDbConnection().then(r => {
       console.log(r.ok ? `[DB] Conectado a Supabase (usuarios: ${r.count})` : `[DB] Sin conexión a Supabase: ${r.error}`);
     });
+    // Iniciar limpieza automática de papelera expirada
+    cleanupExpiredTrash().catch(err => console.error("[TRASH] Error en limpieza inicial:", err));
   });
 }
 

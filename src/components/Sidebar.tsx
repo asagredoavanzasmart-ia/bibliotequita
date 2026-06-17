@@ -592,7 +592,21 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
       )}
 
       {/* Bottom Actions & Storage Indicator */}
-      <div className="mt-auto px-6 pb-6 pt-4 space-y-4">
+      <div className="mt-auto px-6 pb-6 pt-4 space-y-2">
+      {/* Botón de Papelera */}
+      <button
+        onClick={() => { setActiveTab('trash'); setActivePlaylist(null); setActiveStage(null); }}
+        className={cn(
+          "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full",
+          collapsed ? "justify-center" : "",
+          activeTab === 'trash' ? "bg-white/10 text-white font-medium" : "text-white/80 hover:bg-white/5 hover:text-white font-medium"
+        )}
+        title={collapsed ? "Papelera" : undefined}
+      >
+        <Trash2 className="w-5 h-5 opacity-80 shrink-0" />
+        {!collapsed && <span className="truncate text-sm">Papelera</span>}
+      </button>
+
       {onOpenAdmin && (
          <button
            onClick={onOpenAdmin}
