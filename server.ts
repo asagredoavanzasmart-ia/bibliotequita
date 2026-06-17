@@ -1572,10 +1572,21 @@ ${text}
   }
   const ttsCache: CacheEntry[] = [];
 
-  // Resuelve las credenciales de Google Cloud TTS desde GOOGLE_TTS_CREDENTIALS_JSON
-  // (contenido del service account JSON, para despliegues sin filesystem persistente)
-  // o, si no está definida, desde el archivo en GOOGLE_TTS_CREDENTIALS.
+  // Resuelve las credenciales de Google Cloud TTS desde GOOGLE_TTS_CREDENTIALS_BASE64 (base64 del JSON),
+  // GOOGLE_TTS_CREDENTIALS_JSON (JSON en texto plano), o desde el archivo físico en GOOGLE_TTS_CREDENTIALS.
   function resolveGoogleTtsCredentials(credentialsPath: string): { keyFile?: string; credentials?: object } | null {
+    // 1. Intentar decodificar desde Base64 (método más robusto, inmune a fallos de formato en variables de entorno)
+    const credentialsBase64 = process.env.GOOGLE_TTS_CREDENTIALS_BASE64;
+    if (credentialsBase64) {
+      try {
+        const decoded = Buffer.from(credentialsBase64.trim(), "base64").toString("utf8");
+        return { credentials: JSON.parse(decoded) };
+      } catch (e: any) {
+        console.error("[ERROR] Fallo al decodificar o parsear GOOGLE_TTS_CREDENTIALS_BASE64:", e.message);
+      }
+    }
+
+    // 2. Intentar parsear desde JSON en texto plano (fallback)
     let credentialsJson = process.env.GOOGLE_TTS_CREDENTIALS_JSON;
     if (credentialsJson) {
       credentialsJson = credentialsJson.trim();
@@ -1623,16 +1634,18 @@ ${text}
         }
       }
     }
+    
+    // 3. Intentar leer desde el archivo físico
     if (fs.existsSync(credentialsPath)) {
       return { keyFile: credentialsPath };
     }
     return null;
   }
 
-  // Generar archivo de credenciales físicas si están disponibles en la variable de entorno
+  // Generar archivo de credenciales físicas si están disponibles en las variables de entorno (Base64 o JSON)
   try {
     const defaultCredentialsPath = process.env.GOOGLE_TTS_CREDENTIALS || "./google-tts-credentials.json";
-    if (process.env.GOOGLE_TTS_CREDENTIALS_JSON) {
+    if (process.env.GOOGLE_TTS_CREDENTIALS_BASE64 || process.env.GOOGLE_TTS_CREDENTIALS_JSON) {
       const resolved = resolveGoogleTtsCredentials(defaultCredentialsPath);
       if (resolved && resolved.credentials) {
         fs.writeFileSync(defaultCredentialsPath, JSON.stringify(resolved.credentials, null, 2), "utf8");
