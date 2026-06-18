@@ -1724,12 +1724,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           {/* Reproductor de Lector de Voz (TTS) — barra inferior contenida en el
               panel del lector (no debe tapar el panel de Anotaciones) */}
           {showTtsWidget && (
-             <div ref={ttsWidgetRef} className="absolute bottom-0 left-0 right-0 z-40 bg-[var(--bg-card)] border-t border-[var(--border-card)] shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-2 duration-300">
+             <div ref={ttsWidgetRef} className="absolute bottom-0 left-0 right-0 z-40 bg-[var(--bg-card)] border-t border-[var(--border-card)] shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-2 duration-300 overflow-y-auto custom-scrollbar" style={{ paddingBottom: 'env(safe-area-inset-bottom)', maxHeight: '85dvh' }}>
                 <div className="max-w-xl mx-auto px-3 pt-2 pb-2 sm:px-4">
 
-                   {/* Panel de configuración colapsable (modelo/voz/origen) */}
+                   {/* Panel de configuración colapsable (modelo/voz/origen).
+                       En móvil horizontal limita su alto y permite scroll para
+                       que la fila de controles inferior nunca quede oculta. */}
                    {showTtsSettings && (
-                      <div className="flex flex-col gap-2.5 mb-3 pb-3 border-b border-[var(--border-card)]">
+                      <div className="flex flex-col gap-2.5 mb-3 pb-3 border-b border-[var(--border-card)] max-h-[40vh] overflow-y-auto custom-scrollbar">
                          {/* Selector de Proveedor / Motor de Voz */}
                          <div className="flex items-center justify-between text-xs bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5">
                             <span className="text-[var(--text-muted)] font-semibold">Modelo:</span>
@@ -1873,8 +1875,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                       ))}
                    </div>
 
-                   {/* Fila de controles: [config] [pág◀] [◀◀frase] [stop] [▶play] [frase▶▶] [▶pág] [cerrar] */}
-                   <div className="flex items-center justify-center gap-1.5 sm:gap-2">
+                   {/* Fila de controles: [config] [pág◀] [◀◀frase] [stop] [▶play] [frase▶▶] [▶pág] [cerrar].
+                       En móvil estrecho se permite scroll horizontal y los botones no se encogen,
+                       evitando que queden cortados/ocultos. */}
+                   <div className="flex items-center justify-start sm:justify-center gap-1 sm:gap-2 overflow-x-auto no-scrollbar px-1 py-0.5 [&>button]:shrink-0">
 
                       {/* Mostrar/ocultar configuración */}
                       <button
@@ -2046,9 +2050,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   }, [currentPage, totalPages, item, updateItem]);
 
   return (
-    <div 
-      className={cn("flex flex-col h-screen bg-[var(--bg-app)] overflow-hidden relative", isFullscreen ? "fixed inset-0 z-[100] bg-black" : "")}
-      style={{ filter: `brightness(${brightness}%)` }}
+    <div
+      className={cn("flex flex-col bg-[var(--bg-app)] overflow-hidden relative", isFullscreen ? "fixed inset-0 z-[100] bg-black" : "")}
+      style={{ filter: `brightness(${brightness}%)`, height: '100dvh' }}
     >
       
       {/* Header */}
