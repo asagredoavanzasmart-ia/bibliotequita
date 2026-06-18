@@ -14,6 +14,13 @@ export interface CardSettings {
   showType: boolean;
   showPhysicalStatus: boolean;
   showRating?: boolean;
+  // Visibilidad de secciones de navegación del sidebar (por defecto visibles).
+  navFavoritos?: boolean;
+  navLeidos?: boolean;
+  navPorLeer?: boolean;
+  navDestacados?: boolean;
+  navFisico?: boolean;
+  navDigital?: boolean;
 }
 
 // Tipo de fuente del recurso: archivo PDF, libro EPUB o página web externa.
@@ -78,7 +85,9 @@ export interface BookItem {
   toBuy?: boolean;
   ownedPhysical?: boolean;
   ownedDigital?: boolean;
-  pinned?: boolean;             // Aparece en la vista "Destacados"
+  pinned?: boolean;             // Aparece en la vista "Destacados" (chincheta)
+  favorite?: boolean;           // Aparece en la vista "Favoritos" (estrella)
+  toRead?: boolean;             // Aparece en la vista "Por Leer" (reloj de arena)
   subject?: string;
   publisher?: string;           // Editorial del material
   isbn?: string;                // ISBN

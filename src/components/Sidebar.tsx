@@ -15,7 +15,7 @@
 // (ver DroppablePlaylist y Dashboard.handleDragEnd).
 // =============================================================================
 
-import { Library, Folder, Plus, Edit2, Trash2, X, Check, ChevronDown, ChevronRight, Pin, BarChart2, LayoutGrid, GalleryVerticalEnd, List, Settings, BookOpen, Newspaper, FileText, Book, Laptop, Layers, ShieldCheck, ArrowDownUp, LogOut } from 'lucide-react';
+import { Library, Folder, Plus, Edit2, Trash2, X, Check, ChevronDown, ChevronRight, Pin, BarChart2, LayoutGrid, GalleryVerticalEnd, List, Settings, BookOpen, Newspaper, FileText, Book, Laptop, Layers, ShieldCheck, ArrowDownUp, LogOut, Star, Hourglass, CheckCheck } from 'lucide-react';
 import { useLibrary } from '../hooks/useLibrary';
 import { useState, FormEvent } from 'react';
 import { cn, colorSwatchProps } from '../lib/utils';
@@ -90,7 +90,7 @@ const THEME_COLORS = [
 ];
 
 export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlaylist, activeStage, setActiveStage, filters, setFilters, viewMode, setViewMode, collapsed, setCollapsed, onOpenSettings, onOpenAdmin, onClose, user }: SidebarProps) {
-  const { playlists, stages, categories, addPlaylist, updatePlaylist, deletePlaylist, items, sortBy, setSortBy } = useLibrary();
+  const { playlists, stages, categories, addPlaylist, updatePlaylist, deletePlaylist, items, sortBy, setSortBy, cardSettings } = useLibrary();
   const [isCreating, setIsCreating] = useState(false);
   const [isCategoriesExpanded, setIsCategoriesExpanded] = useState(false);
   const [isFiltersExpanded, setIsFiltersExpanded] = useState(false);
@@ -356,62 +356,29 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
         )}
 
         <ul className={cn("space-y-1 mt-4 border-t border-white/10 pt-4", collapsed ? "px-0 border-t-0 mt-2" : "")}>
-          <li>
-             <button
-               onClick={() => { setActiveTab('destacados'); setActivePlaylist(null); setActiveStage(null); }}
-               className={cn(
-                 "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full",
-                 collapsed ? "justify-center" : "",
-                 activeTab === 'destacados' ? "bg-white/10 text-white font-medium" : "text-white/80 hover:bg-white/5 font-medium"
-               )}
-               title={collapsed ? "Destacados" : undefined}
-             >
-               <Pin className="w-5 h-5 opacity-80 shrink-0" />
-               {!collapsed && <span className="truncate text-sm">Destacados</span>}
-             </button>
-          </li>
-          <li>
-             <button
-               onClick={() => { setActiveTab('fisico'); setActivePlaylist(null); setActiveStage(null); }}
-               className={cn(
-                 "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full",
-                 collapsed ? "justify-center" : "",
-                 activeTab === 'fisico' ? "bg-white/10 text-white font-medium" : "text-white/80 hover:bg-white/5 font-medium"
-               )}
-               title={collapsed ? "Físico" : undefined}
-             >
-               <Book className="w-5 h-5 opacity-80 shrink-0" />
-               {!collapsed && <span className="truncate text-sm">Físico</span>}
-             </button>
-          </li>
-          <li>
-             <button
-               onClick={() => { setActiveTab('digital'); setActivePlaylist(null); setActiveStage(null); }}
-               className={cn(
-                 "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full",
-                 collapsed ? "justify-center" : "",
-                 activeTab === 'digital' ? "bg-white/10 text-white font-medium" : "text-white/80 hover:bg-white/5 font-medium"
-               )}
-               title={collapsed ? "Digital" : undefined}
-             >
-               <Laptop className="w-5 h-5 opacity-80 shrink-0" />
-               {!collapsed && <span className="truncate text-sm">Digital</span>}
-             </button>
-          </li>
-          <li>
-             <button
-               onClick={() => { setActiveTab('analytics'); setActivePlaylist(null); setActiveStage(null); }}
-               className={cn(
-                 "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full",
-                 collapsed ? "justify-center" : "",
-                 activeTab === 'analytics' ? "bg-white/10 text-white font-medium" : "text-white/80 hover:bg-white/5 font-medium"
-               )}
-               title={collapsed ? "Análisis" : undefined}
-             >
-               <BarChart2 className="w-5 h-5 opacity-80 shrink-0" />
-               {!collapsed && <span className="truncate text-sm">Análisis</span>}
-             </button>
-          </li>
+          {([
+            { id: 'favoritos', label: 'Favoritos', Icon: Star, show: cardSettings.navFavoritos !== false },
+            { id: 'leidos', label: 'Leídos', Icon: CheckCheck, show: cardSettings.navLeidos !== false },
+            { id: 'porleer', label: 'Por Leer', Icon: Hourglass, show: cardSettings.navPorLeer !== false },
+            { id: 'destacados', label: 'Destacados', Icon: Pin, show: cardSettings.navDestacados !== false },
+            { id: 'fisico', label: 'Físico', Icon: Book, show: cardSettings.navFisico !== false },
+            { id: 'digital', label: 'Digital', Icon: Laptop, show: cardSettings.navDigital !== false },
+          ] as const).filter(s => s.show).map(({ id, label, Icon }) => (
+            <li key={id}>
+               <button
+                 onClick={() => { setActiveTab(id); setActivePlaylist(null); setActiveStage(null); }}
+                 className={cn(
+                   "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full",
+                   collapsed ? "justify-center" : "",
+                   activeTab === id ? "bg-white/10 text-white font-medium" : "text-white/80 hover:bg-white/5 font-medium"
+                 )}
+                 title={collapsed ? label : undefined}
+               >
+                 <Icon className="w-5 h-5 opacity-80 shrink-0" />
+                 {!collapsed && <span className="truncate text-sm">{label}</span>}
+               </button>
+            </li>
+          ))}
         </ul>
       </div>
 
@@ -610,6 +577,20 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
           </select>
         </label>
       )}
+      {/* Análisis (movido a la zona inferior, cerca de Papelera/Ajustes) */}
+      <button
+        onClick={() => { setActiveTab('analytics'); setActivePlaylist(null); setActiveStage(null); }}
+        className={cn(
+          "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full",
+          collapsed ? "justify-center" : "",
+          activeTab === 'analytics' ? "bg-white/10 text-white font-medium" : "text-white/80 hover:bg-white/5 hover:text-white font-medium"
+        )}
+        title={collapsed ? "Análisis" : undefined}
+      >
+        <BarChart2 className="w-5 h-5 opacity-80 shrink-0" />
+        {!collapsed && <span className="truncate text-sm">Análisis</span>}
+      </button>
+
       {/* Botón de Papelera */}
       <button
         onClick={() => { setActiveTab('trash'); setActivePlaylist(null); setActiveStage(null); }}

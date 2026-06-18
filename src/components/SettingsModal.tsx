@@ -304,6 +304,35 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                         </label>
                       ))}
                    </div>
+
+                   <h3 className="text-lg font-bold pt-2">Secciones del menú</h3>
+                   <p className="text-xs text-[var(--text-muted)] -mt-4">Activa o desactiva las clasificaciones que aparecen en la barra lateral.</p>
+                   <div className="space-y-4">
+                      {[
+                        { id: 'navFavoritos', label: 'Favoritos', desc: 'Sección de libros marcados como favoritos (estrella).' },
+                        { id: 'navLeidos', label: 'Leídos', desc: 'Sección de libros marcados como leídos.' },
+                        { id: 'navPorLeer', label: 'Por Leer', desc: 'Sección de libros pendientes de leer (reloj de arena).' },
+                        { id: 'navDestacados', label: 'Destacados', desc: 'Sección de libros fijados (chincheta).' },
+                        { id: 'navFisico', label: 'Físico', desc: 'Sección de libros físicos.' },
+                        { id: 'navDigital', label: 'Digital', desc: 'Sección de libros digitales.' },
+                      ].map(opt => (
+                        <label key={opt.id} className="flex items-center justify-between p-4 rounded-xl border border-slate-200/50 bg-[var(--bg-card)] cursor-pointer hover:border-[var(--primary)]/50 transition-colors">
+                           <div>
+                              <div className="font-bold text-sm">{opt.label}</div>
+                              <div className="text-xs text-[var(--text-muted)]">{opt.desc}</div>
+                           </div>
+                           <div className="relative inline-flex items-center cursor-pointer">
+                              <input
+                                type="checkbox"
+                                className="sr-only peer"
+                                checked={(cardSettings as any)[opt.id] !== false}
+                                onChange={(e) => setCardSettings({ ...cardSettings, [opt.id]: e.target.checked })}
+                              />
+                              <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[var(--primary)]"></div>
+                           </div>
+                        </label>
+                      ))}
+                   </div>
                 </div>
               )}
            </div>

@@ -17,7 +17,7 @@
 
 import { useLibrary } from '../hooks/useLibrary';
 import { BookItem } from '../types';
-import { Book as BookIcon, FileText, ExternalLink, Trash2, CheckCircle2, Bookmark, BookmarkCheck, Edit, Image as ImageIcon, Pin } from 'lucide-react';
+import { Book as BookIcon, FileText, ExternalLink, Trash2, CheckCircle2, Bookmark, BookmarkCheck, Edit, Image as ImageIcon, Pin, Star, Hourglass } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
   DndContext,
@@ -40,6 +40,7 @@ import { CSS } from '@dnd-kit/utilities';
 import React, { useState, useMemo, FC, useRef } from 'react';
 import { EditBookModal } from './EditBookModal';
 import { StarRating } from './StarRating';
+import { DraggableProgress } from './DraggableProgress';
 
 interface BookGridProps {
   category: string;
@@ -56,43 +57,9 @@ interface BookGridProps {
 
 // Barra de progreso interactiva: click o arrastre (mouse/touch) fija el % según
 // la posición horizontal. El wrapper amplía el área táctil sin cambiar el visual.
-export const DraggableProgress: FC<{ value: number; color: string; onChange: (v: number) => void }> = ({ value, color, onChange }) => {
-  const barRef = useRef<HTMLDivElement>(null);
-  const draggingRef = useRef(false);
-
-  const valueFromPointer = (clientX: number): number | null => {
-    const rect = barRef.current?.getBoundingClientRect();
-    if (!rect || rect.width === 0) return null;
-    return Math.min(100, Math.max(0, Math.round(((clientX - rect.left) / rect.width) * 100)));
-  };
-
-  return (
-    <div
-      ref={barRef}
-      onPointerDown={(e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        draggingRef.current = true;
-        e.currentTarget.setPointerCapture(e.pointerId);
-        const v = valueFromPointer(e.clientX);
-        if (v !== null) onChange(v);
-      }}
-      onPointerMove={(e) => {
-        if (!draggingRef.current) return;
-        e.stopPropagation();
-        const v = valueFromPointer(e.clientX);
-        if (v !== null) onChange(v);
-      }}
-      onPointerUp={() => { draggingRef.current = false; }}
-      onPointerCancel={() => { draggingRef.current = false; }}
-      className="flex-1 min-w-0 py-1.5 -my-1.5 cursor-pointer touch-none"
-    >
-      <div className="h-1.5 bg-slate-200/50 rounded-full overflow-hidden shadow-inner">
-        <div className={cn("h-full rounded-full transition-[width] duration-100", color)} style={{ width: `${value}%` }} />
-      </div>
-    </div>
-  );
-};
+// Re-exportado para mantener compatibilidad con imports existentes
+// (vive en su propio módulo para evitar import circular con EditBookModal).
+export { DraggableProgress };
 
 const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact'|'list', onOpen: () => void, onDelete: () => void, onEdit: () => void, isSelected?: boolean, onSelectToggle?: () => void }> = ({ item, viewMode, onOpen, onDelete, onEdit, isSelected, onSelectToggle }) => {
   const { updateItem, cardSettings } = useLibrary();
@@ -139,6 +106,18 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
     e.stopPropagation();
     updateItem(item.id, { read: !item.read });
   };
+  const handleTogglePinned = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    updateItem(item.id, { pinned: !item.pinned });
+  };
+  const handleToggleFavorite = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    updateItem(item.id, { favorite: !item.favorite });
+  };
+  const handleToggleToRead = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    updateItem(item.id, { toRead: !item.toRead });
+  };
 
   // Covers Mode — solo portada, grilla densa. Click abre el libro; el drag
   // funciona en toda la tarjeta (PointerSensor con distance:5 no roba el click).
@@ -163,20 +142,22 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
         )}
 
         {/* Badges de estado, siempre visibles */}
-        {item.pinned && <Pin className="absolute top-1.5 left-1.5 w-4 h-4 text-amber-400 fill-amber-400/40 drop-shadow z-10" />}
+        {item.favorite && <Star className="absolute top-1.5 left-1.5 w-4 h-4 text-yellow-400 fill-yellow-400/50 drop-shadow z-10" />}
+        {item.pinned && <Pin className="absolute top-1.5 left-7 w-4 h-4 text-amber-400 fill-amber-400/40 drop-shadow z-10" />}
         {item.read && <CheckCircle2 className="absolute top-1.5 right-1.5 w-4 h-4 text-emerald-400 drop-shadow z-10" />}
 
-        {/* Overlay hover: título + acciones rápidas */}
+        {/* Overlay hover: título + acciones (seleccionar / editar / eliminar) */}
         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col justify-end p-2 z-20">
           <h4 className="text-white font-bold text-[11px] leading-tight line-clamp-2 drop-shadow">{item.title}</h4>
           {item.author && <p className="text-white/70 text-[9px] line-clamp-1 mb-1">{item.author}</p>}
           <div className="flex items-center gap-1">
-            <button onClick={(e) => { e.stopPropagation(); updateItem(item.id, { pinned: !item.pinned }); }} onPointerDown={(e) => e.stopPropagation()} className="p-1 rounded bg-white/15 hover:bg-white/30 transition-colors" title={item.pinned ? 'Desfijar' : 'Fijar'}>
-              <Pin className={cn('w-3.5 h-3.5', item.pinned ? 'text-amber-400 fill-amber-400/40' : 'text-white')} />
-            </button>
-            <button onClick={handleToggleRead} onPointerDown={(e) => e.stopPropagation()} className="p-1 rounded bg-white/15 hover:bg-white/30 transition-colors" title={item.read ? 'Marcar como no leído' : 'Marcar como leído'}>
-              <CheckCircle2 className={cn('w-3.5 h-3.5', item.read ? 'text-emerald-400' : 'text-white')} />
-            </button>
+            {onSelectToggle && (
+              <button onClick={(e) => { e.stopPropagation(); onSelectToggle(); }} onPointerDown={(e) => e.stopPropagation()} className={cn("p-1 rounded transition-colors", isSelected ? "bg-[var(--primary)]" : "bg-white/15 hover:bg-white/30")} title="Seleccionar">
+                <div className={cn("w-3.5 h-3.5 rounded-sm border border-white/70 flex items-center justify-center", isSelected ? "bg-white/20" : "")}>
+                  {isSelected && <svg viewBox="0 0 14 14" fill="none" className="w-2.5 h-2.5 text-white"><path d="M3 8L6 11L11 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                </div>
+              </button>
+            )}
             <button onClick={(e) => { e.stopPropagation(); onEdit(); }} onPointerDown={(e) => e.stopPropagation()} className="p-1 rounded bg-white/15 hover:bg-white/30 transition-colors" title="Editar">
               <Edit className="w-3.5 h-3.5 text-white" />
             </button>
@@ -209,103 +190,71 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
       <div
         ref={setNodeRef}
         style={style}
-        className="group flex flex-row items-center bg-[var(--bg-card)] backdrop-blur-xl rounded-xl border border-slate-200/50 overflow-hidden hover:bg-[var(--bg-card-hover)] hover:shadow-md hover:border-[var(--primary)]/50 hover:-translate-y-0.5 transition-all duration-300"
+        className="group flex flex-row items-stretch bg-[var(--bg-card)] backdrop-blur-xl rounded-xl border border-slate-200/50 overflow-hidden hover:bg-[var(--bg-card-hover)] hover:shadow-md hover:border-[var(--primary)]/50 hover:-translate-y-0.5 transition-all duration-300"
       >
-        <div 
-          className="h-28 sm:h-36 aspect-[5/4] bg-[var(--bg-app)] flex items-center justify-center p-2 border-r border-slate-200/50 cursor-grab active:cursor-grabbing relative shrink-0 overflow-hidden group/cover"
-          {...attributes} 
+        {/* Portada angosta que llena todo su espacio (sin margen), bordes rectos */}
+        <div
+          className="h-28 sm:h-32 w-16 sm:w-20 bg-[var(--bg-app)] border-r border-slate-200/50 cursor-grab active:cursor-grabbing relative shrink-0 overflow-hidden group/cover"
+          {...attributes}
           {...listeners}
         >
           {item.thumbnailUrl ? (
-            <img src={item.thumbnailUrl} alt={item.title} className="max-w-full max-h-full object-contain drop-shadow-sm rounded" draggable={false} />
+            <img src={item.thumbnailUrl} alt={item.title} className="w-full h-full object-cover" draggable={false} />
           ) : (
-            <div className="w-[85%] h-[90%] bg-gradient-to-br from-[#00558F] to-slate-800 shadow-md shadow-black/20 flex flex-col items-center justify-center p-2 relative overflow-hidden border border-white/10 before:absolute before:left-[4px] before:top-0 before:bottom-0 before:w-[3px] before:bg-black/20 rounded">
-               <div className="flex-1 w-full flex items-center justify-center">
-                   <h4 className="text-center text-white/90 font-bold text-[9px] sm:text-[10px] line-clamp-3 leading-tight drop-shadow-md px-1 relative z-10">{item.title}</h4>
-               </div>
+            <div className="w-full h-full bg-gradient-to-br from-[#00558F] to-slate-800 flex flex-col items-center justify-center p-1 relative overflow-hidden before:absolute before:left-[3px] before:top-0 before:bottom-0 before:w-[2px] before:bg-black/20">
+               <h4 className="text-center text-white/90 font-bold text-[8px] line-clamp-4 leading-tight drop-shadow-md px-0.5 relative z-10">{item.title}</h4>
             </div>
           )}
-          
-          {onSelectToggle && (
-             <button 
-               type="button"
-               onClick={(e) => { e.stopPropagation(); onSelectToggle(); }}
-               onPointerDown={(e) => e.stopPropagation()}
-               className="absolute top-2 left-2 z-30 group/btn transition-transform hover:scale-110 bg-[var(--bg-app)]/80 p-1 rounded shadow backdrop-blur-sm hover:bg-[var(--bg-app)]"
-             >
-               <div className={cn("w-3.5 h-3.5 rounded-sm border border-slate-300 flex items-center justify-center", isSelected ? "bg-[var(--primary)] border-[var(--primary)]" : "bg-transparent")}>
-                  {isSelected && <svg viewBox="0 0 14 14" fill="none" className="w-2.5 h-2.5 text-[var(--bg-app)]"><path d="M3 8L6 11L11 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-               </div>
-             </button>
-          )}
         </div>
-        <div className="flex-1 p-4 flex flex-col justify-between min-w-0 h-full gap-2 relative">
-          <div className="flex justify-between items-start z-10 w-full pr-16 relative group/title">
-             <div className="flex flex-col w-full">
-                <h3 onClick={onOpen} className="font-bold text-[var(--text-main)] text-sm cursor-pointer hover:text-[var(--primary)] line-clamp-1">{item.title}</h3>
-                {cardSettings.showAuthor && <p className="text-xs text-[var(--primary)] hover:underline cursor-pointer font-bold">{item.author || 'Sin autor'}</p>}
-                {cardSettings.showYear && item.year && <p className="text-xs text-[var(--text-muted)]">{item.year}</p>}
-             </div>
+
+        <div className="flex-1 p-3 flex flex-col justify-between min-w-0 gap-2 relative">
+          <div className="flex flex-col w-full min-w-0">
+             <h3 onClick={onOpen} className="font-bold text-[var(--text-main)] text-sm cursor-pointer hover:text-[var(--primary)] line-clamp-1">{item.title}</h3>
+             {cardSettings.showAuthor && <p className="text-xs text-[var(--primary)] font-bold truncate">{item.author || 'Sin autor'}</p>}
+             {cardSettings.showYear && item.year && <p className="text-xs text-[var(--text-muted)]">{item.year}</p>}
           </div>
-          
-          <div className="absolute top-3 right-3 flex gap-1 items-center z-20 bg-white border border-slate-200/50 rounded-lg p-1 shadow-sm">
-            <button 
-              onClick={(e) => { e.stopPropagation(); updateItem(item.id, { pinned: !item.pinned }); }} 
-              className="p-1 group/btn transition-transform hover:scale-110 hover:bg-slate-50 rounded-md"
-              title={item.pinned ? "Desfijar" : "Fijar"}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
+
+          {/* Fila de acciones: iconos compactos, siempre visibles, con scroll si no caben */}
+          <div className="flex items-center gap-0.5 overflow-x-auto no-scrollbar -mx-1 px-1">
+            {onSelectToggle && (
+              <button type="button" onClick={(e) => { e.stopPropagation(); onSelectToggle(); }} onPointerDown={(e) => e.stopPropagation()} className="p-1.5 rounded-md hover:bg-slate-100 transition-colors shrink-0" title="Seleccionar">
+                <div className={cn("w-4 h-4 rounded-sm border flex items-center justify-center", isSelected ? "bg-[var(--primary)] border-[var(--primary)]" : "border-slate-300")}>
+                  {isSelected && <svg viewBox="0 0 14 14" fill="none" className="w-3 h-3 text-white"><path d="M3 8L6 11L11 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                </div>
+              </button>
+            )}
+            <button onClick={handleToggleFavorite} onPointerDown={(e) => e.stopPropagation()} className="p-1.5 rounded-md hover:bg-slate-100 transition-colors shrink-0" title={item.favorite ? "Quitar de favoritos" : "Favorito"}>
+              <Star className={cn("w-4 h-4", item.favorite ? "text-yellow-500 fill-yellow-400/40" : "text-slate-400 hover:text-yellow-500")} />
+            </button>
+            <button onClick={handleTogglePinned} onPointerDown={(e) => e.stopPropagation()} className="p-1.5 rounded-md hover:bg-slate-100 transition-colors shrink-0" title={item.pinned ? "Desfijar" : "Destacar"}>
               <Pin className={cn("w-4 h-4", item.pinned ? "text-amber-500 fill-amber-500/20" : "text-slate-400 hover:text-amber-500")} />
             </button>
-
-            <button 
-              type="button"
-              onClick={handleToggleRead}
-              className="p-1 group/btn transition-transform hover:scale-110 hover:bg-slate-50 rounded-md"
-              title={item.read ? "Marcar como no leído" : "Marcar como leído"}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-               <CheckCircle2 className={cn("w-4 h-4", item.read ? "text-emerald-500 fill-emerald-500/20" : "text-slate-400 hover:text-emerald-500")} />
+            <button onClick={handleToggleToRead} onPointerDown={(e) => e.stopPropagation()} className="p-1.5 rounded-md hover:bg-slate-100 transition-colors shrink-0" title={item.toRead ? "Quitar de Por Leer" : "Por Leer"}>
+              <Hourglass className={cn("w-4 h-4", item.toRead ? "text-sky-500 fill-sky-400/20" : "text-slate-400 hover:text-sky-500")} />
+            </button>
+            <button onClick={handleToggleRead} onPointerDown={(e) => e.stopPropagation()} className="p-1.5 rounded-md hover:bg-slate-100 transition-colors shrink-0" title={item.read ? "Marcar como no leído" : "Marcar como leído"}>
+              <CheckCircle2 className={cn("w-4 h-4", item.read ? "text-emerald-500 fill-emerald-500/20" : "text-slate-400 hover:text-emerald-500")} />
+            </button>
+            <span className="w-px h-4 bg-slate-200 mx-0.5 shrink-0" />
+            <button onClick={(e) => { e.stopPropagation(); onEdit(); }} onPointerDown={(e) => e.stopPropagation()} className="p-1.5 rounded-md hover:bg-slate-100 text-slate-400 hover:text-[var(--primary)] transition-colors shrink-0" title="Editar">
+              <Edit className="w-4 h-4" />
+            </button>
+            <button onClick={(e) => { e.stopPropagation(); onDelete(); }} onPointerDown={(e) => e.stopPropagation()} className="p-1.5 rounded-md hover:bg-slate-100 text-slate-400 hover:text-rose-500 transition-colors shrink-0" title="Eliminar">
+              <Trash2 className="w-4 h-4" />
             </button>
           </div>
 
-          <div className={cn("absolute bottom-3 right-3 flex gap-1 items-center transition-opacity z-20", item.pinned ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
-              <button onClick={(e) => { e.stopPropagation(); onEdit(); }} className="p-1.5 text-slate-400 hover:text-[var(--primary)] hover:bg-slate-50 rounded-md transition-colors shadow-sm bg-white border border-slate-200/50" title="Editar">
-                <Edit className="w-4 h-4" />
-              </button>
-              <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-slate-50 rounded-md transition-colors shadow-sm shrink-0 bg-white border border-slate-200/50">
-                <Trash2 className="w-4 h-4" />
-              </button>
-          </div>
-
-          <div className="flex flex-col mt-auto w-full">
-             {(cardSettings.showType || cardSettings.showPhysicalStatus) && (
-               <div className="flex items-center justify-between mb-2">
-                  <div className="flex gap-2 items-center">
-                      {cardSettings.showType && item.type !== 'externa' && (
-                        <span className="text-xs font-bold px-2 py-0.5 bg-[var(--bg-app)]/80 text-[var(--text-muted)] rounded uppercase tracking-wider backdrop-blur-sm border border-slate-200/50">{item.type}</span>
-                      )}
-                      {cardSettings.showPhysicalStatus && item.ownedPhysical && (
-                        <span className="flex items-center gap-1 text-xs font-bold px-2 py-0.5 bg-[var(--bg-app)]/80 text-[var(--primary)] rounded uppercase tracking-wider backdrop-blur-sm border border-slate-200/50">
-                          <BookIcon className="w-3 h-3" /> Libro físico
-                        </span>
-                      )}
-                  </div>
-               </div>
-             )}
-             
-             {cardSettings.showProgress && (
-               <div className="w-full flex items-center gap-2 mt-1" title={`Progreso: ${pValue}%`}>
-                  <DraggableProgress value={pValue} color={progState.color} onChange={(v) => updateItem(item.id, { progress: v, ...(item.read && v < 100 ? { read: false } : {}) })} />
-                  <span className={cn("text-xs font-bold w-[72px] shrink-0 text-right whitespace-nowrap", progState.color.replace('bg-', 'text-'))}>{progState.text}</span>
-               </div>
-             )}
-             {cardSettings.showRating && (
-               <div className="mt-1.5" onPointerDown={(e) => e.stopPropagation()}>
-                  <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" />
-               </div>
-             )}
-          </div>
+          {cardSettings.showProgress && (
+            <div className="w-full flex items-center gap-2" title={`Progreso: ${pValue}%`}>
+               <DraggableProgress value={pValue} color={progState.color} onChange={(v) => updateItem(item.id, { progress: v, ...(item.read && v < 100 ? { read: false } : {}) })} />
+               <span className={cn("text-[11px] font-bold w-[64px] shrink-0 text-right whitespace-nowrap", progState.color.replace('bg-', 'text-'))}>{progState.text}</span>
+            </div>
+          )}
+          {cardSettings.showRating && (
+            <div onPointerDown={(e) => e.stopPropagation()}>
+               <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" />
+            </div>
+          )}
         </div>
       </div>
       </>
@@ -344,17 +293,8 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
              {item.author && <p className="text-xs text-white/60 font-medium tracking-wide uppercase line-clamp-1 mt-auto pb-2 relative z-10">{item.author}</p>}
           </div>
         )}
-        <button 
-          onClick={(e) => { e.stopPropagation(); updateItem(item.id, { pinned: !item.pinned }); }} 
-          className="absolute bottom-11 right-3 z-20 group/btn transition-transform hover:scale-110"
-          title={item.pinned ? "Desfijar" : "Fijar"}
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          <Pin className={cn("w-6 h-6 drop-shadow-md", item.pinned ? "text-amber-400 fill-amber-400/20" : "text-white/80 hover:text-amber-400")} />
-        </button>
-        
         {onSelectToggle && (
-           <button 
+           <button
              type="button"
              onClick={(e) => { e.stopPropagation(); onSelectToggle(); }}
              onPointerDown={(e) => e.stopPropagation()}
@@ -366,17 +306,24 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
            </button>
         )}
 
-
-
-        <button 
-           type="button"
-           onClick={handleToggleRead}
-           className="absolute bottom-3 right-3 z-20 group/btn transition-transform hover:scale-110"
-           title={item.read ? "Marcar como no leído" : "Marcar como leído"}
-           onPointerDown={(e) => e.stopPropagation()}
+        {/* Columna vertical de acciones al costado derecho de la portada */}
+        <div
+          className="absolute top-2 right-2 z-20 flex flex-col items-center gap-1.5 bg-black/30 backdrop-blur-sm rounded-full p-1.5"
+          onPointerDown={(e) => e.stopPropagation()}
         >
-           <CheckCircle2 className={cn("w-6 h-6 drop-shadow-md", item.read ? "text-emerald-500 fill-emerald-500/20" : "text-white/80 hover:text-emerald-400")} />
-        </button>
+          <button type="button" onClick={handleToggleFavorite} className="transition-transform hover:scale-110" title={item.favorite ? "Quitar de favoritos" : "Favorito"}>
+            <Star className={cn("w-5 h-5 drop-shadow-md", item.favorite ? "text-yellow-400 fill-yellow-400/30" : "text-white/80 hover:text-yellow-400")} />
+          </button>
+          <button type="button" onClick={handleTogglePinned} className="transition-transform hover:scale-110" title={item.pinned ? "Desfijar" : "Destacar"}>
+            <Pin className={cn("w-5 h-5 drop-shadow-md", item.pinned ? "text-amber-400 fill-amber-400/20" : "text-white/80 hover:text-amber-400")} />
+          </button>
+          <button type="button" onClick={handleToggleToRead} className="transition-transform hover:scale-110" title={item.toRead ? "Quitar de Por Leer" : "Por Leer"}>
+            <Hourglass className={cn("w-5 h-5 drop-shadow-md", item.toRead ? "text-sky-400 fill-sky-400/20" : "text-white/80 hover:text-sky-400")} />
+          </button>
+          <button type="button" onClick={handleToggleRead} className="transition-transform hover:scale-110" title={item.read ? "Marcar como no leído" : "Marcar como leído"}>
+            <CheckCircle2 className={cn("w-5 h-5 drop-shadow-md", item.read ? "text-emerald-400 fill-emerald-400/20" : "text-white/80 hover:text-emerald-400")} />
+          </button>
+        </div>
       </div>
       <div className="flex-1 p-4 flex flex-col justify-between relative bg-[var(--bg-card)] rounded-b-2xl">
          <div className="relative min-w-0">
@@ -432,7 +379,13 @@ export function BookGrid({ category, viewMode, sortBy, stageFilter, playlistFilt
 
   const filteredItems = useMemo(() => {
     let result = items;
-    if (category === 'destacados') {
+    if (category === 'favoritos') {
+        result = items.filter(i => i.favorite);
+    } else if (category === 'leidos') {
+        result = items.filter(i => i.read);
+    } else if (category === 'porleer') {
+        result = items.filter(i => i.toRead);
+    } else if (category === 'destacados') {
         result = items.filter(i => i.pinned);
     } else if (category === 'fisico') {
         result = items.filter(i => i.ownedPhysical);

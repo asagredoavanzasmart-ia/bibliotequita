@@ -76,6 +76,12 @@ const DEFAULT_CARD_SETTINGS: CardSettings = {
   showType: true,
   showPhysicalStatus: true,
   showRating: true,
+  navFavoritos: true,
+  navLeidos: true,
+  navPorLeer: true,
+  navDestacados: true,
+  navFisico: true,
+  navDigital: true,
 };
 
 async function apiFetch(url: string, options?: RequestInit) {

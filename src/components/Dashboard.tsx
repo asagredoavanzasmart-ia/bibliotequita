@@ -17,10 +17,10 @@ import { Sidebar } from './Sidebar';
 import { Toolbar } from './Toolbar';
 import { BookGrid } from './BookGrid';
 import { AnalyticsDashboard } from './AnalyticsDashboard';
-import { BookMarked, Menu, X, LayoutGrid, Search, User, Settings, Plus, UploadCloud, Trash2 } from 'lucide-react';
+import { BookMarked, Menu, X, LayoutGrid, Search, User, Settings, Plus, UploadCloud } from 'lucide-react';
 import { cn, colorSwatchProps } from '../lib/utils';
 import { useLibrary } from '../hooks/useLibrary';
-import { DndContext, closestCenter, DragEndEvent, useSensors, useSensor, PointerSensor, KeyboardSensor, TouchSensor, useDroppable } from '@dnd-kit/core';
+import { DndContext, closestCenter, DragEndEvent, useSensors, useSensor, PointerSensor, KeyboardSensor, TouchSensor } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { SettingsModal } from './SettingsModal';
 import { AddManualModal } from './AddManualModal';
@@ -30,27 +30,6 @@ import { TrashPanel } from './TrashPanel';
 interface DemoQuota {
   max: number;
   current: number;
-}
-
-function TrashBinDroppable() {
-  const { isOver, setNodeRef } = useDroppable({
-    id: 'trash-bin-droppable',
-  });
-
-  return (
-    <div
-      ref={setNodeRef}
-      className={cn(
-        "fixed bottom-10 left-1/2 -translate-x-1/2 z-[100] flex flex-col items-center justify-center gap-2 px-8 py-4 rounded-2xl border transition-all duration-300 shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-5",
-        isOver
-          ? "bg-rose-500/20 border-rose-500 text-rose-500 scale-110 shadow-rose-500/20 animate-pulse"
-          : "bg-slate-900/90 border-slate-700/50 text-slate-400 scale-100"
-      )}
-    >
-      <Trash2 className={cn("w-6 h-6 transition-transform", isOver ? "scale-125 rotate-6" : "")} />
-      <span className="text-xs font-black uppercase tracking-widest">Arrastra aquí para borrar</span>
-    </div>
-  );
 }
 
 interface DashboardProps {
@@ -71,16 +50,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [demoQuota, setDemoQuota] = useState<DemoQuota | null>(null);
-  const { updateItem, deleteItem, reorderItems, items, addItem, playlists, viewMode, setViewMode, sortBy, setSortBy } = useLibrary();
-  const [isDragging, setIsDragging] = useState(false);
-
-  const handleDragStart = () => {
-    setIsDragging(true);
-  };
-
-  const handleDragCancel = () => {
-    setIsDragging(false);
-  };
+  const { updateItem, reorderItems, items, addItem, playlists, viewMode, setViewMode, sortBy, setSortBy } = useLibrary();
 
   const refreshQuota = useCallback(() => {
     fetch('/api/upload-quota', { credentials: 'include' })
@@ -114,15 +84,8 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
   //  (a) Drop sobre una playlist del sidebar → asigna el item a esa lista.
   //  (b) Drop sobre otro item → reordenamiento manual (solo si sortBy==='manual').
   const handleDragEnd = (event: DragEndEvent) => {
-    setIsDragging(false);
     const { active, over } = event;
     if (!over) return;
-
-    // Check if dragging onto the trash bin
-    if (over.id === 'trash-bin-droppable') {
-      deleteItem(active.id as string);
-      return;
-    }
 
     // Check if dragging onto a playlist
     if (over.id.toString().startsWith('playlist-')) {
@@ -154,9 +117,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
     <DndContext
       sensors={sensors}
       collisionDetection={closestCenter}
-      onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      onDragCancel={handleDragCancel}
     >
       <div className="flex h-screen bg-[var(--bg-app)] font-sans text-[var(--text-main)] overflow-hidden relative">
         <div className={cn(
@@ -331,7 +292,6 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
           demoQuota={demoQuota}
         />
       )}
-      {isDragging && <TrashBinDroppable />}
       </div>
     </DndContext>
   );

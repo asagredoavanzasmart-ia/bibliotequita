@@ -384,6 +384,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       ownedPhysical: formData.ownedPhysical,
       ownedDigital: formData.ownedDigital,
       toBuy: formData.toBuy,
+      progress: 0,   // todo libro importado empieza en 0% de lectura
       tags
     });
   };

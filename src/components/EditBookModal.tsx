@@ -1,10 +1,11 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { BookItem, PlaylistData, StageData } from '../types';
 import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag } from 'lucide-react';
 import { cn, colorSwatchProps } from '../lib/utils';
 import { useLibrary } from '../hooks/useLibrary';
 import { StarRating } from './StarRating';
+import { DraggableProgress } from './BookGrid';
 import { pdfjs } from 'react-pdf';
 // Migrado de idb-keyval a almacenamiento real en el servidor (ver src/lib/uploadFile.ts).
 import { uploadFile, deleteUploadedFile } from '../lib/uploadFile';
@@ -34,6 +35,19 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   const [category, setCategory] = useState(item.category);
   const [progress, setProgress] = useState(item.progress || 0);
   const [read, setRead] = useState(item.read || false);
+
+  // Estado/etapa de lectura por tramos, idéntico a la biblioteca principal
+  // (ver progState en BookGrid): 0–25 Consultado · 26–50 En proceso ·
+  // 51–99 Revisado · 100 / leído → Leído. Mismo color por tramo.
+  const progState = useMemo(() => {
+    if (read) return { text: 'Leído', color: 'bg-emerald-500' };
+    const p = progress || 0;
+    if (p <= 25) return { text: 'Consultado', color: 'bg-slate-500' };
+    if (p <= 50) return { text: 'En proceso', color: 'bg-amber-500' };
+    if (p < 100) return { text: 'Revisado', color: 'bg-blue-500' };
+    return { text: 'Leído', color: 'bg-emerald-500' };
+  }, [progress, read]);
+  const pValue = read ? 100 : Math.min(100, Math.max(0, progress || 0));
   const [ownedPhysical, setOwnedPhysical] = useState(item.ownedPhysical || false);
   const [ownedDigital, setOwnedDigital] = useState(item.ownedDigital || false);
   const [toBuy, setToBuy] = useState(item.toBuy || false);
@@ -338,14 +352,6 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     setStageIds(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
   };
 
-  // Background gradient para que el track del slider sea visible (los <input range>
-  // nativos no muestran el "fill" hasta el thumb por defecto).
-  const sliderTrackStyle = (value: number, disabled = false): React.CSSProperties => ({
-    background: disabled
-      ? `linear-gradient(to right, #cbd5e1 0%, #cbd5e1 ${value}%, #e2e8f0 ${value}%, #e2e8f0 100%)`
-      : `linear-gradient(to right, var(--primary) 0%, var(--primary) ${value}%, #e2e8f0 ${value}%, #e2e8f0 100%)`,
-  });
-  
   const modalContent = inline ? (
     // =====================================================================
     // Vista "Info / Metadatos" embebida en el ReaderView (tab 'edit').
@@ -487,22 +493,8 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   </div>
                </div>
 
-               {/* Importar TXT o enlace externo */}
+               {/* Enlace externo */}
                <div className="flex flex-col gap-2">
-                  <button
-                     disabled={isAnalyzing}
-                     type="button"
-                     onClick={() => fileInputRef.current?.click()}
-                     className={cn(
-                        'px-4 py-2 flex items-center justify-center gap-2 rounded-xl text-xs font-bold border transition-colors',
-                        isAnalyzing
-                           ? 'bg-slate-100 text-slate-400 border-slate-200 opacity-70'
-                           : 'bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200 hover:border-[var(--primary)]/40'
-                     )}
-                  >
-                     <UploadCloud className={cn('w-4 h-4', isAnalyzing && 'animate-pulse')} />
-                     {isAnalyzing ? 'Analizando IA…' : 'Importar TXT'}
-                  </button>
                   <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".txt" className="hidden" />
                   <div className="relative">
                      {type === 'externa' ? (
@@ -751,22 +743,20 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   </div>
                </div>
 
-               {/* Progreso de lectura con slider visible */}
+               {/* Progreso de lectura — mismo estilo que la biblioteca (etapa + color por tramo) */}
                <div className="bg-[var(--bg-card)] border border-slate-200 rounded-2xl p-4">
                   <label className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-3 flex items-center justify-between">
                      <span>Progreso de lectura</span>
-                     <span className="font-mono text-[var(--primary)] bg-[var(--primary)]/10 px-2 py-0.5 rounded-md text-xs">{read ? 100 : progress}%</span>
+                     <span className="flex items-center gap-2">
+                        <span className={cn('text-[10px] font-bold text-white px-2 py-0.5 rounded-md', progState.color)}>{progState.text}</span>
+                        <span className="font-mono text-[var(--primary)] bg-[var(--primary)]/10 px-2 py-0.5 rounded-md text-xs">{pValue}%</span>
+                     </span>
                   </label>
                   <div className="flex items-center gap-3">
-                     <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        value={read ? 100 : progress}
-                        disabled={read}
-                        onChange={e => setProgress(Number(e.target.value))}
-                        style={sliderTrackStyle(read ? 100 : progress, read)}
-                        className="flex-1 h-2 rounded-full appearance-none cursor-pointer accent-[var(--primary)] disabled:cursor-not-allowed"
+                     <DraggableProgress
+                        value={pValue}
+                        color={progState.color}
+                        onChange={(v) => { setProgress(v); if (read && v < 100) setRead(false); }}
                      />
                      <button
                         type="button"
@@ -1152,18 +1142,17 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                     </div>
                     <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-4 block relative z-10 flex justify-between items-center">
                        Progreso de Lectura
-                       <span className="font-mono text-[var(--primary)] bg-[var(--primary)]/10 px-2 py-0.5 rounded-md text-sm">{read ? '100' : progress}%</span>
+                       <span className="flex items-center gap-2">
+                          <span className={cn('text-[10px] font-bold text-white px-2 py-0.5 rounded-md', progState.color)}>{progState.text}</span>
+                          <span className="font-mono text-[var(--primary)] bg-[var(--primary)]/10 px-2 py-0.5 rounded-md text-sm">{pValue}%</span>
+                       </span>
                     </label>
-                    
+
                     <div className="flex items-center gap-4 relative z-10">
-                       <input 
-                         type="range" 
-                         min="0" 
-                         max="100" 
-                         value={read ? 100 : progress} 
-                         disabled={read}
-                         onChange={e => setProgress(Number(e.target.value))}
-                         className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-[var(--primary)] disabled:opacity-50" 
+                       <DraggableProgress
+                         value={pValue}
+                         color={progState.color}
+                         onChange={(v) => { setProgress(v); if (read && v < 100) setRead(false); }}
                        />
                        <button
                          onClick={() => { setRead(!read); if (!read) setProgress(100); }}
