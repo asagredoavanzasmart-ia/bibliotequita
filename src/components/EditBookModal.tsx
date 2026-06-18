@@ -61,8 +61,17 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   };
   
   const [digitalSource, setDigitalSource] = useState(item.source || '');
+  // Slots independientes PDF/EPUB (retrocompatibles con source/type legacy).
+  const [pdfSource, setPdfSource] = useState(
+    item.pdfSource || (item.type === 'pdf' ? item.source : '') || ''
+  );
+  const [epubSource, setEpubSource] = useState(
+    item.epubSource || (item.type === 'epub' ? item.source : '') || ''
+  );
   const coverInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pdfInputRef = useRef<HTMLInputElement>(null);
+  const epubInputRef = useRef<HTMLInputElement>(null);
   
   const [newCategoryName, setNewCategoryName] = useState('');
   const [showNewCategory, setShowNewCategory] = useState(false);
@@ -71,6 +80,23 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const handleSave = () => {
+    // La fuente "principal" (source/type) se deriva para retrocompatibilidad:
+    // si es externa se respeta el enlace; si no, se prioriza PDF y luego EPUB.
+    let primarySource = item.source;
+    let primaryType = type;
+    if (type === 'externa') {
+      primarySource = digitalSource;
+      primaryType = 'externa';
+    } else if (pdfSource) {
+      primarySource = pdfSource;
+      primaryType = 'pdf';
+    } else if (epubSource) {
+      primarySource = epubSource;
+      primaryType = 'epub';
+    } else if (digitalSource) {
+      primarySource = digitalSource;
+    }
+
     onSave(item.id, {
       title,
       author,
@@ -86,13 +112,46 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
       toBuy,
       folderIds,
       stageIds,
-      source: ownedDigital || item.type === 'externa' ? digitalSource : item.source,
+      source: primarySource,
+      pdfSource: pdfSource || undefined,
+      epubSource: epubSource || undefined,
       thumbnailUrl: coverUrl,
-      type,
+      type: primaryType,
       rating,
       tags,
     });
     onClose();
+  };
+
+  // Sube un archivo a un slot específico (PDF o EPUB), reemplazando el anterior.
+  const handleSlotUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    slot: 'pdf' | 'epub'
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const previous = slot === 'pdf' ? pdfSource : epubSource;
+    const setSlot = slot === 'pdf' ? setPdfSource : setEpubSource;
+    try {
+      const { url } = await uploadFile(file);
+      setSlot(url);
+      if (previous?.startsWith('/api/files/')) deleteUploadedFile(previous);
+    } catch (err) {
+      console.error('Error subiendo archivo al servidor:', err);
+      setSlot(URL.createObjectURL(file));
+    }
+    setOwnedDigital(true);
+    if (slot === 'pdf') {
+      const buffer = await file.arrayBuffer();
+      await analyzePdfContent(buffer);
+    }
+    e.target.value = '';
+  };
+
+  const handleSlotRemove = (slot: 'pdf' | 'epub') => {
+    const previous = slot === 'pdf' ? pdfSource : epubSource;
+    if (previous?.startsWith('/api/files/')) deleteUploadedFile(previous);
+    (slot === 'pdf' ? setPdfSource : setEpubSource)('');
   };
 
   const analyzeImageContent = async (base64Str: string) => {
@@ -380,20 +439,55 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   </button>
                </div>
 
-               {/* Archivo digital adjunto */}
-               {item.source && (
-                  <div className="p-3 bg-[var(--bg-card)] rounded-xl border border-slate-200 flex items-center gap-3">
-                     <div className="w-9 h-9 rounded-lg bg-[var(--primary)]/10 flex items-center justify-center shrink-0">
-                        <span className="text-[var(--primary)] font-bold text-[10px] uppercase">{item.type}</span>
-                     </div>
-                     <div className="min-w-0 flex-1">
-                        <p className="text-xs font-medium text-[var(--text-main)]">Archivo digital adjunto</p>
-                        <p className="text-[10px] text-[var(--text-muted)] font-mono truncate">{item.source}</p>
-                     </div>
+               {/* Slots independientes: PDF y EPUB pueden coexistir en el mismo libro */}
+               <div className="grid grid-cols-2 gap-2">
+                  {/* Slot PDF */}
+                  <div className="flex flex-col gap-1.5">
+                     {pdfSource ? (
+                        <div className="p-2.5 bg-[var(--bg-card)] rounded-xl border border-[var(--primary)]/30 flex items-center gap-2">
+                           <span className="text-[var(--primary)] font-bold text-[10px] uppercase shrink-0">PDF</span>
+                           <span className="text-[10px] text-[var(--text-muted)] font-mono truncate flex-1 min-w-0">{pdfSource.split('/').pop()}</span>
+                           <button type="button" onClick={() => handleSlotRemove('pdf')} className="text-slate-400 hover:text-red-500 shrink-0" title="Quitar PDF">
+                              <X className="w-3.5 h-3.5" />
+                           </button>
+                        </div>
+                     ) : (
+                        <button
+                           disabled={isAnalyzing}
+                           type="button"
+                           onClick={() => pdfInputRef.current?.click()}
+                           className={cn('px-3 py-2.5 flex items-center justify-center gap-1.5 rounded-xl text-xs font-bold border transition-colors',
+                              isAnalyzing ? 'bg-slate-100 text-slate-400 border-slate-200 opacity-70' : 'bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30 hover:bg-[var(--primary)]/20')}
+                        >
+                           <UploadCloud className={cn('w-4 h-4', isAnalyzing && 'animate-pulse')} /> PDF
+                        </button>
+                     )}
+                     <input type="file" ref={pdfInputRef} onChange={(e) => handleSlotUpload(e, 'pdf')} accept=".pdf" className="hidden" />
                   </div>
-               )}
+                  {/* Slot EPUB */}
+                  <div className="flex flex-col gap-1.5">
+                     {epubSource ? (
+                        <div className="p-2.5 bg-[var(--bg-card)] rounded-xl border border-[var(--primary)]/30 flex items-center gap-2">
+                           <span className="text-[var(--primary)] font-bold text-[10px] uppercase shrink-0">EPUB</span>
+                           <span className="text-[10px] text-[var(--text-muted)] font-mono truncate flex-1 min-w-0">{epubSource.split('/').pop()}</span>
+                           <button type="button" onClick={() => handleSlotRemove('epub')} className="text-slate-400 hover:text-red-500 shrink-0" title="Quitar EPUB">
+                              <X className="w-3.5 h-3.5" />
+                           </button>
+                        </div>
+                     ) : (
+                        <button
+                           type="button"
+                           onClick={() => epubInputRef.current?.click()}
+                           className="px-3 py-2.5 flex items-center justify-center gap-1.5 rounded-xl text-xs font-bold border transition-colors bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30 hover:bg-[var(--primary)]/20"
+                        >
+                           <UploadCloud className="w-4 h-4" /> EPUB
+                        </button>
+                     )}
+                     <input type="file" ref={epubInputRef} onChange={(e) => handleSlotUpload(e, 'epub')} accept=".epub" className="hidden" />
+                  </div>
+               </div>
 
-               {/* Reemplazar / añadir archivo digital */}
+               {/* Importar TXT o enlace externo */}
                <div className="flex flex-col gap-2">
                   <button
                      disabled={isAnalyzing}
@@ -403,13 +497,13 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                         'px-4 py-2 flex items-center justify-center gap-2 rounded-xl text-xs font-bold border transition-colors',
                         isAnalyzing
                            ? 'bg-slate-100 text-slate-400 border-slate-200 opacity-70'
-                           : 'bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30 hover:bg-[var(--primary)]/20'
+                           : 'bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200 hover:border-[var(--primary)]/40'
                      )}
                   >
                      <UploadCloud className={cn('w-4 h-4', isAnalyzing && 'animate-pulse')} />
-                     {isAnalyzing ? 'Analizando IA…' : item.source ? 'Reemplazar PDF/EPUB' : 'Importar PDF o EPUB'}
+                     {isAnalyzing ? 'Analizando IA…' : 'Importar TXT'}
                   </button>
-                  <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".pdf,.epub,.txt" className="hidden" />
+                  <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".txt" className="hidden" />
                   <div className="relative">
                      {type === 'externa' ? (
                         <>

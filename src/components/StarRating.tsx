@@ -17,7 +17,7 @@ import { cn } from '../lib/utils';
 interface StarRatingProps {
   value: number; // 0 = sin rating, 1.0–5.0
   onChange: (value: number) => void;
-  size?: 'sm' | 'md';
+  size?: 'sm' | 'md' | 'lg';
   readOnly?: boolean;
 }
 
@@ -44,8 +44,8 @@ export function StarRating({ value, onChange, size = 'sm', readOnly = false }: S
   const [draft, setDraft] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const starSize = size === 'sm' ? 'w-3.5 h-3.5' : 'w-6 h-6';
-  const textSize = size === 'sm' ? 'text-[12px]' : 'text-sm';
+  const starSize = size === 'sm' ? 'w-3.5 h-3.5' : size === 'lg' ? 'w-8 h-8' : 'w-6 h-6';
+  const textSize = size === 'sm' ? 'text-[12px]' : size === 'lg' ? 'text-base' : 'text-sm';
   const gap = size === 'sm' ? 'gap-0.5' : 'gap-1';
   // Separación extra (~20% del tamaño de estrella) entre las estrellas y el número
   const numGap = size === 'sm' ? 'ml-[3px]' : 'ml-[5px]';

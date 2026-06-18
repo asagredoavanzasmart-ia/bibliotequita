@@ -19,6 +19,25 @@ export interface CardSettings {
 // Tipo de fuente del recurso: archivo PDF, libro EPUB o página web externa.
 export type ResourceType = 'pdf' | 'epub' | 'txt' | 'externa';
 
+// Tipo de recurso adicional adjunto a un libro (pestaña "Recursos").
+export type ResourceKind = 'video' | 'audio' | 'text' | 'image';
+
+// Recurso complementario de un libro: video, audio, texto o imagen.
+// Los recursos de texto reutilizan el motor de lectura/citas; su identidad de
+// notas/citas usa documentId = `<bookId>::res::<id>`.
+export interface ResourceItem {
+  id: string;
+  bookId: string;
+  kind: ResourceKind;
+  title: string;
+  source: string;            // URL /api/files/..., o blob:/data:/idb:// según patrón
+  fileType?: ResourceType;   // para kind 'text': qué lector usar ('pdf'|'epub'|'txt')
+  mimeType?: string;
+  isSummary?: boolean;       // true si proviene de la herramienta de resumen IA
+  timestamp: number;
+  listIndex?: number;
+}
+
 export interface CategoryData {
   id: string;
   name: string;
@@ -46,8 +65,10 @@ export interface BookItem {
   title: string;
   author?: string;
   year?: string;
-  source: string;               // URL pública, blob:..., o idb://...
+  source: string;               // URL pública, blob:..., o idb://... (fuente legacy/principal)
   type: ResourceType;
+  pdfSource?: string;           // PDF del libro (coexiste con epubSource)
+  epubSource?: string;          // EPUB del libro (coexiste con pdfSource)
   thumbnailUrl?: string;        // Portada (URL, blob: o data: base64)
   timestamp: number;            // Fecha de creación (sirve para "Más recientes" y velocidad de lectura)
   folderIds: string[];          // Listas/playlists a las que pertenece

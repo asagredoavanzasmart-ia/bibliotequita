@@ -370,6 +370,10 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       year: formData.year,
       source: digitalSource,
       type: digitalType,
+      // Guardar también en el slot correspondiente para que PDF y EPUB puedan
+      // coexistir (el segundo formato se añade luego desde Editar).
+      pdfSource: digitalType === 'pdf' ? digitalSource || undefined : undefined,
+      epubSource: digitalType === 'epub' ? digitalSource || undefined : undefined,
       thumbnailUrl: coverUrl,
       folderIds: selectedFolderIds,
       stageIds: [],

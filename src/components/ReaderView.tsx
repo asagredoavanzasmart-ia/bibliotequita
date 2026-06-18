@@ -22,7 +22,8 @@ import { useLibrary } from '../hooks/useLibrary';
 import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp } from 'lucide-react';
 import { useState, useRef, FormEvent, ChangeEvent, useEffect, useCallback, useMemo } from 'react';
 import type { Rendition } from 'epubjs';
-import { cn } from '../lib/utils';
+import { cn, getBookSources, resolvePrimarySource } from '../lib/utils';
+import type { ResourceType } from '../types';
 import { PDFReader } from './PDFReader';
 import { EPUBReader } from './EPUBReader';
 import { TxtReader } from './TxtReader';
@@ -1316,6 +1317,21 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setPendingHighlight(null);
   }, [pendingHighlight, item?.type, highlightCurrentPhrase, clearPersistentHighlights]);
 
+  // Fuentes del libro (PDF/EPUB/TXT/externa) de forma retrocompatible.
+  const bookSources = useMemo(() => getBookSources(item), [item]);
+  const availableFormats = useMemo(
+    () => (['pdf', 'epub', 'txt', 'externa'] as ResourceType[]).filter(t => bookSources[t as keyof typeof bookSources]),
+    [bookSources]
+  );
+  // Versión seleccionada por el usuario cuando el libro tiene varias (PDF+EPUB).
+  const [activeFormat, setActiveFormat] = useState<ResourceType | undefined>(undefined);
+  const primary = useMemo(
+    () => resolvePrimarySource(bookSources, activeFormat) ?? { source: item.source, type: item.type },
+    [bookSources, activeFormat, item.source, item.type]
+  );
+  const activeSource = primary.source;
+  const activeType = primary.type;
+
   // New states for fullscreen and split view
   const [isFullscreen, setIsFullscreen] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
   const [showControls, setShowControls] = useState(typeof window !== 'undefined' ? window.innerWidth >= 768 : true);
@@ -1672,10 +1688,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         onClick={handleScreenClick}
      >
         <div className="flex-1 overflow-hidden pointer-events-auto">
-          {item.type === 'pdf' && <PDFReader url={item.source} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} bottomOffset={showTtsWidget ? ttsWidgetHeight : 0} controlsVisible={pageControlsVisible} />}
-          {item.type === 'epub' && (
+          {activeType === 'pdf' && <PDFReader url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} bottomOffset={showTtsWidget ? ttsWidgetHeight : 0} controlsVisible={pageControlsVisible} />}
+          {activeType === 'epub' && (
             <EPUBReader
-              url={item.source}
+              url={activeSource}
               bottomOffset={showTtsWidget ? ttsWidgetHeight : 0}
               controlsVisible={pageControlsVisible}
               getRendition={(rendition) => {
@@ -1710,13 +1726,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               }}
             />
           )}
-          {item.type === 'txt' && <TxtReader url={item.source} />}
-          {item.type === 'externa' && (
+          {activeType === 'txt' && <TxtReader url={activeSource} />}
+          {activeType === 'externa' && (
             <div className="w-full h-full flex flex-col pointer-events-auto">
               <div className="bg-[#FFA300]/10 text-[#FFA300] p-3 text-sm font-medium text-center shadow-inner">
                  Estás viendo contenido externo. Algunas funciones pueden estar limitadas.
               </div>
-              <iframe src={item.source} className="w-full flex-1 border-0" sandbox="allow-scripts allow-same-origin bg-white" />
+              <iframe src={activeSource} className="w-full flex-1 border-0" sandbox="allow-scripts allow-same-origin bg-white" />
             </div>
           )}
         </div>
@@ -2080,6 +2096,24 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                 {item.title}
                 </h2>
             </div>
+            {/* Selector de versión PDF/EPUB cuando el libro tiene ambos formatos */}
+            {availableFormats.filter(f => f === 'pdf' || f === 'epub' || f === 'txt').length > 1 && (
+              <div className="flex bg-slate-100 p-0.5 rounded-lg shrink-0 gap-0.5 items-center">
+                {availableFormats.filter(f => f === 'pdf' || f === 'epub' || f === 'txt').map(f => (
+                  <button
+                    key={f}
+                    onClick={() => setActiveFormat(f)}
+                    className={cn(
+                      "px-2 py-1 rounded-md text-[10px] font-bold uppercase transition-all",
+                      activeType === f ? "bg-white text-[#00558F] shadow-sm" : "text-slate-500 hover:text-slate-700"
+                    )}
+                    title={`Ver versión ${f.toUpperCase()}`}
+                  >
+                    {f}
+                  </button>
+                ))}
+              </div>
+            )}
             </div>
 
             <div className="flex items-center justify-end gap-2 flex-1 min-w-0">
@@ -2134,7 +2168,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                        <MessageSquareQuote className="w-4 h-4 sm:w-5 sm:h-5" />
                    </button>
                  </div>
-               ) : (item.type === 'pdf' || item.type === 'epub' || item.type === 'txt') && (
+               ) : (activeType === 'pdf' || activeType === 'epub' || activeType === 'txt') && (
                  <div className="flex items-center gap-1 sm:gap-2 shrink-0">
                   {/* Lector de Voz (TTS ElevenLabs) */}
                   <button 
