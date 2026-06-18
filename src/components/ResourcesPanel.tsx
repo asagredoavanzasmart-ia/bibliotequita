@@ -8,7 +8,7 @@
 // =============================================================================
 
 import { useState, useRef } from 'react';
-import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, ChevronLeft, Loader2, BookOpen } from 'lucide-react';
+import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, ChevronLeft, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { uploadFile } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
@@ -16,6 +16,7 @@ import { ResourceItem, ResourceKind, ResourceType } from '../types';
 import { PDFReader } from './PDFReader';
 import { EPUBReader } from './EPUBReader';
 import { TxtReader } from './TxtReader';
+import { NotesPanel } from './NotesPanel';
 
 interface ResourcesPanelProps {
   bookId: string;
@@ -35,13 +36,42 @@ function fileTypeFromName(name: string): ResourceType {
   return 'txt';
 }
 
+// Detecta YouTube/Vimeo en una URL de video y devuelve su URL de embed.
+// Si no coincide con ninguno, se asume un archivo de video directo (.mp4 etc.)
+// y se reproduce con <video> nativo.
+function getVideoEmbedUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('youtube.com')) {
+      const id = u.searchParams.get('v');
+      if (id) return `https://www.youtube.com/embed/${id}`;
+      const shortMatch = u.pathname.match(/^\/(shorts|embed)\/([^/?]+)/);
+      if (shortMatch) return `https://www.youtube.com/embed/${shortMatch[2]}`;
+    }
+    if (u.hostname.includes('youtu.be')) {
+      const id = u.pathname.slice(1);
+      if (id) return `https://www.youtube.com/embed/${id}`;
+    }
+    if (u.hostname.includes('vimeo.com')) {
+      const id = u.pathname.split('/').filter(Boolean).pop();
+      if (id) return `https://player.vimeo.com/video/${id}`;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
   const { resources, addResource, updateResource, deleteResource } = useResources(bookId);
   const [activeKind, setActiveKind] = useState<ResourceKind>('video');
   const [uploading, setUploading] = useState(false);
   const [openTextResource, setOpenTextResource] = useState<ResourceItem | null>(null);
+  const [notesResourceId, setNotesResourceId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [showLinkInput, setShowLinkInput] = useState(false);
+  const [linkValue, setLinkValue] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const current = resources.filter((r) => r.kind === activeKind);
@@ -65,6 +95,18 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleAddLink = async () => {
+    const url = linkValue.trim();
+    if (!url) return;
+    try {
+      await addResource({ kind: 'video', title: url, source: url });
+      setLinkValue('');
+      setShowLinkInput(false);
+    } catch (err) {
+      console.error('Error añadiendo enlace de video:', err);
     }
   };
 
@@ -122,20 +164,46 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
 
       {/* Contenido de la categoría activa */}
       <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 gap-2">
           <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
             <activeMeta.Icon className="w-5 h-5 text-[var(--primary)]" /> {activeMeta.label}
           </h3>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] disabled:opacity-60 transition-colors"
-          >
-            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
-            {uploading ? 'Subiendo…' : 'Subir'}
-          </button>
+          <div className="flex items-center gap-2">
+            {activeKind === 'video' && (
+              <button
+                onClick={() => setShowLinkInput((v) => !v)}
+                className={cn('flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors', showLinkInput ? 'bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30' : 'bg-white text-slate-600 border-slate-200 hover:border-[var(--primary)]/40')}
+              >
+                <LinkIcon className="w-4 h-4" /> Enlace
+              </button>
+            )}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] disabled:opacity-60 transition-colors"
+            >
+              {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
+              {uploading ? 'Subiendo…' : 'Subir'}
+            </button>
+          </div>
           <input ref={fileInputRef} type="file" accept={activeMeta.accept} className="hidden" onChange={handleUpload} />
         </div>
+
+        {activeKind === 'video' && showLinkInput && (
+          <div className="flex items-center gap-2 mb-4">
+            <input
+              autoFocus
+              value={linkValue}
+              onChange={(e) => setLinkValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleAddLink(); }}
+              placeholder="Pega un enlace de YouTube, Vimeo o video directo (.mp4)…"
+              className="flex-1 text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+            />
+            <button onClick={handleAddLink} disabled={!linkValue.trim()} className="px-3 py-2 rounded-lg text-xs font-bold bg-[var(--primary)] text-white disabled:opacity-50 transition-colors">
+              Añadir
+            </button>
+          </div>
+        )}
 
         {current.length === 0 ? (
           <div className="text-center text-sm text-slate-400 py-16 border-2 border-dashed border-slate-200 rounded-xl">
@@ -147,7 +215,16 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
               <div key={r.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm flex flex-col">
                 {/* Vista/reproductor embebido por tipo */}
                 {r.kind === 'video' && (
-                  <video controls className="w-full max-h-72 bg-black" src={r.source} />
+                  getVideoEmbedUrl(r.source) ? (
+                    <iframe
+                      src={getVideoEmbedUrl(r.source)!}
+                      className="w-full aspect-video bg-black"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  ) : (
+                    <video controls className="w-full max-h-72 bg-black" src={r.source} />
+                  )
                 )}
                 {r.kind === 'audio' && (
                   <div className="p-3">
@@ -172,7 +249,7 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
                   </button>
                 )}
 
-                {/* Pie: título editable + borrar */}
+                {/* Pie: título editable + notas + borrar */}
                 <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-100">
                   {renamingId === r.id ? (
                     <input
@@ -188,10 +265,32 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
                       {r.title}
                     </span>
                   )}
+                  <button
+                    onClick={() => setNotesResourceId(notesResourceId === r.id ? null : r.id)}
+                    className={cn('p-1 shrink-0 transition-colors', notesResourceId === r.id ? 'text-[var(--primary)]' : 'text-slate-400 hover:text-[var(--primary)]')}
+                    title="Notas de este recurso"
+                  >
+                    <MessageSquareQuote className="w-4 h-4" />
+                  </button>
                   <button onClick={() => { if (confirm('¿Eliminar este recurso?')) deleteResource(r.id); }} className="p-1 text-slate-400 hover:text-rose-500 shrink-0" title="Eliminar">
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
+
+                {/* Panel de notas del recurso (documentId propio, separado del libro) */}
+                {notesResourceId === r.id && (
+                  <div className="border-t border-slate-100 h-72 flex flex-col">
+                    <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 border-b border-slate-100 shrink-0">
+                      <span className="text-[10px] font-bold uppercase text-slate-500">Notas</span>
+                      <button onClick={() => setNotesResourceId(null)} className="p-0.5 text-slate-400 hover:text-slate-700">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-hidden">
+                      <NotesPanel documentId={`${bookId}::res::${r.id}`} />
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
