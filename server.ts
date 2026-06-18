@@ -1093,6 +1093,122 @@ async function startServer() {
     res.json({ notes });
   });
 
+  // ---------------------------------------------------------------------------
+  // RECURSOS por libro (videos, audios, textos, imágenes) — pestaña "Recursos".
+  // Siguen el mismo patrón que library/items. Las citas de recursos de texto
+  // usan document_id = `<bookId>::res::<resourceId>` (motor de notas existente).
+  // ---------------------------------------------------------------------------
+
+  // Borra del disco un archivo servido por /api/files/ (tolerante a fallos).
+  const deleteDiskFileByUrl = (url?: string) => {
+    if (!url || !url.startsWith("/api/files/")) return;
+    const name = url.replace(/^\/api\/files\//, "");
+    const filePath = path.join(UPLOAD_DIR, name);
+    if (fs.existsSync(filePath)) {
+      try { fs.unlinkSync(filePath); } catch (e) { console.warn("No se pudo borrar archivo de recurso:", e); }
+    }
+  };
+
+  // GET /api/books/:bookId/resources — lista los recursos de un libro.
+  app.get("/api/books/:bookId/resources", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { bookId } = req.params;
+
+    const { data: rows, error } = await supabase
+      .from("resources")
+      .select("id, data, list_index")
+      .eq("user_id", userId)
+      .eq("book_id", bookId)
+      .order("list_index", { ascending: true });
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({
+      resources: (rows ?? []).map((row) => ({ ...(row.data as object), id: row.id, listIndex: row.list_index })),
+    });
+  });
+
+  // POST /api/books/:bookId/resources — crea un recurso.
+  app.post("/api/books/:bookId/resources", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { bookId } = req.params;
+    const { id: _ignoredId, listIndex, ...data } = req.body ?? {};
+
+    const { data: row, error } = await supabase
+      .from("resources")
+      .insert({ user_id: userId, book_id: bookId, data: { ...data, bookId }, list_index: listIndex ?? 0 })
+      .select("id, data, list_index")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.status(201).json({ resource: { ...(row.data as object), id: row.id, listIndex: row.list_index } });
+  });
+
+  // PUT /api/books/:bookId/resources/:id — actualiza un recurso (merge).
+  app.put("/api/books/:bookId/resources/:id", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { bookId, id } = req.params;
+
+    const { data: existing, error: getError } = await supabase
+      .from("resources")
+      .select("data, list_index")
+      .eq("id", id)
+      .eq("user_id", userId)
+      .eq("book_id", bookId)
+      .single();
+    if (getError) return res.status(404).json({ error: "Recurso no encontrado." });
+
+    const { listIndex, ...updates } = req.body ?? {};
+    const mergedData = { ...(existing.data as object), ...updates };
+    const patch: Record<string, unknown> = { data: mergedData };
+    if (listIndex !== undefined) patch.list_index = listIndex;
+
+    const { data: row, error } = await supabase
+      .from("resources")
+      .update(patch)
+      .eq("id", id)
+      .eq("user_id", userId)
+      .eq("book_id", bookId)
+      .select("id, data, list_index")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ resource: { ...(row.data as object), id: row.id, listIndex: row.list_index } });
+  });
+
+  // DELETE /api/books/:bookId/resources/:id — borra un recurso, su archivo y sus notas.
+  app.delete("/api/books/:bookId/resources/:id", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { bookId, id } = req.params;
+
+    const { data: existing } = await supabase
+      .from("resources")
+      .select("data")
+      .eq("id", id)
+      .eq("user_id", userId)
+      .eq("book_id", bookId)
+      .single();
+
+    const { error } = await supabase
+      .from("resources")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", userId)
+      .eq("book_id", bookId);
+    if (error) return res.status(400).json({ error: error.message });
+
+    // Borrar archivo físico y notas/citas asociadas al recurso de texto.
+    const resData = existing?.data as any;
+    deleteDiskFileByUrl(resData?.source);
+    await supabase.from("document_notes").delete().eq("user_id", userId).eq("document_id", `${bookId}::res::${id}`);
+    await supabase.from("document_settings").delete().eq("user_id", userId).eq("document_id", `${bookId}::res::${id}`);
+
+    res.json({ ok: true });
+  });
+
   // GET /api/documents/:docId/settings — paleta de colores, agrupado, resúmenes IA.
   app.get("/api/documents/:docId/settings", async (req: any, res) => {
     if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });

@@ -19,7 +19,7 @@
 // =============================================================================
 
 import { useLibrary } from '../hooks/useLibrary';
-import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp } from 'lucide-react';
+import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp, FolderOpen } from 'lucide-react';
 import { useState, useRef, FormEvent, ChangeEvent, useEffect, useCallback, useMemo } from 'react';
 import type { Rendition } from 'epubjs';
 import { cn, getBookSources, resolvePrimarySource } from '../lib/utils';
@@ -33,6 +33,7 @@ import { EditBookModal } from './EditBookModal';
 import { CitationsManager } from './CitationsManager';
 import { BookmarksMenu } from './BookmarksMenu';
 import { AuditorPanel } from './AuditorPanel';
+import { ResourcesPanel } from './ResourcesPanel';
 import { useReadingTimeTracker } from '../hooks/useReadingTime';
 import { StarRating } from './StarRating';
 import { DraggableProgress } from './BookGrid';
@@ -70,7 +71,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Registra tiempo de lectura diario mientras este libro está abierto.
   useReadingTimeTracker(!!item);
 
-  const [activeTab, setActiveTab ] = useState<'reader' | 'edit' | 'citations' | 'auditor'>('reader');
+  const [activeTab, setActiveTab ] = useState<'reader' | 'edit' | 'citations' | 'auditor' | 'resources'>('reader');
   
   const [showFolderManager, setShowFolderManager ] = useState(false);
   const [showNotes, setShowNotes ] = useState(false);
@@ -2144,6 +2145,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                      >
                          <Info className="w-4 h-4 sm:w-5 sm:h-5" />
                      </button>
+                     <button
+                         onClick={() => setActiveTab(activeTab === 'resources' ? 'reader' : 'resources')}
+                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'resources' ? "bg-white text-[#00558F] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
+                         title="Recursos (videos, audios, textos, imágenes)"
+                     >
+                         <FolderOpen className="w-4 h-4 sm:w-5 sm:h-5" />
+                     </button>
                      {item.type === 'pdf' && item.source?.startsWith('/api/files/') && itemCategoryName.toLowerCase() === 'estudio' && (
                        <button
                          onClick={() => setActiveTab(activeTab === 'auditor' ? 'reader' : 'auditor')}
@@ -2334,6 +2342,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           {activeTab === 'auditor' && (
             <div className="absolute inset-0 z-40 bg-white/95 backdrop-blur-md animate-in fade-in slide-in-from-bottom-5 duration-300 overflow-y-auto shadow-2xl">
               <AuditorPanel item={item} onClose={() => setActiveTab('reader')} />
+            </div>
+          )}
+
+          {/* Recursos (videos, audios, textos, imágenes) */}
+          {activeTab === 'resources' && (
+            <div className="absolute inset-0 z-40 bg-white animate-in fade-in slide-in-from-bottom-5 duration-300 shadow-2xl">
+              <ResourcesPanel bookId={item.id} />
             </div>
           )}
 
