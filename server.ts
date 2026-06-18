@@ -1579,10 +1579,10 @@ ${text}
     const credentialsBase64 = process.env.GOOGLE_TTS_CREDENTIALS_BASE64;
     if (credentialsBase64) {
       try {
+        // Un base64 bien formado ya contiene el JSON exacto; se parsea directo sin sanear
+        // (sanear los saltos de línea reales del JSON indentado lo corrompería).
         const decoded = Buffer.from(credentialsBase64.trim(), "base64").toString("utf8");
-        // Asegurar que saltos de línea literales sean transformados a escapes válidos en el string JSON
-        const sanitized = decoded.replace(/\n/g, "\\n").replace(/\r/g, "");
-        return { credentials: JSON.parse(sanitized) };
+        return { credentials: JSON.parse(decoded) };
       } catch (e: any) {
         console.error("[ERROR] Fallo al decodificar o parsear GOOGLE_TTS_CREDENTIALS_BASE64:", e.message);
       }
