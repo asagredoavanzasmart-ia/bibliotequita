@@ -1580,7 +1580,9 @@ ${text}
     if (credentialsBase64) {
       try {
         const decoded = Buffer.from(credentialsBase64.trim(), "base64").toString("utf8");
-        return { credentials: JSON.parse(decoded) };
+        // Asegurar que saltos de línea literales sean transformados a escapes válidos en el string JSON
+        const sanitized = decoded.replace(/\n/g, "\\n").replace(/\r/g, "");
+        return { credentials: JSON.parse(sanitized) };
       } catch (e: any) {
         console.error("[ERROR] Fallo al decodificar o parsear GOOGLE_TTS_CREDENTIALS_BASE64:", e.message);
       }
