@@ -210,8 +210,12 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
         <div className="flex-1 p-3 flex flex-col justify-between min-w-0 gap-2 relative">
           <div className="flex flex-col w-full min-w-0">
              <h3 onClick={onOpen} className="font-bold text-[var(--text-main)] text-sm cursor-pointer hover:text-[var(--primary)] line-clamp-1">{item.title}</h3>
-             {cardSettings.showAuthor && <p className="text-xs text-[var(--primary)] font-bold truncate">{item.author || 'Sin autor'}</p>}
-             {cardSettings.showYear && item.year && <p className="text-xs text-[var(--text-muted)]">{item.year}</p>}
+             {(cardSettings.showAuthor || cardSettings.showYear) && (
+               <p className="text-xs truncate">
+                 {cardSettings.showAuthor && <span className="text-[var(--primary)] font-bold">{item.author || 'Sin autor'}</span>}
+                 {cardSettings.showYear && item.year && <span className="text-[var(--text-muted)]"> · {item.year}</span>}
+               </p>
+             )}
           </div>
 
           {/* Fila de acciones: iconos compactos, siempre visibles, con scroll si no caben */}
@@ -244,15 +248,19 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
             </button>
           </div>
 
-          {cardSettings.showProgress && (
-            <div className="w-full flex items-center gap-2" title={`Progreso: ${pValue}%`}>
-               <DraggableProgress value={pValue} color={progState.color} onChange={(v) => updateItem(item.id, { progress: v, ...(item.read && v < 100 ? { read: false } : {}) })} />
-               <span className={cn("text-[11px] font-bold w-[64px] shrink-0 text-right whitespace-nowrap", progState.color.replace('bg-', 'text-'))}>{progState.text}</span>
-            </div>
-          )}
-          {cardSettings.showRating && (
-            <div onPointerDown={(e) => e.stopPropagation()}>
-               <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" />
+          {(cardSettings.showProgress || cardSettings.showRating) && (
+            <div className="w-full flex items-center gap-2">
+               {cardSettings.showRating && (
+                 <div onPointerDown={(e) => e.stopPropagation()} className="shrink-0">
+                    <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" />
+                 </div>
+               )}
+               {cardSettings.showProgress && (
+                 <div className="flex-1 min-w-0 flex items-center gap-2" title={`Progreso: ${pValue}%`}>
+                    <DraggableProgress value={pValue} color={progState.color} onChange={(v) => updateItem(item.id, { progress: v, ...(item.read && v < 100 ? { read: false } : {}) })} />
+                    <span className={cn("text-[11px] font-bold w-[64px] shrink-0 text-right whitespace-nowrap", progState.color.replace('bg-', 'text-'))}>{progState.text}</span>
+                 </div>
+               )}
             </div>
           )}
         </div>

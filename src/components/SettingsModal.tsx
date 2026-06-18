@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Settings2, Palette, Library, Plus, Trash2, Edit2, AppWindow, Eye, EyeOff } from 'lucide-react';
-import { cn, colorSwatchProps } from '../lib/utils';
+import { X, Settings2, Palette, Library, Plus, Trash2, Edit2, AppWindow, Eye, EyeOff, ChevronUp, ChevronDown } from 'lucide-react';
+import { cn, colorSwatchProps, getOrderedNavSections, NAV_SECTIONS_META } from '../lib/utils';
 import { useLibrary, ThemeMode } from '../hooks/useLibrary';
 
 const PRESET_PLAYLIST_COLORS = [
@@ -306,32 +306,53 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                    </div>
 
                    <h3 className="text-lg font-bold pt-2">Secciones del menú</h3>
-                   <p className="text-xs text-[var(--text-muted)] -mt-4">Activa o desactiva las clasificaciones que aparecen en la barra lateral.</p>
-                   <div className="space-y-4">
-                      {[
-                        { id: 'navFavoritos', label: 'Favoritos', desc: 'Sección de libros marcados como favoritos (estrella).' },
-                        { id: 'navLeidos', label: 'Leídos', desc: 'Sección de libros marcados como leídos.' },
-                        { id: 'navPorLeer', label: 'Por Leer', desc: 'Sección de libros pendientes de leer (reloj de arena).' },
-                        { id: 'navDestacados', label: 'Destacados', desc: 'Sección de libros fijados (chincheta).' },
-                        { id: 'navFisico', label: 'Físico', desc: 'Sección de libros físicos.' },
-                        { id: 'navDigital', label: 'Digital', desc: 'Sección de libros digitales.' },
-                      ].map(opt => (
-                        <label key={opt.id} className="flex items-center justify-between p-4 rounded-xl border border-slate-200/50 bg-[var(--bg-card)] cursor-pointer hover:border-[var(--primary)]/50 transition-colors">
-                           <div>
-                              <div className="font-bold text-sm">{opt.label}</div>
-                              <div className="text-xs text-[var(--text-muted)]">{opt.desc}</div>
-                           </div>
-                           <div className="relative inline-flex items-center cursor-pointer">
-                              <input
-                                type="checkbox"
-                                className="sr-only peer"
-                                checked={(cardSettings as any)[opt.id] !== false}
-                                onChange={(e) => setCardSettings({ ...cardSettings, [opt.id]: e.target.checked })}
-                              />
-                              <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[var(--primary)]"></div>
-                           </div>
-                        </label>
-                      ))}
+                   <p className="text-xs text-[var(--text-muted)] -mt-4">Activa, desactiva y reordena las clasificaciones que aparecen en la barra lateral.</p>
+                   <div className="space-y-2">
+                      {(() => {
+                        const ordered = getOrderedNavSections(cardSettings);
+                        const settingKeyOf = (id: string) => NAV_SECTIONS_META.find(m => m.id === id)!.settingKey;
+                        const moveSection = (index: number, dir: -1 | 1) => {
+                           const target = index + dir;
+                           if (target < 0 || target >= ordered.length) return;
+                           const newOrder = ordered.map(s => s.id);
+                           [newOrder[index], newOrder[target]] = [newOrder[target], newOrder[index]];
+                           setCardSettings({ ...cardSettings, navOrder: newOrder });
+                        };
+                        return ordered.map((sec, index) => (
+                          <div key={sec.id} className="flex items-center gap-2 p-3 rounded-xl border border-slate-200/50 bg-[var(--bg-card)]">
+                             <div className="flex flex-col -my-1">
+                                <button
+                                  type="button"
+                                  disabled={index === 0}
+                                  onClick={() => moveSection(index, -1)}
+                                  className="p-0.5 text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title="Subir"
+                                >
+                                  <ChevronUp className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={index === ordered.length - 1}
+                                  onClick={() => moveSection(index, 1)}
+                                  className="p-0.5 text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title="Bajar"
+                                >
+                                  <ChevronDown className="w-4 h-4" />
+                                </button>
+                             </div>
+                             <span className="font-bold text-sm flex-1">{sec.label}</span>
+                             <label className="relative inline-flex items-center cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  className="sr-only peer"
+                                  checked={sec.show}
+                                  onChange={(e) => setCardSettings({ ...cardSettings, [settingKeyOf(sec.id)]: e.target.checked })}
+                                />
+                                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[var(--primary)]"></div>
+                             </label>
+                          </div>
+                        ));
+                      })()}
                    </div>
                 </div>
               )}

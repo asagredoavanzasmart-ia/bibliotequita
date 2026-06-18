@@ -21,7 +21,12 @@ export interface CardSettings {
   navDestacados?: boolean;
   navFisico?: boolean;
   navDigital?: boolean;
+  // Orden de esas secciones en el sidebar (lista de ids); si falta alguna,
+  // se añade al final con el orden por defecto.
+  navOrder?: NavSectionId[];
 }
+
+export type NavSectionId = 'favoritos' | 'leidos' | 'porleer' | 'destacados' | 'fisico' | 'digital';
 
 // Tipo de fuente del recurso: archivo PDF, libro EPUB o página web externa.
 export type ResourceType = 'pdf' | 'epub' | 'txt' | 'externa';

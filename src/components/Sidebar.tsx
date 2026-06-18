@@ -18,8 +18,8 @@
 import { Library, Folder, Plus, Edit2, Trash2, X, Check, ChevronDown, ChevronRight, Pin, BarChart2, LayoutGrid, GalleryVerticalEnd, List, Settings, BookOpen, Newspaper, FileText, Book, Laptop, Layers, ShieldCheck, ArrowDownUp, LogOut, Star, Hourglass, CheckCheck } from 'lucide-react';
 import { useLibrary } from '../hooks/useLibrary';
 import { useState, FormEvent } from 'react';
-import { cn, colorSwatchProps } from '../lib/utils';
-import { PlaylistData } from '../types';
+import { cn, colorSwatchProps, getOrderedNavSections } from '../lib/utils';
+import { PlaylistData, NavSectionId } from '../types';
 import { useDroppable } from '@dnd-kit/core';
 
 const getCategoryIcon = (name: string) => {
@@ -79,6 +79,16 @@ const DroppablePlaylist = ({ pl, activePlaylist, setActivePlaylist, setActiveSta
   );
 };
 
+// Íconos por sección de navegación (los ids/labels/orden viven en getOrderedNavSections).
+const NAV_SECTION_ICONS: Record<NavSectionId, typeof Star> = {
+  favoritos: Star,
+  leidos: CheckCheck,
+  porleer: Hourglass,
+  destacados: Pin,
+  fisico: Book,
+  digital: Laptop,
+};
+
 const THEME_COLORS = [
   'bg-[#00558F]',
   'bg-[#A0CFEB]',
@@ -101,28 +111,14 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
   const [editName, setEditName] = useState('');
   const [editColor, setEditColor] = useState('');
 
-  const [isHistoricalExpanded, setIsHistoricalExpanded] = useState(false);
   const [isAlphabeticTitleExpanded, setIsAlphabeticTitleExpanded] = useState(false);
   const [isAlphabeticAuthorExpanded, setIsAlphabeticAuthorExpanded] = useState(false);
   const [isEtapasExpanded, setIsEtapasExpanded] = useState(false);
   const [isMisListasExpanded, setIsMisListasExpanded] = useState(false);
-  const [expandedCenturies, setExpandedCenturies] = useState<Record<string, boolean>>({});
 
   const years = Array.from(new Set(items.map(i => i.year).filter(Boolean))) as string[];
   const authors = Array.from(new Set(items.map(i => i.author).filter(Boolean))) as string[];
   const subjects = Array.from(new Set(items.map(i => i.subject).filter(Boolean))) as string[];
-
-  const romanCenturies: Record<number, string> = { 15: 'XV', 16: 'XVI', 17: 'XVII', 18: 'XVIII', 19: 'XIX', 20: 'XX', 21: 'XXI' };
-  const centuriesMap: Record<string, string[]> = {};
-  years.sort((a, b) => Number(b) - Number(a)).forEach(y => {
-    const numY = Number(y);
-    if (!isNaN(numY)) {
-      const cent = Math.ceil(numY / 100);
-      const centLabel = `Siglo ${romanCenturies[cent] || cent}`;
-      if (!centuriesMap[centLabel]) centuriesMap[centLabel] = [];
-      centuriesMap[centLabel].push(y);
-    }
-  });
 
   const titleInitials = Array.from(new Set(items.map(i => i.title?.[0]?.toUpperCase()).filter(c => c && /[A-Z0-9]/.test(c)))).sort();
   const authorInitials = Array.from(new Set(items.map(i => i.author?.[0]?.toUpperCase()).filter(c => c && /[A-Z0-9]/.test(c)))).sort();
@@ -256,47 +252,6 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
 
         {!collapsed && (
           <>
-          <div className="flex items-center justify-between mt-4 mb-2 ml-2">
-            <h2 className="text-[10px] font-bold text-white/50 uppercase tracking-widest cursor-pointer hover:text-white transition-colors" onClick={() => setIsHistoricalExpanded(!isHistoricalExpanded)}>
-               Tapas Históricas
-            </h2>
-           <button onClick={() => setIsHistoricalExpanded(!isHistoricalExpanded)} className="text-white/50 hover:text-white">
-              {isHistoricalExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-           </button>
-        </div>
-        {isHistoricalExpanded && (
-          <ul className="space-y-1 mb-4">
-             {Object.entries(centuriesMap).map(([century, centuryYears]) => (
-                <li key={century} className="ml-2">
-                   <div 
-                      className="flex items-center justify-between px-3 py-1.5 rounded-lg cursor-pointer hover:bg-white/5 transition-colors"
-                      onClick={() => setExpandedCenturies(prev => ({...prev, [century]: !prev[century]}))}
-                   >
-                      <span className="text-sm font-medium text-white/90">{century}</span>
-                      {expandedCenturies[century] ? <ChevronDown className="w-3 h-3 text-white/50" /> : <ChevronRight className="w-3 h-3 text-white/50" />}
-                   </div>
-                   {expandedCenturies[century] && (
-                      <ul className="pl-4 border-l border-white/10 ml-3 space-y-1 my-1">
-                         {centuryYears.map(year => (
-                           <li key={year}>
-                              <button
-                                onClick={() => { setActiveTab('todos'); setActivePlaylist(null); setActiveStage(null); setFilters({...filters, year, authorInitial: '', titleInitial: ''}); }}
-                                className={cn(
-                                  "flex items-center w-full gap-3 px-3 py-1 rounded-lg transition-colors text-left",
-                                  filters.year === year ? "bg-white/10 text-white font-medium" : "text-white/70 hover:bg-white/5 text-sm"
-                                )}
-                              >
-                                <span className="truncate text-xs">- {year}</span>
-                              </button>
-                           </li>
-                         ))}
-                      </ul>
-                   )}
-                </li>
-             ))}
-          </ul>
-        )}
-
         <div className="flex items-center justify-between mt-4 mb-2 ml-2">
            <h2 className="text-[10px] font-bold text-white/50 uppercase tracking-widest cursor-pointer hover:text-white transition-colors" onClick={() => setIsAlphabeticTitleExpanded(!isAlphabeticTitleExpanded)}>
               Índice por Título
@@ -356,29 +311,25 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
         )}
 
         <ul className={cn("space-y-1 mt-4 border-t border-white/10 pt-4", collapsed ? "px-0 border-t-0 mt-2" : "")}>
-          {([
-            { id: 'favoritos', label: 'Favoritos', Icon: Star, show: cardSettings.navFavoritos !== false },
-            { id: 'leidos', label: 'Leídos', Icon: CheckCheck, show: cardSettings.navLeidos !== false },
-            { id: 'porleer', label: 'Por Leer', Icon: Hourglass, show: cardSettings.navPorLeer !== false },
-            { id: 'destacados', label: 'Destacados', Icon: Pin, show: cardSettings.navDestacados !== false },
-            { id: 'fisico', label: 'Físico', Icon: Book, show: cardSettings.navFisico !== false },
-            { id: 'digital', label: 'Digital', Icon: Laptop, show: cardSettings.navDigital !== false },
-          ] as const).filter(s => s.show).map(({ id, label, Icon }) => (
-            <li key={id}>
-               <button
-                 onClick={() => { setActiveTab(id); setActivePlaylist(null); setActiveStage(null); }}
-                 className={cn(
-                   "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full",
-                   collapsed ? "justify-center" : "",
-                   activeTab === id ? "bg-white/10 text-white font-medium" : "text-white/80 hover:bg-white/5 font-medium"
-                 )}
-                 title={collapsed ? label : undefined}
-               >
-                 <Icon className="w-5 h-5 opacity-80 shrink-0" />
-                 {!collapsed && <span className="truncate text-sm">{label}</span>}
-               </button>
-            </li>
-          ))}
+          {getOrderedNavSections(cardSettings).filter(s => s.show).map(({ id, label }) => {
+            const Icon = NAV_SECTION_ICONS[id];
+            return (
+              <li key={id}>
+                 <button
+                   onClick={() => { setActiveTab(id); setActivePlaylist(null); setActiveStage(null); }}
+                   className={cn(
+                     "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full",
+                     collapsed ? "justify-center" : "",
+                     activeTab === id ? "bg-white/10 text-white font-medium" : "text-white/80 hover:bg-white/5 font-medium"
+                   )}
+                   title={collapsed ? label : undefined}
+                 >
+                   <Icon className="w-5 h-5 opacity-80 shrink-0" />
+                   {!collapsed && <span className="truncate text-sm">{label}</span>}
+                 </button>
+              </li>
+            );
+          })}
         </ul>
       </div>
 
