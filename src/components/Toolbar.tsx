@@ -1,5 +1,5 @@
-import { Book, Globe, UploadCloud, Link as LinkIcon, LayoutGrid, Grid3x3, GalleryVerticalEnd, List as ListIcon, Save, Search, Settings, Menu, LogOut, MoreVertical } from 'lucide-react';
-import React, { useState } from 'react';
+import { Book, Globe, UploadCloud, Link as LinkIcon, LayoutGrid, Grid3x3, GalleryVerticalEnd, List as ListIcon, Save, Search, Settings, Menu, LogOut, Maximize, Minimize } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useLibrary } from '../hooks/useLibrary';
 import { cn } from '../lib/utils';
 import { AddManualModal } from './AddManualModal';
@@ -23,8 +23,37 @@ interface ToolbarProps {
 
 export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setViewMode, sortBy, setSortBy, filters, setFilters, searchQuery, setSearchQuery, onOpenAddManual, user }: ToolbarProps) {
   const [showSettings, setShowSettings] = useState(false);
-  const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const [isAppFullscreen, setIsAppFullscreen] = useState(false);
   const { addItem, items } = useLibrary();
+
+  // Pantalla completa REAL del navegador (Fullscreen API) para toda la app.
+  // Debe dispararse desde un gesto del usuario (click).
+  const toggleAppFullscreen = useCallback(() => {
+    const doc: any = document;
+    const docEl: any = document.documentElement;
+    const isFs = !!(doc.fullscreenElement || doc.webkitFullscreenElement);
+    if (!isFs) {
+      const req = docEl.requestFullscreen || docEl.webkitRequestFullscreen || docEl.msRequestFullscreen;
+      if (req) Promise.resolve(req.call(docEl)).catch(() => {});
+    } else {
+      const exit = doc.exitFullscreen || doc.webkitExitFullscreen || doc.msExitFullscreen;
+      if (exit) Promise.resolve(exit.call(doc)).catch(() => {});
+    }
+  }, []);
+
+  // Sincroniza el ícono si el usuario sale del fullscreen con Esc o gesto del sistema.
+  useEffect(() => {
+    const onFsChange = () => {
+      const doc: any = document;
+      setIsAppFullscreen(!!(doc.fullscreenElement || doc.webkitFullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    document.addEventListener('webkitfullscreenchange', onFsChange as any);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.removeEventListener('webkitfullscreenchange', onFsChange as any);
+    };
+  }, []);
 
   // Create suggestions for search
   const suggestions = Array.from(new Set(items.flatMap(i => [i.title, i.author, i.subject]))).filter(Boolean);
@@ -57,42 +86,16 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
                  {suggestions.map((s, i) => <option key={i} value={s as string} />)}
                </datalist>
              </div>
-             {/* Menú de overflow móvil: orden + cerrar sesión (el resto de
-                 funciones ya son accesibles desde el Sidebar en móvil). */}
-             <div className="relative sm:hidden shrink-0">
+             {/* Botón de pantalla completa móvil: oculta todo el cromo del navegador.
+                 (Ordenar y Cerrar sesión se accionan desde el Sidebar en móvil.) */}
+             <div className="sm:hidden shrink-0">
                <button
-                 className="p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-card-hover)] rounded-lg transition-colors"
-                 onClick={() => setShowMobileMenu(v => !v)}
+                 onClick={toggleAppFullscreen}
+                 title="Pantalla completa"
+                 className={cn("p-2.5 rounded-lg transition-colors", isAppFullscreen ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "text-[var(--text-muted)] hover:bg-[var(--bg-card-hover)]")}
                >
-                 <MoreVertical className="w-6 h-6" />
+                 {isAppFullscreen ? <Minimize className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
                </button>
-               {showMobileMenu && (
-                 <>
-                   <div className="fixed inset-0 z-10" onClick={() => setShowMobileMenu(false)} />
-                   <div className="absolute right-0 top-full mt-2 z-20 w-56 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl shadow-xl p-3 flex flex-col gap-3">
-                     <label className="flex flex-col gap-1 text-xs font-medium text-[var(--text-muted)]">
-                       Ordenar por
-                       <select
-                         value={sortBy}
-                         onChange={(e) => setSortBy(e.target.value as any)}
-                         className="text-sm font-medium border border-slate-200/50 rounded-xl px-3 py-2 text-[var(--text-main)] bg-[var(--bg-card)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
-                       >
-                         <option value="manual">Orden Manual</option>
-                         <option value="recent">Más recientes</option>
-                         <option value="oldest">Más antiguos</option>
-                         <option value="alpha">Alfabético</option>
-                       </select>
-                     </label>
-                     {user && (
-                       <a href="/auth/logout" title="Cerrar sesión"
-                         className="flex items-center gap-2 text-sm font-medium text-red-500 hover:bg-red-50 rounded-lg px-3 py-2 transition-colors"
-                       >
-                         <LogOut className="w-4 h-4" /> Cerrar sesión
-                       </a>
-                     )}
-                   </div>
-                 </>
-               )}
              </div>
           </div>
 
@@ -149,6 +152,14 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
                     <ListIcon className="w-4 h-4" />
                  </button>
               </div>
+
+              <button
+                 onClick={toggleAppFullscreen}
+                 title="Pantalla completa"
+                 className={cn("p-2.5 border border-slate-200/50 rounded-xl transition-all shadow-sm", isAppFullscreen ? "bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/50" : "text-slate-500 hover:text-[var(--primary)] bg-[var(--bg-card)] hover:border-[var(--primary)]/50")}
+              >
+                 {isAppFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+              </button>
 
               <button onClick={() => setShowSettings(true)} className="p-2.5 text-slate-500 hover:text-[var(--primary)] bg-[var(--bg-card)] border border-slate-200/50 rounded-xl hover:border-[var(--primary)]/50 transition-all shadow-sm">
                  <Settings className="w-5 h-5" />

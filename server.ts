@@ -1419,8 +1419,17 @@ Si no encuentras un valor, devuelve cadena vacía "".`,
         },
       });
       res.json(JSON.parse(response?.text || "{}"));
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error analyzing PDF text:", error);
+      const msg = String(error?.message || error || "");
+      // Caso típico en producción: la GEMINI_API_KEY está bloqueada o sin permisos
+      // para la Generative Language API (403 PERMISSION_DENIED / API_KEY_SERVICE_BLOCKED).
+      if (msg.includes("PERMISSION_DENIED") || msg.includes("API_KEY_SERVICE_BLOCKED") || msg.includes("API key not valid") || msg.includes("403")) {
+        return res.status(502).json({
+          error: "La API de Gemini está bloqueada o la GEMINI_API_KEY no es válida en este servidor. Revisa la variable GEMINI_API_KEY en el entorno de producción.",
+          code: "GEMINI_API_BLOCKED",
+        });
+      }
       res.status(500).json({ error: "Fallo al analizar texto con Gemini" });
     }
   });

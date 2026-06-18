@@ -15,7 +15,7 @@
 // (ver DroppablePlaylist y Dashboard.handleDragEnd).
 // =============================================================================
 
-import { Library, Folder, Plus, Edit2, Trash2, X, Check, ChevronDown, ChevronRight, Pin, BarChart2, LayoutGrid, GalleryVerticalEnd, List, Settings, BookOpen, Newspaper, FileText, Book, Laptop, Layers, ShieldCheck } from 'lucide-react';
+import { Library, Folder, Plus, Edit2, Trash2, X, Check, ChevronDown, ChevronRight, Pin, BarChart2, LayoutGrid, GalleryVerticalEnd, List, Settings, BookOpen, Newspaper, FileText, Book, Laptop, Layers, ShieldCheck, ArrowDownUp, LogOut } from 'lucide-react';
 import { useLibrary } from '../hooks/useLibrary';
 import { useState, FormEvent } from 'react';
 import { cn, colorSwatchProps } from '../lib/utils';
@@ -46,6 +46,7 @@ interface SidebarProps {
   onOpenSettings?: () => void;
   onOpenAdmin?: () => void;
   onClose?: () => void;
+  user?: { name: string; email: string; photo: string };
 }
 
 const DroppablePlaylist = ({ pl, activePlaylist, setActivePlaylist, setActiveStage, startEdit, deletePlaylist }: any) => {
@@ -88,8 +89,8 @@ const THEME_COLORS = [
   'bg-slate-800'
 ];
 
-export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlaylist, activeStage, setActiveStage, filters, setFilters, viewMode, setViewMode, collapsed, setCollapsed, onOpenSettings, onOpenAdmin, onClose }: SidebarProps) {
-  const { playlists, stages, categories, addPlaylist, updatePlaylist, deletePlaylist, items } = useLibrary();
+export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlaylist, activeStage, setActiveStage, filters, setFilters, viewMode, setViewMode, collapsed, setCollapsed, onOpenSettings, onOpenAdmin, onClose, user }: SidebarProps) {
+  const { playlists, stages, categories, addPlaylist, updatePlaylist, deletePlaylist, items, sortBy, setSortBy } = useLibrary();
   const [isCreating, setIsCreating] = useState(false);
   const [isCategoriesExpanded, setIsCategoriesExpanded] = useState(false);
   const [isFiltersExpanded, setIsFiltersExpanded] = useState(false);
@@ -593,6 +594,22 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
 
       {/* Bottom Actions & Storage Indicator */}
       <div className="mt-auto px-6 pb-6 pt-4 space-y-2">
+      {/* Ordenar por (solo móvil; en escritorio vive en la barra superior) */}
+      {!collapsed && (
+        <label className="lg:hidden flex items-center gap-3 px-3 py-2 rounded-lg text-white/80">
+          <ArrowDownUp className="w-5 h-5 opacity-80 shrink-0" />
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as any)}
+            className="flex-1 text-sm font-medium bg-white/10 border border-white/20 rounded-lg px-2 py-1.5 text-white focus:outline-none focus:ring-2 focus:ring-[#A0CFEB] appearance-none"
+          >
+            <option value="manual" className="text-slate-800">Orden Manual</option>
+            <option value="recent" className="text-slate-800">Más recientes</option>
+            <option value="oldest" className="text-slate-800">Más antiguos</option>
+            <option value="alpha" className="text-slate-800">Alfabético</option>
+          </select>
+        </label>
+      )}
       {/* Botón de Papelera */}
       <button
         onClick={() => { setActiveTab('trash'); setActivePlaylist(null); setActiveStage(null); }}
@@ -634,6 +651,20 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
            <Settings className="w-5 h-5 opacity-80 shrink-0" />
            {!collapsed && <span className="truncate text-sm">Ajustes</span>}
          </button>
+      )}
+      {/* Cerrar sesión (solo móvil; en escritorio vive en la barra superior) */}
+      {user && (
+        <a
+          href="/auth/logout"
+          title="Cerrar sesión"
+          className={cn(
+            "lg:hidden flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full text-rose-300 hover:bg-rose-500/15 hover:text-rose-200 font-medium",
+            collapsed ? "justify-center" : ""
+          )}
+        >
+          <LogOut className="w-5 h-5 opacity-80 shrink-0" />
+          {!collapsed && <span className="truncate text-sm">Cerrar sesión</span>}
+        </a>
       )}
       {!collapsed && (
         <div className="bg-white/5 p-4 rounded-xl border border-white/10">

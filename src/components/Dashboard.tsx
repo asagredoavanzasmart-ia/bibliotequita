@@ -185,6 +185,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
           onOpenSettings={() => setShowMobileProfile(true)}
           onOpenAdmin={user?.role === 'admin' ? () => setShowAdminPanel(true) : undefined}
           onClose={() => setSidebarOpen(false)}
+          user={user}
         />
       </div>
 

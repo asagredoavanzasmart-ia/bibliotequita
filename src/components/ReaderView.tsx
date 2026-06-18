@@ -1332,6 +1332,49 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Pantalla completa REAL del navegador (Fullscreen API): oculta la barra de
+  // direcciones, pestañas y todo el cromo del navegador. Debe dispararse desde
+  // un gesto del usuario (click), por eso vive en el handler del botón.
+  const toggleFullscreen = useCallback(() => {
+    const docEl: any = document.documentElement;
+    const doc: any = document;
+    const isNativeFs = !!(doc.fullscreenElement || doc.webkitFullscreenElement);
+    if (!isNativeFs) {
+      const req = docEl.requestFullscreen || docEl.webkitRequestFullscreen || docEl.msRequestFullscreen;
+      // Activamos también el modo expandido propio (oculta header/controles).
+      setIsFullscreen(true);
+      setShowControls(false);
+      if (req) {
+        Promise.resolve(req.call(docEl)).catch(() => { /* algunos navegadores móviles lo rechazan; el modo CSS ya cubre el caso */ });
+      }
+    } else {
+      const exit = doc.exitFullscreen || doc.webkitExitFullscreen || doc.msExitFullscreen;
+      if (exit) {
+        Promise.resolve(exit.call(doc)).catch(() => {});
+      }
+      setIsFullscreen(false);
+    }
+  }, []);
+
+  // Sincroniza el estado si el usuario sale del fullscreen nativo con Esc o el
+  // gesto del sistema, para que el ícono/estado vuelvan a su sitio.
+  useEffect(() => {
+    const onFsChange = () => {
+      const doc: any = document;
+      const isNativeFs = !!(doc.fullscreenElement || doc.webkitFullscreenElement);
+      if (!isNativeFs) {
+        setIsFullscreen(false);
+        setShowControls(true);
+      }
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    document.addEventListener('webkitfullscreenchange', onFsChange as any);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.removeEventListener('webkitfullscreenchange', onFsChange as any);
+    };
+  }, []);
+
   // Ref siempre actualizada a handleTtsStop, para poder llamarla desde
   // listeners/cleanups sin que una closure vieja se quede "pegada".
   const handleTtsStopRef = useRef(handleTtsStop);
@@ -2012,8 +2055,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       {(!isFullscreen || showControls) && (
         <header className="bg-white border-b border-slate-200 px-2 sm:px-4 h-14 flex flex-row items-center justify-between shrink-0 shadow-sm z-30 gap-2 w-full animate-in slide-in-from-top-4">
             <div className="flex items-center gap-2 sm:gap-4 shrink-0">
-            <button 
+            <button
                 onClick={() => {
+                  const doc: any = document;
+                  if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+                    const exit = doc.exitFullscreen || doc.webkitExitFullscreen || doc.msExitFullscreen;
+                    if (exit) Promise.resolve(exit.call(doc)).catch(() => {});
+                  }
                   if (isFullscreen) setIsFullscreen(false);
                   else onClose();
                 }}
@@ -2131,11 +2179,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                      }}
                   />
 
-                  <button 
-                      onClick={() => {
-                          setIsFullscreen(!isFullscreen);
-                          if (!isFullscreen) setShowControls(false); // hide controls when entering
-                      }} 
+                  <button
+                      onClick={toggleFullscreen}
                       className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[#00558F] text-white border-[#00558F]" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}
                       title="Pantalla Completa"
                   >
