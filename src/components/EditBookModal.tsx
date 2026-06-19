@@ -1,7 +1,8 @@
 import React, { useState, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { BookItem, PlaylistData, StageData } from '../types';
-import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag, Download } from 'lucide-react';
+import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag, Download, Camera } from 'lucide-react';
+import { ImageCropModal } from './ImageCropModal';
 import { cn, colorSwatchProps } from '../lib/utils';
 import { useLibrary } from '../hooks/useLibrary';
 import { StarRating } from './StarRating';
@@ -83,6 +84,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     item.epubSource || (item.type === 'epub' ? item.source : '') || ''
   );
   const coverInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const epubInputRef = useRef<HTMLInputElement>(null);
@@ -188,10 +190,10 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
       }
   };
 
-  const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    // Si había una portada previa subida a nuestro servidor, la limpiamos.
+  // Acepta File (input normal) o Blob (resultado del editor de recorte tras
+  // tomar la foto con la cámara). Centraliza subida + borrado del huérfano +
+  // análisis IA para reusarse en ambos flujos.
+  const uploadCover = async (file: File | Blob) => {
     const previousUrl = coverUrl;
     const previewUrl = URL.createObjectURL(file);
     setCoverUrl(previewUrl);
@@ -199,7 +201,6 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
       const { url } = await uploadFile(file, `cover-${Date.now()}.jpg`);
       setCoverUrl(url);
       URL.revokeObjectURL(previewUrl);
-      // Borrado oportunista de la portada anterior si estaba en el servidor.
       if (previousUrl?.startsWith('/api/files/')) {
         deleteUploadedFile(previousUrl);
       }
@@ -212,6 +213,21 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
       if (base64Data) await analyzeImageContent(base64Data);
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await uploadCover(file);
+  };
+
+  // Foto tomada con la cámara: se abre el editor de recorte/rotación antes
+  // de subirla (caso típico: el usuario solo tiene el libro físico).
+  const [pendingCameraFile, setPendingCameraFile] = useState<File | null>(null);
+  const handleCameraCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) setPendingCameraFile(file);
+    e.target.value = '';
   };
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -403,6 +419,28 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                      )}
                   </div>
                   <input type="file" ref={coverInputRef} accept="image/*" className="hidden" onChange={handleCoverUpload} />
+               </div>
+
+               {/* Solo en pantallas táctiles pequeñas: "Tomar foto" abre la
+                   cámara directo (capture="environment") — útil cuando el
+                   usuario solo tiene el libro físico y quiere fotografiar
+                   la portada. "Galería" usa el selector normal. */}
+               <div className="sm:hidden flex gap-2">
+                  <button
+                     type="button"
+                     onClick={() => cameraInputRef.current?.click()}
+                     className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/30"
+                  >
+                     <Camera className="w-3.5 h-3.5" /> Tomar foto
+                  </button>
+                  <button
+                     type="button"
+                     onClick={() => coverInputRef.current?.click()}
+                     className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200"
+                  >
+                     <ImageIcon className="w-3.5 h-3.5" /> Galería
+                  </button>
+                  <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handleCameraCapture} />
                </div>
 
                {/* Posesión: físico / digital / wishlist */}
@@ -961,7 +999,26 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                     </div>
                     <input type="file" ref={coverInputRef} accept="image/*" className="hidden" onChange={handleCoverUpload} />
                  </div>
-                 
+
+                 {/* Solo en pantallas táctiles pequeñas: cámara directa vs galería */}
+                 <div className="sm:hidden flex gap-2">
+                    <button
+                       type="button"
+                       onClick={() => cameraInputRef.current?.click()}
+                       className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/30"
+                    >
+                       <Camera className="w-3.5 h-3.5" /> Tomar foto
+                    </button>
+                    <button
+                       type="button"
+                       onClick={() => coverInputRef.current?.click()}
+                       className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200"
+                    >
+                       <ImageIcon className="w-3.5 h-3.5" /> Galería
+                    </button>
+                    <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handleCameraCapture} />
+                 </div>
+
                  <div className="flex flex-col gap-2 relative mt-4">
                     <button disabled={isAnalyzing} type="button" onClick={() => fileInputRef.current?.click()} className={cn("px-4 py-2.5 flex items-center justify-center font-medium gap-2 text-[var(--primary)] rounded-lg transition-colors w-full border border-[var(--primary)]/30 text-xs", isAnalyzing ? "bg-slate-100 opacity-70" : "bg-[var(--primary)]/10 hover:bg-[var(--primary)]/20")}>
                        <UploadCloud className={cn("w-4 h-4", isAnalyzing && "animate-pulse")} /> {isAnalyzing ? "Analizando IA..." : "Importar de PDF o EPUB"}
@@ -1289,9 +1346,17 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     </div>
   );
 
+  const cropModal = pendingCameraFile && (
+    <ImageCropModal
+      file={pendingCameraFile}
+      onCancel={() => setPendingCameraFile(null)}
+      onConfirm={(blob) => { setPendingCameraFile(null); uploadCover(blob); }}
+    />
+  );
+
   if (inline) {
-    return modalContent;
+    return <>{modalContent}{cropModal}</>;
   }
-  
-  return createPortal(modalContent, document.body);
+
+  return createPortal(<>{modalContent}{cropModal}</>, document.body);
 }

@@ -1,7 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { BookItem } from '../types';
-import { UploadCloud, X, Plus, CheckCircle2, Link as LinkIcon, Tag, Sparkles, Loader2 } from 'lucide-react';
+import { UploadCloud, X, Plus, CheckCircle2, Link as LinkIcon, Tag, Sparkles, Loader2, Camera, Image as ImageIcon } from 'lucide-react';
+import { ImageCropModal } from './ImageCropModal';
 import { useLibrary } from '../hooks/useLibrary';
 import { cn, colorSwatchProps } from '../lib/utils';
 import { pdfjs } from 'react-pdf';
@@ -72,6 +73,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
 
   const [coverUrl, setCoverUrl] = useState('');
   const coverInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadError, setUploadError] = useState('');
   // Texto de las primeras páginas, guardado para poder reintentar la
@@ -136,13 +138,11 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       }
   };
 
-  const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    // Si ya había una portada subida (aún sin guardar el libro), se reemplaza
-    // por completo: borramos la anterior del servidor.
+  // Acepta File (input normal) o Blob (resultado del editor de recorte tras
+  // tomar la foto con la cámara). Centraliza subida + borrado del huérfano +
+  // análisis IA para reusarse en ambos flujos.
+  const uploadCover = async (file: File | Blob) => {
     const previousCoverUrl = coverUrl;
-    // Preview optimista mientras sube.
     const previewUrl = URL.createObjectURL(file);
     setCoverUrl(previewUrl);
     try {
@@ -156,13 +156,28 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       console.error('Error subiendo portada al servidor:', err);
       // Dejamos el preview blob como fallback visual; al recargar se perderá.
     }
-    // Análisis IA en paralelo (no necesita esperar al upload).
     const reader = new FileReader();
     reader.onload = async (event) => {
       const base64Data = event.target?.result as string;
       if (base64Data) await analyzeImageContent(base64Data);
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await uploadCover(file);
+  };
+
+  // Foto tomada con la cámara: se abre el editor de recorte/rotación antes
+  // de subirla (la cámara móvil no permite "modo documento" real desde la
+  // web; esto compensa dejando ajustar encuadre y rotación manualmente).
+  const [pendingCameraFile, setPendingCameraFile] = useState<File | null>(null);
+  const handleCameraCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) setPendingCameraFile(file);
+    e.target.value = '';
   };
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -516,7 +531,29 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                    )}
                    <input type="file" ref={coverInputRef} accept="image/*" className="hidden" onChange={handleCoverUpload} />
                 </div>
-                
+
+                {/* Solo en pantallas táctiles pequeñas: separa "Tomar foto"
+                    (abre la cámara directo vía capture="environment", para el
+                    caso de solo tener el libro físico) de "Galería" (selector
+                    normal). En desktop el click en la caja ya basta. */}
+                <div className="sm:hidden flex gap-2 w-full">
+                   <button
+                     type="button"
+                     onClick={() => cameraInputRef.current?.click()}
+                     className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/30"
+                   >
+                     <Camera className="w-3.5 h-3.5" /> Tomar foto
+                   </button>
+                   <button
+                     type="button"
+                     onClick={() => coverInputRef.current?.click()}
+                     className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200"
+                   >
+                     <ImageIcon className="w-3.5 h-3.5" /> Galería
+                   </button>
+                   <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handleCameraCapture} />
+                </div>
+
                 <div className="flex flex-col gap-2 mt-3 w-full">
                    <button
                      disabled={isAnalyzing || isQuotaFull}
@@ -794,5 +831,17 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
     </div>
   );
 
-  return createPortal(modalContent, document.body);
+  return createPortal(
+    <>
+      {modalContent}
+      {pendingCameraFile && (
+        <ImageCropModal
+          file={pendingCameraFile}
+          onCancel={() => setPendingCameraFile(null)}
+          onConfirm={(blob) => { setPendingCameraFile(null); uploadCover(blob); }}
+        />
+      )}
+    </>,
+    document.body
+  );
 }
