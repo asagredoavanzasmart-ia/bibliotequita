@@ -46,6 +46,7 @@ export interface ResourceItem {
   fileType?: ResourceType;   // para kind 'text': qué lector usar ('pdf'|'epub'|'txt')
   mimeType?: string;
   isSummary?: boolean;       // true si proviene de la herramienta de resumen IA
+  thumbnailUrl?: string;     // portada extraída automáticamente (PDF/EPUB)
   timestamp: number;
   listIndex?: number;
 }

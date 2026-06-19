@@ -8,7 +8,7 @@
 // =============================================================================
 
 import { useState, useRef } from 'react';
-import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, ChevronLeft, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X } from 'lucide-react';
+import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, ChevronLeft, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { uploadFile } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
@@ -17,6 +17,8 @@ import { PDFReader } from './PDFReader';
 import { EPUBReader } from './EPUBReader';
 import { TxtReader } from './TxtReader';
 import { NotesPanel } from './NotesPanel';
+import { pdfjs } from 'react-pdf';
+import ePub from 'epubjs';
 
 interface ResourcesPanelProps {
   bookId: string;
@@ -62,10 +64,48 @@ function getVideoEmbedUrl(url: string): string | null {
   return null;
 }
 
+// Extrae la portada de un PDF (primera página renderizada a canvas) o EPUB
+// (book.coverUrl() de epubjs) y la sube al servidor. Best-effort: si falla,
+// el recurso simplemente queda sin thumbnailUrl (no bloquea la subida).
+async function extractCoverForResource(file: File, fileType: ResourceType): Promise<string | undefined> {
+  try {
+    if (fileType === 'pdf') {
+      const buffer = await file.arrayBuffer();
+      const pdf = await pdfjs.getDocument({ data: buffer }).promise;
+      const page = await pdf.getPage(1);
+      const viewport = page.getViewport({ scale: 1.0 });
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      if (!context) return undefined;
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+      await page.render({ canvasContext: context, viewport } as any).promise;
+      const blob: Blob | null = await new Promise((res) => canvas.toBlob((b) => res(b), 'image/jpeg', 0.8));
+      if (!blob) return undefined;
+      const { url } = await uploadFile(blob, `cover-${Date.now()}.jpg`);
+      return url;
+    }
+    if (fileType === 'epub') {
+      const buffer = await file.arrayBuffer();
+      const book = ePub(buffer);
+      await book.ready;
+      const coverBlobUrl = await book.coverUrl();
+      if (!coverBlobUrl) return undefined;
+      const coverBlob = await (await fetch(coverBlobUrl)).blob();
+      const { url } = await uploadFile(coverBlob, `cover-${Date.now()}.jpg`);
+      return url;
+    }
+  } catch (e) {
+    console.warn('No se pudo extraer la portada del recurso:', e);
+  }
+  return undefined;
+}
+
 export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
   const { resources, addResource, updateResource, deleteResource } = useResources(bookId);
   const [activeKind, setActiveKind] = useState<ResourceKind>('video');
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [openTextResource, setOpenTextResource] = useState<ResourceItem | null>(null);
   const [notesResourceId, setNotesResourceId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -81,17 +121,25 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
+    setUploadError(null);
     try {
       const { url, mimeType } = await uploadFile(file);
+      const fileType = activeKind === 'text' ? fileTypeFromName(file.name) : undefined;
+      // Portada best-effort para PDF/EPUB (no bloquea la subida si falla).
+      const thumbnailUrl = fileType === 'pdf' || fileType === 'epub'
+        ? await extractCoverForResource(file, fileType)
+        : undefined;
       await addResource({
         kind: activeKind,
         title: file.name.replace(/\.[^.]+$/, ''),
         source: url,
         mimeType,
-        ...(activeKind === 'text' ? { fileType: fileTypeFromName(file.name) } : {}),
+        ...(fileType ? { fileType } : {}),
+        ...(thumbnailUrl ? { thumbnailUrl } : {}),
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error subiendo recurso:', err);
+      setUploadError(err?.message || 'No se pudo subir el archivo. Verifica tu conexión e inténtalo de nuevo.');
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -189,6 +237,15 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
           <input ref={fileInputRef} type="file" accept={activeMeta.accept} className="hidden" onChange={handleUpload} />
         </div>
 
+        {uploadError && (
+          <div className="flex items-start justify-between gap-2 mb-4 px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-700">
+            <span>{uploadError}</span>
+            <button onClick={() => setUploadError(null)} className="shrink-0 text-rose-400 hover:text-rose-600">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {activeKind === 'video' && showLinkInput && (
           <div className="flex items-center gap-2 mb-4">
             <input
@@ -238,9 +295,13 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
                 )}
                 {r.kind === 'text' && (
                   <button onClick={() => setOpenTextResource(r)} className="flex items-center gap-3 p-3 hover:bg-slate-50 transition-colors text-left">
-                    <div className="w-10 h-10 rounded-lg bg-[var(--primary)]/10 flex items-center justify-center shrink-0">
-                      <BookOpen className="w-5 h-5 text-[var(--primary)]" />
-                    </div>
+                    {r.thumbnailUrl ? (
+                      <img src={r.thumbnailUrl} alt={r.title} className="w-10 h-14 rounded-md object-cover shrink-0 border border-slate-200" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-lg bg-[var(--primary)]/10 flex items-center justify-center shrink-0">
+                        <BookOpen className="w-5 h-5 text-[var(--primary)]" />
+                      </div>
+                    )}
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-bold text-slate-800 truncate">{r.title}{r.isSummary && <span className="ml-2 text-[9px] uppercase font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">Resumen</span>}</p>
                       <p className="text-[10px] uppercase text-slate-400 font-bold">{r.fileType} · abrir y citar</p>
@@ -272,6 +333,18 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
                   >
                     <MessageSquareQuote className="w-4 h-4" />
                   </button>
+                  {r.source.startsWith('/api/files/') && (
+                    <a
+                      href={r.source}
+                      download={r.title}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="p-1 text-slate-400 hover:text-[var(--primary)] transition-colors shrink-0"
+                      title="Descargar"
+                    >
+                      <Download className="w-4 h-4" />
+                    </a>
+                  )}
                   <button onClick={() => { if (confirm('¿Eliminar este recurso?')) deleteResource(r.id); }} className="p-1 text-slate-400 hover:text-rose-500 shrink-0" title="Eliminar">
                     <Trash2 className="w-4 h-4" />
                   </button>
