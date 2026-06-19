@@ -2013,14 +2013,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               fuera del recuadro del widget (como en la maqueta), para no robar
               ancho a la fila de controles cuando hay poco alto disponible. */}
           {showTtsWidget && isMobileLandscape && (
-             <div className="absolute top-0 left-0 bottom-0 z-40 flex flex-col items-center justify-center gap-5 px-4 bg-[var(--bg-card)]/95 backdrop-blur-md border-r border-[var(--border-card)]">
+             <div className="absolute top-0 left-0 bottom-0 z-40 flex flex-col items-center justify-center gap-4 px-3 bg-[var(--bg-card)]/95 backdrop-blur-md border-r border-[var(--border-card)]">
                 {activePalette.slice(0, 5).map((colorItem) => (
                    <button
                      key={colorItem.id}
                      disabled={currentPhraseIndex < 0 || phrases.length === 0}
                      onClick={() => createNoteFromCurrentPhrase(colorItem.color, colorItem.hex)}
                      style={{ backgroundColor: colorItem.hex }}
-                     className="w-10 h-10 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-sm cursor-pointer"
+                     className="w-14 h-14 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-md cursor-pointer shrink-0"
                      title={`Resaltar y anotar (${colorItem.name})`}
                    />
                 ))}

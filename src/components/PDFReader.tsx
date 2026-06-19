@@ -54,6 +54,19 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
   const [manuallyHidden, setManuallyHidden] = useState(false);
+  // Móvil en horizontal (no tablet/desktop): mismo criterio que ReaderView.
+  // En este modo la página se ajusta SIEMPRE al ancho disponible (en vez de
+  // al alto) y los controles de zoom pasan a una columna vertical a la derecha.
+  const [isMobileLandscape, setIsMobileLandscape] = useState(
+    typeof window !== 'undefined' ? window.innerWidth > window.innerHeight && window.innerHeight <= 500 && window.innerWidth <= 950 : false
+  );
+  useEffect(() => {
+    const handleOrientation = () => {
+      setIsMobileLandscape(window.innerWidth > window.innerHeight && window.innerHeight <= 500 && window.innerWidth <= 950);
+    };
+    window.addEventListener('resize', handleOrientation);
+    return () => window.removeEventListener('resize', handleOrientation);
+  }, []);
   
   const [scrollingPage, setScrollingPage] = useState<boolean>(false);
   const visiblePagesHeight = useRef<Record<number, number>>({});
@@ -383,7 +396,7 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
                              renderTextLayer={true}
                              renderAnnotationLayer={true}
                              className="bg-white"
-                             {...(widthCap < availableHeight * 0.6 ? { width: widthCap, height: undefined } : {})}
+                             {...(isMobileLandscape || widthCap < availableHeight * 0.6 ? { width: widthCap, height: undefined } : {})}
                           />
                         ) : (
                           // Placeholder con la altura reservada: mantiene el layout y
@@ -451,25 +464,30 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
                  </button>
               </div>
 
-              <div className="w-px h-4 bg-[var(--border-card)]" />
-
-              <div className="flex items-center gap-1">
-                 <button
-                   onClick={zoomOut}
-                   className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
-                   title="Alejar Zoom"
-                 >
-                   <ZoomOut className="w-5 h-5" />
-                 </button>
-                 <span className="text-xs font-mono font-semibold w-9 text-center tabular-nums">{Math.round(scale * 100)}%</span>
-                 <button
-                   onClick={zoomIn}
-                   className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
-                   title="Acercar Zoom"
-                 >
-                   <ZoomIn className="w-5 h-5" />
-                 </button>
-              </div>
+              {/* En móvil horizontal el zoom vive en la columna vertical derecha
+                  (más abajo); aquí solo se muestra en vertical/desktop. */}
+              {!isMobileLandscape && (
+                <>
+                  <div className="w-px h-4 bg-[var(--border-card)]" />
+                  <div className="flex items-center gap-1">
+                     <button
+                       onClick={zoomOut}
+                       className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+                       title="Alejar Zoom"
+                     >
+                       <ZoomOut className="w-5 h-5" />
+                     </button>
+                     <span className="text-xs font-mono font-semibold w-9 text-center tabular-nums">{Math.round(scale * 100)}%</span>
+                     <button
+                       onClick={zoomIn}
+                       className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+                       title="Acercar Zoom"
+                     >
+                       <ZoomIn className="w-5 h-5" />
+                     </button>
+                  </div>
+                </>
+              )}
 
               <div className="w-px h-4 bg-[var(--border-card)]" />
 
@@ -494,6 +512,33 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
            >
              <ChevronUp className="w-4 h-4" />
            </button>
+         )}
+
+         {/* Móvil horizontal: columna vertical de zoom fija a la derecha, con
+             botones grandes y fáciles de tocar sin estorbar el ancho de página. */}
+         {!hideControls && isMobileLandscape && (
+           <div
+             className={cn(
+               "absolute top-1/2 right-2 -translate-y-1/2 z-30 flex flex-col items-center gap-2 p-2 bg-[var(--bg-card)] border border-[var(--border-card)] shadow-2xl rounded-full backdrop-blur-md transition-all pointer-events-auto",
+               (controlsVisible && !manuallyHidden) ? "opacity-100" : "opacity-0 translate-x-2"
+             )}
+           >
+             <button
+               onClick={zoomIn}
+               className="p-3 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+               title="Acercar Zoom"
+             >
+               <ZoomIn className="w-6 h-6" />
+             </button>
+             <span className="text-xs font-mono font-bold tabular-nums">{Math.round(scale * 100)}%</span>
+             <button
+               onClick={zoomOut}
+               className="p-3 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+               title="Alejar Zoom"
+             >
+               <ZoomOut className="w-6 h-6" />
+             </button>
+           </div>
          )}
         </div>
     </Document>
