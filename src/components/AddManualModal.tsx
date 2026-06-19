@@ -391,7 +391,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
 
   const modalContent = (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[9999]">
-      <div className="bg-[var(--bg-app)] rounded-2xl shadow-xl w-full max-w-3xl lg:max-w-[62rem] overflow-hidden animate-in fade-in zoom-in-95 flex flex-col h-[95vh] md:h-auto md:max-h-[85vh]">
+      <div className="bg-[var(--bg-app)] rounded-2xl shadow-xl w-full max-w-3xl lg:max-w-[62rem] overflow-hidden animate-in fade-in zoom-in-95 flex flex-col h-[95dvh] max-h-[95dvh] md:h-auto md:max-h-[85vh] [@media(max-height:500px)]:h-[92dvh] [@media(max-height:500px)]:max-h-[92dvh]">
         <div className="flex items-center justify-between p-3 md:p-5 border-b border-slate-200/50 shrink-0">
            <h2 className="text-base md:text-lg font-bold text-[var(--text-main)] truncate">Añadir Recurso Manualmente</h2>
            <div className="flex items-center gap-2 sm:gap-4 shrink-0">
@@ -424,9 +424,12 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
            </div>
         </div>
         
-        <form id="add-manual-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto md:overflow-hidden p-3 md:p-5">
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 min-h-min md:h-full md:items-start">
-              <div className="md:col-span-1 flex flex-col gap-2 items-center md:sticky md:top-0">
+        <form id="add-manual-form" onSubmit={handleSubmit} className="flex-1 overflow-y-auto md:overflow-hidden [@media(max-height:500px)]:overflow-y-auto p-3 md:p-5">
+           {/* En pantallas de poco alto (móvil horizontal) se usa el mismo grid
+               de 3 columnas que desktop, sin importar el ancho, para no apilar
+               todo verticalmente en un viewport que apenas tiene alto. */}
+           <div className="grid grid-cols-1 md:grid-cols-3 [@media(max-height:500px)]:grid-cols-3 gap-4 md:gap-6 [@media(max-height:500px)]:gap-3 min-h-min md:h-full md:items-start [@media(max-height:500px)]:items-start">
+              <div className="md:col-span-1 [@media(max-height:500px)]:col-span-1 flex flex-col gap-2 items-center md:sticky md:top-0 [@media(max-height:500px)]:sticky [@media(max-height:500px)]:top-0">
                  <label className="text-[11px] font-semibold text-[var(--text-muted)] block w-full text-center">Portada</label>
                  <div
                    className="w-1/2 md:w-[70%] lg:w-[70%] aspect-[2/3] bg-[var(--bg-card)] rounded-xl border-2 border-dashed border-slate-200/50 flex flex-col items-center justify-center text-slate-400 cursor-pointer overflow-hidden relative shadow-sm transition-all hover:border-[var(--primary)]/50 group"
@@ -509,7 +512,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                 </div>
              </div>
              
-             <div className="md:col-span-2 space-y-4 md:h-full md:overflow-y-auto md:pr-2 settings-scrollbar">
+             <div className="md:col-span-2 [@media(max-height:500px)]:col-span-2 space-y-4 md:h-full md:overflow-y-auto md:pr-2 [@media(max-height:500px)]:h-full [@media(max-height:500px)]:overflow-y-auto settings-scrollbar">
                 <div>
                    <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">Título *</label>
                    <input required type="text" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} className="w-full text-sm font-medium px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-sm text-[var(--text-main)]" placeholder="Ej. El Señor de los Anillos" />

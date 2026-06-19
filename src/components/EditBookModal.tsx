@@ -902,7 +902,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     </div>
   ) : (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-      <div className="bg-[var(--bg-app)] border border-[var(--border-card)] shadow-2xl rounded-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
+      <div className="bg-[var(--bg-app)] border border-[var(--border-card)] shadow-2xl rounded-2xl w-full max-w-5xl max-h-[90dvh] [@media(max-height:500px)]:max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
         
         {/* Header */}
         <div className="flex items-center justify-between p-4 md:p-6 border-b border-slate-200/50 bg-[var(--bg-card)] shrink-0">
@@ -924,10 +924,10 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 md:px-6 pt-2 pb-6 scrollbar-thin">
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 mt-0">
-              
+           <div className="grid grid-cols-1 md:grid-cols-3 [@media(max-height:500px)]:grid-cols-3 gap-6 md:gap-8 [@media(max-height:500px)]:gap-4 mt-0">
+
               {/* Column 1: Cover & Digital File */}
-              <div className="md:col-span-1 flex flex-col gap-6">
+              <div className="md:col-span-1 [@media(max-height:500px)]:col-span-1 flex flex-col gap-6">
                  <div className="flex flex-col gap-2">
                     <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block">Portada</label>
                     <div className="aspect-[3/4] bg-[var(--bg-app)] rounded-2xl border-2 border-dashed border-slate-200/50 flex flex-col items-center justify-center cursor-pointer relative overflow-hidden group shadow-sm transition-all hover:border-[var(--primary)]/50" onClick={() => coverInputRef.current?.click()}>
@@ -1011,7 +1011,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
               </div>
 
               {/* Column 2: Metadata & Options */}
-              <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="md:col-span-2 [@media(max-height:500px)]:col-span-2 grid grid-cols-1 md:grid-cols-2 [@media(max-height:500px)]:grid-cols-2 gap-8 [@media(max-height:500px)]:gap-4">
                   <div className="space-y-6">
                  <div>
                    <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1 block">Título</label>
