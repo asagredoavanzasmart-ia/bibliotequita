@@ -83,11 +83,50 @@ const LOADING_MESSAGES = [
   "Generando el documento de resumen definitivo..."
 ];
 
+// Si documentId no es de un libro sino ya de un recurso (sufijo "::res::"),
+// no se cargan/anidan citas de recursos (evita recursión recurso-de-recurso).
+const isBookDocumentId = (docId: string) => !docId.includes('::res::');
+
+// Misma lógica de orden que usaba saveNotes/getSortedCitations: por página
+// ascendente (las que tienen página van primero) y, si no hay página, por
+// timestamp de creación. Centralizada para reusarla también en recursos.
+function sortByPageAndTimestamp(list: CitationNote[]): CitationNote[] {
+  const parsePageNum = (ref: any): number => {
+    if (ref === undefined || ref === null) return 0;
+    const str = String(ref).trim();
+    if (!str) return 0;
+    const match = str.match(/\d+/);
+    return match ? parseInt(match[0], 10) : 0;
+  };
+  return [...list].sort((a, b) => {
+    const pageA = parsePageNum(a.pageReference);
+    const pageB = parsePageNum(b.pageReference);
+    const hasPageA = pageA > 0;
+    const hasPageB = pageB > 0;
+    if (hasPageA && hasPageB) {
+      if (pageA !== pageB) return pageA - pageB;
+    } else if (hasPageA) {
+      return -1;
+    } else if (hasPageB) {
+      return 1;
+    }
+    return a.timestamp - b.timestamp;
+  });
+}
+
 export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavigateToCitation, currentPage }: CitationsManagerProps) {
   const [notes, setNotes] = useState<CitationNote[]>([]);
   const [activePalette, setActivePalette] = useState<ColorDefinition[]>([]);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
+  // documentId "propietario" de la nota que se está editando: el del libro
+  // (documentId, valor por defecto) o el de un recurso de texto.
+  const [editingDocId, setEditingDocId] = useState<string | null>(null);
+
+  // --- Citas de recursos de texto del libro (separadas de `notes`) ---
+  const isBookDocument = isBookDocumentId(documentId);
+  const [textResources, setTextResources] = useState<{ id: string; title: string; docId: string }[]>([]);
+  const [resourceCitations, setResourceCitations] = useState<Record<string, CitationNote[]>>({});
   const [editPage, setEditPage] = useState<string | number>('');
   
   const [selectedColorFilter, setSelectedColorFilter] = useState<string>('all');
@@ -239,11 +278,41 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
     }
   };
 
+  // Carga la lista de recursos de texto del libro y, para cada uno, sus citas
+  // (documentId = `${documentId}::res::<id>`). No aplica si `documentId` ya
+  // es de un recurso (evita anidar "recursos de recursos").
+  const loadResourceCitations = async () => {
+    if (!isBookDocument) { setTextResources([]); setResourceCitations({}); return; }
+    try {
+      const res = await fetch(`/api/books/${documentId}/resources`, { credentials: 'include' });
+      const d = await res.json();
+      const texts = (d.resources ?? []).filter((r: any) => r.kind === 'text');
+      const mapped = texts.map((r: any) => ({ id: r.id, title: r.title, docId: `${documentId}::res::${r.id}` }));
+      setTextResources(mapped);
+
+      const entries = await Promise.all(mapped.map(async (r: { id: string; title: string; docId: string }) => {
+        try {
+          const nres = await fetch(`/api/documents/${r.docId}/notes`, { credentials: 'include' });
+          const nd = await nres.json();
+          return [r.docId, Array.isArray(nd.notes) ? nd.notes : []] as const;
+        } catch {
+          return [r.docId, []] as const;
+        }
+      }));
+      setResourceCitations(Object.fromEntries(entries));
+    } catch (e) {
+      console.error('No se pudieron cargar las citas de los recursos:', e);
+      setTextResources([]);
+      setResourceCitations({});
+    }
+  };
+
   useEffect(() => {
     groupByColorLoadedRef.current = false;
     loadCitations();
     loadPalette();
     loadSummaries();
+    loadResourceCitations();
   }, [documentId]);
 
   const saveNotes = (updatedNotes: CitationNote[]) => {
@@ -338,6 +407,51 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
     setEditingNoteId(note.id);
     setEditContent(note.content);
     setEditPage(note.pageReference || '');
+    setEditingDocId(documentId);
+  };
+
+  // --- Mutaciones de citas de RECURSOS de texto (aisladas de notes/saveNotes;
+  // cada función recibe el documentId del recurso de forma explícita para
+  // nunca mezclar sus citas con las del libro). ---
+  const saveResourceNotes = (resDocId: string, updatedNotes: CitationNote[]) => {
+    const sorted = sortByPageAndTimestamp(updatedNotes);
+    fetch(`/api/documents/${resDocId}/notes`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: sorted }),
+    }).catch(err => console.error('No se pudieron guardar las notas del recurso:', err));
+    setResourceCitations(prev => ({ ...prev, [resDocId]: sorted }));
+  };
+
+  const deleteResourceCitation = (resDocId: string, id: string) => {
+    const filtered = (resourceCitations[resDocId] ?? []).filter(n => n.id !== id);
+    saveResourceNotes(resDocId, filtered);
+  };
+
+  const moveResourceItem = (resDocId: string, index: number, direction: 'up' | 'down') => {
+    const list = resourceCitations[resDocId] ?? [];
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= list.length) return;
+    const items = [...list];
+    const temp = items[index];
+    items[index] = items[targetIndex];
+    items[targetIndex] = temp;
+    saveResourceNotes(resDocId, items);
+  };
+
+  const handleSaveResourceEdit = (resDocId: string, id: string) => {
+    const updated = (resourceCitations[resDocId] ?? []).map(n => n.id === id ? { ...n, content: editContent, pageReference: editPage || undefined } : n);
+    saveResourceNotes(resDocId, updated);
+    setEditingNoteId(null);
+    setEditingDocId(null);
+  };
+
+  const startEditingResource = (resDocId: string, note: CitationNote) => {
+    setEditingNoteId(note.id);
+    setEditContent(note.content);
+    setEditPage(note.pageReference || '');
+    setEditingDocId(resDocId);
   };
 
   // Group / Sort by color toggle (switch)
@@ -398,23 +512,16 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
     return ALL_POSSIBLE_COLORS.filter(pc => !activePalette.some(ap => ap.id === pc.id));
   };
 
-  // Conditionally export citations following the user's color-sorting rules
-  const handleExportCitations = () => {
-    const isSorted = isGroupedByColor;
-    const activeNotes = getSortedCitations(); // Use our sorted list which is in natural source order!
-    
-    if (activeNotes.length === 0) {
-      showFeedback("No hay citas seleccionadas para exportar.");
-      return;
-    }
-
+  // Construye el bloque de texto plano de una lista de citas. Si isSorted,
+  // agrupa por color de activePalette (igual que el modo agrupado del libro);
+  // si no, lista plana en orden de fuente. Extraído para reusarse también en
+  // las secciones de citas de recursos (siempre en modo plano, sin colores).
+  const buildPlainTextSection = (activeNotes: CitationNote[], isSorted: boolean): string => {
     let textContent = '';
-    
     if (isSorted) {
-      // Group active notes by activePalette color order
       const grouped: { [colorId: string]: CitationNote[] } = {};
       const noColorNotes: CitationNote[] = [];
-      
+
       activeNotes.forEach(note => {
         if (note.color && activePalette.some(c => c.id === note.color)) {
           if (!grouped[note.color]) grouped[note.color] = [];
@@ -423,7 +530,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
           noColorNotes.push(note);
         }
       });
-      
+
       activePalette.forEach(color => {
          const list = grouped[color.id];
          if (list && list.length > 0) {
@@ -432,10 +539,10 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
              const pageStr = note.pageReference ? ` (pág. ${note.pageReference})` : '';
              textContent += `${note.content.replace(/^>\s*/, '')}${pageStr}\n`;
            });
-           textContent += '\n'; // Double spacing between groups
+           textContent += '\n';
          }
       });
-      
+
       if (noColorNotes.length > 0) {
         textContent += "SIN COLOR\n";
         noColorNotes.forEach(note => {
@@ -445,13 +552,37 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
         textContent += '\n';
       }
     } else {
-      // Flat list in original source order, separating citations with a single blank line
       activeNotes.forEach(note => {
         const pageStr = note.pageReference ? ` (pág. ${note.pageReference})` : '';
         textContent += `${note.content.replace(/^>\s*/, '')}${pageStr}\n\n`;
       });
     }
-    
+    return textContent;
+  };
+
+  // Conditionally export citations following the user's color-sorting rules
+  const handleExportCitations = () => {
+    const isSorted = isGroupedByColor;
+    const activeNotes = getSortedCitations(); // Use our sorted list which is in natural source order!
+    const hasResourceCitations = isBookDocument && textResources.some(r => (resourceCitations[r.docId] ?? []).filter(n => n.type !== 'bookmark').length > 0);
+
+    if (activeNotes.length === 0 && !hasResourceCitations) {
+      showFeedback("No hay citas seleccionadas para exportar.");
+      return;
+    }
+
+    let textContent = buildPlainTextSection(activeNotes, isSorted);
+
+    // Apéndice: citas de cada recurso de texto, separadas con su propio encabezado.
+    if (isBookDocument) {
+      textResources.forEach(r => {
+        const list = sortByPageAndTimestamp((resourceCitations[r.docId] ?? []).filter(n => n.type !== 'bookmark'));
+        if (list.length === 0) return;
+        textContent += `\n\n=== CITAS DEL RECURSO: ${r.title.toUpperCase()} ===\n\n`;
+        textContent += buildPlainTextSection(list, false);
+      });
+    }
+
     // Create download Blob for .txt file
     const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8' });
     const downloadUrl = URL.createObjectURL(blob);
@@ -462,24 +593,18 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(downloadUrl);
-    
+
     showFeedback("Citas exportadas con éxito.");
   };
 
-  // Generate a beautiful Markdown document from active citations
-  const getCitationsMarkdown = (): string => {
-    const isSorted = isGroupedByColor;
-    const activeNotes = getSortedCitations();
-    
-    if (activeNotes.length === 0) return '';
-
-    let markdown = `# Listado de Citas - Documento ${documentId}\n\n`;
-    
+  // Construye el bloque markdown de una lista de citas (mismo criterio que
+  // buildPlainTextSection, pero con formato blockquote/encabezados markdown).
+  const buildMarkdownSection = (activeNotes: CitationNote[], isSorted: boolean): string => {
+    let markdown = '';
     if (isSorted) {
-      // Group active notes by activePalette color order
       const grouped: { [colorId: string]: CitationNote[] } = {};
       const noColorNotes: CitationNote[] = [];
-      
+
       activeNotes.forEach(note => {
         if (note.color && activePalette.some(c => c.id === note.color)) {
           if (!grouped[note.color]) grouped[note.color] = [];
@@ -488,7 +613,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
           noColorNotes.push(note);
         }
       });
-      
+
       activePalette.forEach(color => {
          const list = grouped[color.id];
          if (list && list.length > 0) {
@@ -499,7 +624,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
            });
          }
       });
-      
+
       if (noColorNotes.length > 0) {
         markdown += "## 🏷️ Citas Sin Color\n\n";
         noColorNotes.forEach(note => {
@@ -508,7 +633,6 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
         });
       }
     } else {
-      // Flat list in original source order
       activeNotes.forEach(note => {
         const pageStr = note.pageReference ? ` *(pág. ${note.pageReference})*` : '';
         const colorDef = note.color ? activePalette.find(c => c.id === note.color) : null;
@@ -516,7 +640,30 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
         markdown += `> ${colorIndicator}${note.content.replace(/^>\s*/, '')}${pageStr}\n\n`;
       });
     }
-    
+    return markdown;
+  };
+
+  // Generate a beautiful Markdown document from active citations
+  const getCitationsMarkdown = (): string => {
+    const isSorted = isGroupedByColor;
+    const activeNotes = getSortedCitations();
+    const hasResourceCitations = isBookDocument && textResources.some(r => (resourceCitations[r.docId] ?? []).filter(n => n.type !== 'bookmark').length > 0);
+
+    if (activeNotes.length === 0 && !hasResourceCitations) return '';
+
+    let markdown = `# Listado de Citas - Documento ${documentId}\n\n`;
+    markdown += buildMarkdownSection(activeNotes, isSorted);
+
+    // Apéndice: citas de cada recurso de texto, en su propia sección.
+    if (isBookDocument) {
+      textResources.forEach(r => {
+        const list = sortByPageAndTimestamp((resourceCitations[r.docId] ?? []).filter(n => n.type !== 'bookmark'));
+        if (list.length === 0) return;
+        markdown += `\n\n## 📄 Citas de: ${r.title}\n\n`;
+        markdown += buildMarkdownSection(list, false);
+      });
+    }
+
     return markdown;
   };
 
@@ -873,6 +1020,81 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
              </button>
           </div>
        </div>
+    );
+  };
+
+  // Fila de cita de un RECURSO de texto: versión simplificada de renderNoteRow
+  // (sin selector de color/agrupado, con botones subir/bajar en vez de drag&drop)
+  // para mantener renderNoteRow y el comportamiento del libro intactos.
+  const renderResourceNoteRow = (resDocId: string, note: CitationNote, index: number, total: number) => {
+    const isEditingThis = editingNoteId === note.id && editingDocId === resDocId;
+    return (
+      <div
+        key={note.id}
+        className="group bg-white border border-slate-150 rounded-lg sm:rounded-xl p-2 sm:p-4 transition-all flex gap-2.5 sm:gap-3 shadow-sm hover:shadow-md items-start"
+      >
+        <div className="flex flex-col gap-0.5 shrink-0 self-center">
+          <button disabled={index === 0} onClick={() => moveResourceItem(resDocId, index, 'up')} className="p-1 hover:bg-slate-100 rounded disabled:opacity-20 text-slate-500">
+            <ChevronUp className="w-4 h-4" />
+          </button>
+          <button disabled={index === total - 1} onClick={() => moveResourceItem(resDocId, index, 'down')} className="p-1 hover:bg-slate-100 rounded disabled:opacity-20 text-slate-500">
+            <ChevronDown className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 min-w-0">
+          {isEditingThis ? (
+            <div className="mt-2 space-y-3">
+              <textarea
+                className="w-full text-sm bg-white border border-slate-200 focus:border-[#00558F] rounded-xl p-3 outline-none shadow-inner resize-none min-h-[90px]"
+                value={editContent}
+                onChange={e => setEditContent(e.target.value)}
+              />
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1 bg-slate-100 border rounded-lg px-2 py-1 max-w-[150px]">
+                  <span className="text-xs text-slate-500 font-bold shrink-0">Pág:</span>
+                  <input type="text" value={editPage} onChange={e => setEditPage(e.target.value)} className="w-full text-xs font-bold outline-none bg-transparent" />
+                </div>
+                <div className="flex gap-1.5">
+                  <button onClick={() => { setEditingNoteId(null); setEditingDocId(null); }} className="text-xs font-medium bg-slate-150 text-slate-600 px-3 py-1.5 rounded-lg hover:bg-slate-200 transition-colors">Cancelar</button>
+                  <button onClick={() => handleSaveResourceEdit(resDocId, note.id)} className="text-xs font-bold bg-[#00558F] text-white px-3 py-1.5 rounded-lg hover:bg-[#004d80] transition-colors shadow-sm">Guardar</button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div
+              onDoubleClick={() => startEditingResource(resDocId, note)}
+              onClick={() => {
+                const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+                if (isTouch) startEditingResource(resDocId, note);
+              }}
+              className="text-xs sm:text-sm prose prose-sm prose-slate max-w-none text-slate-700 font-medium leading-normal cursor-pointer hover:text-slate-900 transition-colors py-0.5 select-none break-words overflow-hidden"
+              title="Doble clic para editar (toque en pantalla táctil)"
+            >
+              <div className="inline-block text-slate-800 not-italic">
+                <ReactMarkdown
+                  components={{
+                    p: ({node, ...props}) => <span className="text-xs sm:text-sm inline not-italic" {...props} />,
+                    blockquote: ({node, ...props}) => <span className="border-l-[3px] border-[#00558F]/30 pl-2 text-slate-600 not-italic inline" {...props} />
+                  }}
+                >
+                  {note.content}
+                </ReactMarkdown>
+                {note.pageReference && <span className="text-[10px] sm:text-xs text-[#00558F]/70 font-semibold"> (pag.{note.pageReference})</span>}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-row items-center shrink-0 gap-1 sm:gap-2 self-start pt-0.5">
+          <button onClick={(e) => { e.stopPropagation(); startEditingResource(resDocId, note); }} className="p-1 sm:p-1.5 rounded-lg text-slate-400 hover:text-[#00558F] hover:bg-[#00558F]/5 transition-colors cursor-pointer shrink-0" title="Editar cita">
+            <Edit2 className="w-3.5 h-3.5" />
+          </button>
+          <button onClick={(e) => { e.stopPropagation(); deleteResourceCitation(resDocId, note.id); }} className="p-1 sm:p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-rose-50 transition-colors cursor-pointer shrink-0" title="Eliminar cita">
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
     );
   };
 
@@ -1569,6 +1791,35 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
             ) : (
                <div className="max-w-4xl mx-auto space-y-1.5 sm:space-y-3">
                   {sortedCitations.map((note, index) => renderNoteRow(note, index))}
+               </div>
+            )}
+
+            {/* Citas de recursos de texto del libro, separadas por una línea
+                divisoria. Solo se muestra si al menos un recurso tiene citas. */}
+            {isBookDocument && textResources.some(r => (resourceCitations[r.docId] ?? []).length > 0) && (
+               <div className="max-w-4xl mx-auto">
+                  <div className="flex items-center gap-3 my-6">
+                     <div className="h-px bg-slate-200 flex-1" />
+                     <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Citas de recursos</span>
+                     <div className="h-px bg-slate-200 flex-1" />
+                  </div>
+
+                  {textResources.map(r => {
+                     const list = sortByPageAndTimestamp(
+                       (resourceCitations[r.docId] ?? []).filter(n => n.type !== 'bookmark')
+                     );
+                     if (list.length === 0) return null;
+                     return (
+                       <div key={r.docId} className="space-y-2 mb-6">
+                         <h3 className="text-xs font-extrabold text-slate-700 tracking-wide">
+                           Citas del recurso: {r.title} <span className="text-[10px] text-slate-400 font-semibold">({list.length})</span>
+                         </h3>
+                         <div className="space-y-1.5 sm:space-y-3">
+                           {list.map((note, idx) => renderResourceNoteRow(r.docId, note, idx, list.length))}
+                         </div>
+                       </div>
+                     );
+                  })}
                </div>
             )}
          </main>
