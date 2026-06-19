@@ -1340,10 +1340,17 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const [splitRatio, setSplitRatio] = useState<number>(50);
   const [isDragging, setIsDragging] = useState(false);
   const [isPortrait, setIsPortrait] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
+  // Móvil en horizontal (no tablet/desktop): ancho típico de teléfono rotado
+  // (≤ 950px) con altura baja (≤ 500px), que es justo cuando los controles
+  // del reproductor TTS no entran en una sola fila visible.
+  const [isMobileLandscape, setIsMobileLandscape] = useState(
+    typeof window !== 'undefined' ? window.innerWidth > window.innerHeight && window.innerHeight <= 500 && window.innerWidth <= 950 : false
+  );
 
   useEffect(() => {
     const handleResize = () => {
        setIsPortrait(window.innerWidth < 768);
+       setIsMobileLandscape(window.innerWidth > window.innerHeight && window.innerHeight <= 500 && window.innerWidth <= 950);
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
@@ -1884,19 +1891,23 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                    )}
 
                    {/* Fila de colores: resalta la frase actual y crea la nota en silencio.
-                       shrink-0: nunca se comprime ni queda oculta por el panel de config. */}
-                   <div className="flex items-center justify-center gap-3 mb-2 shrink-0">
-                      {activePalette.slice(0, 5).map((colorItem) => (
-                         <button
-                           key={colorItem.id}
-                           disabled={currentPhraseIndex < 0 || phrases.length === 0}
-                           onClick={() => createNoteFromCurrentPhrase(colorItem.color, colorItem.hex)}
-                           style={{ backgroundColor: colorItem.hex }}
-                           className="w-6 h-6 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-sm cursor-pointer"
-                           title={`Resaltar y anotar (${colorItem.name})`}
-                         />
-                      ))}
-                   </div>
+                       shrink-0: nunca se comprime ni queda oculta por el panel de config.
+                       En móvil horizontal se oculta aquí: se muestra como columna lateral
+                       fija a la izquierda de la pantalla (ver bloque tras el widget). */}
+                   {!isMobileLandscape && (
+                      <div className="flex items-center justify-center gap-3 mb-2 shrink-0">
+                         {activePalette.slice(0, 5).map((colorItem) => (
+                            <button
+                              key={colorItem.id}
+                              disabled={currentPhraseIndex < 0 || phrases.length === 0}
+                              onClick={() => createNoteFromCurrentPhrase(colorItem.color, colorItem.hex)}
+                              style={{ backgroundColor: colorItem.hex }}
+                              className="w-6 h-6 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-sm cursor-pointer"
+                              title={`Resaltar y anotar (${colorItem.name})`}
+                            />
+                         ))}
+                      </div>
+                   )}
 
                    {/* Fila de controles: [config] [pág◀] [◀◀frase] [stop] [▶play] [frase▶▶] [▶pág] [cerrar].
                        shrink-0: siempre visible, nunca empujada fuera de pantalla. En móvil
@@ -1995,6 +2006,24 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                    </div>
 
                 </div>
+             </div>
+          )}
+
+          {/* Móvil horizontal: columna lateral fija de colores a la izquierda,
+              fuera del recuadro del widget (como en la maqueta), para no robar
+              ancho a la fila de controles cuando hay poco alto disponible. */}
+          {showTtsWidget && isMobileLandscape && (
+             <div className="absolute top-0 left-0 bottom-0 z-40 flex flex-col items-center justify-center gap-5 px-4 bg-[var(--bg-card)]/95 backdrop-blur-md border-r border-[var(--border-card)]">
+                {activePalette.slice(0, 5).map((colorItem) => (
+                   <button
+                     key={colorItem.id}
+                     disabled={currentPhraseIndex < 0 || phrases.length === 0}
+                     onClick={() => createNoteFromCurrentPhrase(colorItem.color, colorItem.hex)}
+                     style={{ backgroundColor: colorItem.hex }}
+                     className="w-10 h-10 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-sm cursor-pointer"
+                     title={`Resaltar y anotar (${colorItem.name})`}
+                   />
+                ))}
              </div>
           )}
      </div>
