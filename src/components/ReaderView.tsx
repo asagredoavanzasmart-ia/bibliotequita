@@ -21,6 +21,7 @@
 import { useLibrary } from '../hooks/useLibrary';
 import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp, FolderOpen, List } from 'lucide-react';
 import { useState, useRef, FormEvent, ChangeEvent, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import type { Rendition } from 'epubjs';
 import { cn, getBookSources, resolvePrimarySource } from '../lib/utils';
 import type { ResourceType } from '../types';
@@ -123,6 +124,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     try { return JSON.parse(localStorage.getItem('tts-favorite-voices') || '[]'); } catch { return []; }
   });
   const [showVoiceDropdown, setShowVoiceDropdown] = useState(false);
+  // El dropdown de voces se renderiza vía portal en document.body (en vez de
+  // dentro del widget TTS) porque el widget tiene overflow-hidden para
+  // limitar su alto en móvil — sin el portal, las voces que sobresalían del
+  // recuadro del widget quedaban recortadas/invisibles ("no cargan todas").
+  const voiceButtonRef = useRef<HTMLButtonElement>(null);
+  const [voiceDropdownPos, setVoiceDropdownPos] = useState<{ left: number; bottom: number } | null>(null);
 
   const toggleFavoriteVoice = useCallback((voiceId: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1819,7 +1826,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                  <div className="flex items-center justify-between bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5 gap-2">
                                     <span className="text-[var(--text-muted)] font-semibold shrink-0">Voz:</span>
                                     <button
-                                       onClick={() => setShowVoiceDropdown(v => !v)}
+                                       ref={voiceButtonRef}
+                                       onClick={() => {
+                                          if (!showVoiceDropdown && voiceButtonRef.current) {
+                                             const rect = voiceButtonRef.current.getBoundingClientRect();
+                                             setVoiceDropdownPos({ left: rect.right - 256, bottom: window.innerHeight - rect.top + 4 });
+                                          }
+                                          setShowVoiceDropdown(v => !v);
+                                       }}
                                        className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 font-bold text-slate-800 dark:text-slate-100 cursor-pointer transition-colors shadow-sm max-w-[170px] truncate"
                                     >
                                        {favoriteVoices.includes(selectedVoice) && <span className="text-yellow-400 text-[10px]">★</span>}
@@ -1827,37 +1841,46 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                        <ChevronUp className="w-3 h-3 shrink-0 opacity-50" />
                                     </button>
                                  </div>
-                                 {showVoiceDropdown && (
-                                    <div className="absolute right-0 bottom-full mb-1 z-50 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
-                                       <div className="max-h-56 overflow-y-auto custom-scrollbar">
-                                          {favorites.length > 0 && (
-                                             <div className="px-2 pt-2 pb-1">
-                                                <span className="text-[10px] text-yellow-500 font-bold uppercase tracking-wide px-1">★ Favoritas</span>
-                                                {favorites.map(v => (
-                                                   <button key={v.id} onClick={() => { setSelectedVoice(v.id); handleTtsStop(); setShowVoiceDropdown(false); }}
-                                                      className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", selectedVoice === v.id ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
-                                                   >
-                                                      <span className="truncate text-xs">{v.name}</span>
-                                                      <span onClick={(e) => toggleFavoriteVoice(v.id, e)} className="text-yellow-400 hover:text-yellow-500 shrink-0 px-1 cursor-pointer">★</span>
-                                                   </button>
-                                                ))}
-                                             </div>
-                                          )}
-                                          {rest.length > 0 && (
-                                             <div className="px-2 pt-1 pb-2">
-                                                {favorites.length > 0 && <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wide px-1">Todas</span>}
-                                                {rest.map(v => (
-                                                   <button key={v.id} onClick={() => { setSelectedVoice(v.id); handleTtsStop(); setShowVoiceDropdown(false); }}
-                                                      className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", selectedVoice === v.id ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
-                                                   >
-                                                      <span className="truncate text-xs">{v.name}</span>
-                                                      <span onClick={(e) => toggleFavoriteVoice(v.id, e)} className="text-slate-300 hover:text-yellow-400 shrink-0 px-1 cursor-pointer">☆</span>
-                                                   </button>
-                                                ))}
-                                             </div>
-                                          )}
+                                 {showVoiceDropdown && voiceDropdownPos && createPortal(
+                                    <>
+                                       {/* Capa invisible para cerrar el dropdown al tocar fuera */}
+                                       <div className="fixed inset-0 z-[60]" onClick={() => setShowVoiceDropdown(false)} />
+                                       <div
+                                          className="fixed z-[61] w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden"
+                                          style={{ left: Math.max(8, voiceDropdownPos.left), bottom: voiceDropdownPos.bottom }}
+                                          onClick={(e) => e.stopPropagation()}
+                                       >
+                                          <div className="max-h-56 overflow-y-auto custom-scrollbar">
+                                             {favorites.length > 0 && (
+                                                <div className="px-2 pt-2 pb-1">
+                                                   <span className="text-[10px] text-yellow-500 font-bold uppercase tracking-wide px-1">★ Favoritas</span>
+                                                   {favorites.map(v => (
+                                                      <button key={v.id} onClick={() => { setSelectedVoice(v.id); handleTtsStop(); setShowVoiceDropdown(false); }}
+                                                         className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", selectedVoice === v.id ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
+                                                      >
+                                                         <span className="truncate text-xs">{v.name}</span>
+                                                         <span onClick={(e) => toggleFavoriteVoice(v.id, e)} className="text-yellow-400 hover:text-yellow-500 shrink-0 px-1 cursor-pointer">★</span>
+                                                      </button>
+                                                   ))}
+                                                </div>
+                                             )}
+                                             {rest.length > 0 && (
+                                                <div className="px-2 pt-1 pb-2">
+                                                   {favorites.length > 0 && <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wide px-1">Todas</span>}
+                                                   {rest.map(v => (
+                                                      <button key={v.id} onClick={() => { setSelectedVoice(v.id); handleTtsStop(); setShowVoiceDropdown(false); }}
+                                                         className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", selectedVoice === v.id ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
+                                                      >
+                                                         <span className="truncate text-xs">{v.name}</span>
+                                                         <span onClick={(e) => toggleFavoriteVoice(v.id, e)} className="text-slate-300 hover:text-yellow-400 shrink-0 px-1 cursor-pointer">☆</span>
+                                                      </button>
+                                                   ))}
+                                                </div>
+                                             )}
+                                          </div>
                                        </div>
-                                    </div>
+                                    </>,
+                                    document.body
                                  )}
                               </div>
                             );
