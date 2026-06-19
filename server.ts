@@ -1494,10 +1494,11 @@ async function startServer() {
     }
 
     try {
-      // Extracción simple de metadatos (título/autor/año/etc.) de texto plano:
-      // tarea sencilla, no requiere el modelo más capaz/caro de la familia.
+      // Nota: gemini-2.0-flash no tiene cuota habilitada en esta cuenta
+      // (verificado: 429 RESOURCE_EXHAUSTED, limit:0). gemini-2.5-flash sí
+      // funciona y ya es el modelo económico de su familia.
       const response = await generateContentWithRetry({
-        model: "gemini-2.0-flash",
+        model: "gemini-2.5-flash",
         // Instrucciones en systemInstruction — el usuario no puede sobreescribirlas
         // aunque el texto del PDF contenga "ignora todo lo anterior".
         contents: [
@@ -1571,9 +1572,10 @@ Si no encuentras un valor, devuelve cadena vacía "".`,
         .replace(/\s+/g, " ")
         .substring(0, 15000);
 
-      // Misma extracción simple de metadatos: modelo económico.
+      // Misma extracción simple de metadatos (ver nota sobre gemini-2.0-flash
+      // sin cuota en /api/analyze-pdf más arriba).
       const response = await generateContentWithRetry({
-        model: "gemini-2.0-flash",
+        model: "gemini-2.5-flash",
         contents: `Analiza este texto extraído de una página web y extrae de forma extremadamente concisa y precisa los siguientes campos en formato JSON.
 Busca patrones comunes en el texto relacionados con metadatos de libros o artículos como "©", "Copyright", "ISBN", "Editorial", "Publicado en", "Año", etc.
 
@@ -1635,9 +1637,10 @@ ${text}
     }
 
     try {
-      // Extraer solo título/autor de una portada: tarea simple, modelo económico.
+      // Extraer solo título/autor de una portada (ver nota sobre gemini-2.0-flash
+      // sin cuota en /api/analyze-pdf más arriba).
       const response = await generateContentWithRetry({
-        model: "gemini-2.0-flash",
+        model: "gemini-2.5-flash",
         contents: [
           { text: "Analyze this book cover image. Extract the Title and Author. If you cannot find a value, specify an empty string. The language is likely Spanish, so extract fields accordingly." },
           { inlineData: { mimeType, data: base64Data } },
