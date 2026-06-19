@@ -103,6 +103,11 @@ export interface BookItem {
   bookmarkPage?: number | string; // Última página marcada → se reanuda lectura aquí
   purchaseLinks?: PurchaseLink[];
   deletedAt?: string;
+  // Índice generado con IA cuando el PDF no trae outline nativo embebido
+  // (detectado a partir de la tabla de contenidos impresa en las primeras
+  // páginas). Se genera una vez y se reutiliza; null si se intentó generar
+  // y no se encontró ninguna tabla de contenidos en el texto.
+  generatedToc?: { title: string; page: number }[] | null;
 }
 
 export interface PlaylistData {

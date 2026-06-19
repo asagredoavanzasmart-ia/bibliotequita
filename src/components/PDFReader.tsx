@@ -16,7 +16,7 @@ import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { Document, Page, Outline, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
-import { ZoomIn, ZoomOut, List, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
+import { ZoomIn, ZoomOut, List, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Sparkles, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { get } from 'idb-keyval';
 
@@ -51,9 +51,16 @@ interface PDFReaderProps {
   // botón vive en la barra del reproductor TTS, no en la propia toolbar del PDF).
   outlineOpen?: boolean;
   onToggleOutline?: () => void;
+  // Índice generado con IA ya persistido (null = se intentó generar y no se
+  // encontró tabla de contenidos; undefined = nunca se intentó).
+  generatedToc?: { title: string; page: number }[] | null;
+  // Llamado cuando el usuario genera el índice con IA; el padre (ReaderView)
+  // hace el fetch a Gemini y persiste el resultado en el BookItem.
+  onGenerateToc?: (firstPagesText: string) => void;
+  generatingToc?: boolean;
 }
 
-function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPage, bottomOffset = 0, controlsVisible = true, outlineOpen, onToggleOutline }: PDFReaderProps) {
+function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPage, bottomOffset = 0, controlsVisible = true, outlineOpen, onToggleOutline, generatedToc, onGenerateToc, generatingToc = false }: PDFReaderProps) {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
@@ -197,9 +204,57 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
   const [containerHeight, setContainerHeight] = useState(window.innerHeight);
   const containerRef = useRef<HTMLDivElement>(null); // Para ResizeObserver en el Main Content Area
   const viewerRef = useRef<HTMLDivElement>(null);    // Para el scroll del visor de páginas
-  
+
   const [pdfSource, setPdfSource] = useState<string | Blob | null>(null);
   const [loadError, setLoadError] = useState<boolean>(false);
+
+  // Detecta si el PDF trae un índice (outline) nativo embebido. null = aún
+  // no se sabe (cargando); true/false una vez resuelto. Se usa para decidir
+  // si mostrar el botón "Generar índice con IA" en el panel de Índice.
+  const [hasNativeOutline, setHasNativeOutline] = useState<boolean | null>(null);
+  const pdfDocRef = useRef<any>(null);
+
+  useEffect(() => {
+    let isActive = true;
+    setHasNativeOutline(null);
+    if (!pdfSource) return;
+    (async () => {
+      try {
+        const loadingTask = typeof pdfSource === 'string'
+          ? pdfjs.getDocument(pdfSource)
+          : pdfjs.getDocument({ data: await pdfSource.arrayBuffer() });
+        const pdf = await loadingTask.promise;
+        if (!isActive) return;
+        pdfDocRef.current = pdf;
+        const outline = await pdf.getOutline();
+        if (!isActive) return;
+        setHasNativeOutline(Array.isArray(outline) && outline.length > 0);
+      } catch {
+        if (isActive) setHasNativeOutline(false);
+      }
+    })();
+    return () => { isActive = false; };
+  }, [pdfSource]);
+
+  // Extrae el texto de las primeras páginas (suficiente para detectar una
+  // tabla de contenidos impresa) y dispara la generación en el padre.
+  const handleGenerateTocClick = async () => {
+    if (!onGenerateToc) return;
+    try {
+      const pdf = pdfDocRef.current;
+      if (!pdf) return;
+      const numPagesToRead = Math.min(pdf.numPages, 10);
+      let fullText: string[] = [];
+      for (let i = 1; i <= numPagesToRead; i++) {
+        const textPage = await pdf.getPage(i);
+        const textContent = await textPage.getTextContent();
+        fullText.push(textContent.items.map((it: any) => it.str).join(' '));
+      }
+      onGenerateToc(fullText.join(' \n').trim());
+    } catch (e) {
+      console.error('No se pudo extraer texto para generar el índice:', e);
+    }
+  };
 
   useEffect(() => {
     let isActive = true;
@@ -369,10 +424,51 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-             <Outline
-                onItemClick={({ pageNumber }) => handlePageChange(pageNumber)}
-                className="pdf-outline"
-             />
+             {hasNativeOutline ? (
+                <Outline
+                   onItemClick={({ pageNumber }) => handlePageChange(pageNumber)}
+                   className="pdf-outline"
+                />
+             ) : generatedToc && generatedToc.length > 0 ? (
+                // Índice generado con IA a partir de la tabla de contenidos
+                // impresa en las primeras páginas (no es el outline nativo).
+                <ul className="space-y-1">
+                   {generatedToc.map((chapter, i) => (
+                      <li key={i}>
+                         <button
+                            onClick={() => handlePageChange(chapter.page)}
+                            className="w-full text-left px-2 py-1.5 rounded-lg text-sm text-[var(--text-main)] hover:bg-[var(--primary)]/10 hover:text-[var(--primary)] transition-colors flex items-center justify-between gap-2"
+                         >
+                            <span className="truncate">{chapter.title}</span>
+                            <span className="text-xs text-[var(--text-muted)] shrink-0">{chapter.page}</span>
+                         </button>
+                      </li>
+                   ))}
+                </ul>
+             ) : hasNativeOutline === null ? (
+                <p className="text-xs text-[var(--text-muted)] text-center py-6">Cargando…</p>
+             ) : (
+                <div className="text-center py-6 px-2">
+                   <p className="text-xs text-[var(--text-muted)] mb-3">
+                      {generatedToc === null
+                         ? 'No se encontró una tabla de contenidos en las primeras páginas.'
+                         : 'Este documento no tiene un índice incorporado.'}
+                   </p>
+                   {onGenerateToc && generatedToc !== null && (
+                      <button
+                         onClick={handleGenerateTocClick}
+                         disabled={generatingToc}
+                         className="text-xs font-bold px-3 py-2 rounded-lg bg-[var(--primary)]/10 text-[var(--primary)] hover:bg-[var(--primary)]/20 transition-colors disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+                      >
+                         {generatingToc ? (
+                            <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generando…</>
+                         ) : (
+                            <><Sparkles className="w-3.5 h-3.5" /> Generar índice con IA</>
+                         )}
+                      </button>
+                   )}
+                </div>
+             )}
           </div>
         </div>
 

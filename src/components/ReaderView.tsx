@@ -1356,6 +1356,29 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Índice del PDF controlado desde la barra TTS compacta en móvil horizontal.
   const [pdfOutlineOpen, setPdfOutlineOpen] = useState(false);
 
+  // Generación de índice con IA cuando el PDF no trae outline nativo (se
+  // persiste en el propio item para no tener que regenerarlo cada vez).
+  const [generatingToc, setGeneratingToc] = useState(false);
+  const handleGenerateToc = useCallback(async (firstPagesText: string) => {
+    if (!item || generatingToc) return;
+    setGeneratingToc(true);
+    try {
+      const res = await fetch('/api/generate-toc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: firstPagesText }),
+      });
+      if (res.ok) {
+        const { chapters } = await res.json();
+        updateItem(item.id, { generatedToc: Array.isArray(chapters) && chapters.length > 0 ? chapters : null });
+      }
+    } catch (e) {
+      console.error('No se pudo generar el índice con IA:', e);
+    } finally {
+      setGeneratingToc(false);
+    }
+  }, [item, generatingToc, updateItem]);
+
   useEffect(() => {
     const handleResize = () => {
        setIsPortrait(window.innerWidth < 768);
@@ -1705,7 +1728,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         onClick={handleScreenClick}
      >
         <div className="flex-1 overflow-hidden pointer-events-auto">
-          {activeType === 'pdf' && <PDFReader url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} bottomOffset={showTtsWidget ? ttsWidgetHeight : 0} controlsVisible={pageControlsVisible} outlineOpen={pdfOutlineOpen} onToggleOutline={() => setPdfOutlineOpen(v => !v)} />}
+          {activeType === 'pdf' && <PDFReader url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} bottomOffset={showTtsWidget ? ttsWidgetHeight : 0} controlsVisible={pageControlsVisible} outlineOpen={pdfOutlineOpen} onToggleOutline={() => setPdfOutlineOpen(v => !v)} generatedToc={item.generatedToc} onGenerateToc={handleGenerateToc} generatingToc={generatingToc} />}
           {activeType === 'epub' && (
             <EPUBReader
               url={activeSource}
