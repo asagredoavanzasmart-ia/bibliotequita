@@ -1,7 +1,7 @@
 import React, { useState, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { BookItem, PlaylistData, StageData } from '../types';
-import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag } from 'lucide-react';
+import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag, Download } from 'lucide-react';
 import { cn, colorSwatchProps } from '../lib/utils';
 import { useLibrary } from '../hooks/useLibrary';
 import { StarRating } from './StarRating';
@@ -360,10 +360,10 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     // =====================================================================
     <div className="bg-[var(--bg-app)] w-full min-h-full flex flex-col">
       <div className="flex-1 px-4 sm:px-6 md:px-8 py-6">
-         <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-12 gap-6">
+         <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-12 [@media(max-height:500px)]:grid-cols-12 gap-6 [@media(max-height:500px)]:gap-4">
 
             {/* ---------- Col 1: Portada + archivo + posesión ---------- */}
-            <div className="md:col-span-4 flex flex-col gap-4">
+            <div className="md:col-span-4 [@media(max-height:500px)]:col-span-4 flex flex-col gap-4">
                {/* Portada con overlay hover */}
                <div className="relative group aspect-[3/4] bg-[var(--bg-card)] rounded-2xl border-2 border-dashed border-slate-200 overflow-hidden shadow-sm transition-all hover:border-[var(--primary)]/50">
                   {coverUrl ? (
@@ -453,6 +453,11 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                         <div className="p-2.5 bg-[var(--bg-card)] rounded-xl border border-[var(--primary)]/30 flex items-center gap-2">
                            <span className="text-[var(--primary)] font-bold text-[10px] uppercase shrink-0">PDF</span>
                            <span className="text-[10px] text-[var(--text-muted)] font-mono truncate flex-1 min-w-0">{pdfSource.split('/').pop()}</span>
+                           {pdfSource.startsWith('/api/files/') && (
+                              <a href={pdfSource} download={`${title || 'libro'}.pdf`} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[var(--primary)] shrink-0" title="Descargar PDF">
+                                 <Download className="w-3.5 h-3.5" />
+                              </a>
+                           )}
                            <button type="button" onClick={() => handleSlotRemove('pdf')} className="text-slate-400 hover:text-red-500 shrink-0" title="Quitar PDF">
                               <X className="w-3.5 h-3.5" />
                            </button>
@@ -476,6 +481,11 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                         <div className="p-2.5 bg-[var(--bg-card)] rounded-xl border border-[var(--primary)]/30 flex items-center gap-2">
                            <span className="text-[var(--primary)] font-bold text-[10px] uppercase shrink-0">EPUB</span>
                            <span className="text-[10px] text-[var(--text-muted)] font-mono truncate flex-1 min-w-0">{epubSource.split('/').pop()}</span>
+                           {epubSource.startsWith('/api/files/') && (
+                              <a href={epubSource} download={`${title || 'libro'}.epub`} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[var(--primary)] shrink-0" title="Descargar EPUB">
+                                 <Download className="w-3.5 h-3.5" />
+                              </a>
+                           )}
                            <button type="button" onClick={() => handleSlotRemove('epub')} className="text-slate-400 hover:text-red-500 shrink-0" title="Quitar EPUB">
                               <X className="w-3.5 h-3.5" />
                            </button>
@@ -545,7 +555,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
             </div>
 
             {/* ---------- Col 2: Metadatos principales ---------- */}
-            <div className="md:col-span-5 flex flex-col gap-4">
+            <div className="md:col-span-5 [@media(max-height:500px)]:col-span-5 flex flex-col gap-4">
                <div>
                   <label className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1 block">Título</label>
                   <input
@@ -776,7 +786,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
             </div>
 
             {/* ---------- Col 3: Listas + Etapas ---------- */}
-            <div className="md:col-span-3 flex flex-col gap-4">
+            <div className="md:col-span-3 [@media(max-height:500px)]:col-span-3 flex flex-col gap-4">
                {/* Listas / Playlists */}
                <div className="bg-[var(--bg-card)] border border-slate-200 rounded-2xl p-4">
                   <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-3 flex items-center justify-between">

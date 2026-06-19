@@ -1,13 +1,13 @@
 import React, { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { BookItem } from '../types';
-import { UploadCloud, X, Plus, CheckCircle2, Link as LinkIcon, Tag } from 'lucide-react';
+import { UploadCloud, X, Plus, CheckCircle2, Link as LinkIcon, Tag, Sparkles, Loader2 } from 'lucide-react';
 import { useLibrary } from '../hooks/useLibrary';
 import { cn, colorSwatchProps } from '../lib/utils';
 import { pdfjs } from 'react-pdf';
 import ePub from 'epubjs';
 // Migrado de idb-keyval a almacenamiento real en el servidor (ver src/lib/uploadFile.ts).
-import { uploadFile } from '../lib/uploadFile';
+import { uploadFile, deleteUploadedFile } from '../lib/uploadFile';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -23,6 +23,32 @@ interface AddManualModalProps {
   onClose: () => void;
   onAdd: (item: Omit<BookItem, 'id' | 'timestamp'>) => void;
   demoQuota?: DemoQuota | null;
+}
+
+type RetryableField = 'title' | 'author' | 'year' | 'publisher' | 'isbn' | 'subject';
+
+// Botón pequeño de IA junto a un campo vacío: fuerza un reintento de extracción
+// (gemini-2.5-pro, hasta 5 páginas; el ISBN además busca online si no aparece
+// en el texto). Solo se muestra si hay texto extraído disponible para analizar.
+function AiRetryButton({ field, extractedText, retryingField, onRetry }: {
+  field: RetryableField;
+  extractedText: string;
+  retryingField: string | null;
+  onRetry: (field: RetryableField) => void;
+}) {
+  if (!extractedText) return null;
+  const isLoading = retryingField === field;
+  return (
+    <button
+      type="button"
+      disabled={!!retryingField}
+      onClick={() => onRetry(field)}
+      title="Buscar con IA"
+      className="p-0.5 rounded text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+    >
+      {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+    </button>
+  );
 }
 
 export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProps) {
@@ -48,6 +74,11 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
   const coverInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadError, setUploadError] = useState('');
+  // Texto de las primeras páginas, guardado para poder reintentar la
+  // extracción de un campo específico sin volver a leer el archivo.
+  const [extractedText, setExtractedText] = useState('');
+  // Campo que se está reintentando ahora ('title' | 'author' | ... | null).
+  const [retryingField, setRetryingField] = useState<string | null>(null);
 
   const isQuotaFull = !!demoQuota && demoQuota.current >= demoQuota.max;
 
@@ -108,6 +139,9 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
   const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Si ya había una portada subida (aún sin guardar el libro), se reemplaza
+    // por completo: borramos la anterior del servidor.
+    const previousCoverUrl = coverUrl;
     // Preview optimista mientras sube.
     const previewUrl = URL.createObjectURL(file);
     setCoverUrl(previewUrl);
@@ -115,6 +149,9 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       const { url } = await uploadFile(file, `cover-${Date.now()}.jpg`);
       setCoverUrl(url);
       URL.revokeObjectURL(previewUrl);
+      if (previousCoverUrl?.startsWith('/api/files/') && previousCoverUrl !== url) {
+        deleteUploadedFile(previousCoverUrl);
+      }
     } catch (err) {
       console.error('Error subiendo portada al servidor:', err);
       // Dejamos el preview blob como fallback visual; al recargar se perderá.
@@ -176,6 +213,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
          fullText.push(pageText);
        }
        const textString = fullText.join(' \n').trim();
+       setExtractedText(textString);
 
        // Si es un PDF escaneado (sin texto) y tenemos portada, analizamos la portada
        if (textString.length < 50 && base64Cover) {
@@ -286,6 +324,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
           } catch { /* sección no legible, se ignora */ }
         }
         const textString = fullText.join(' \n').slice(0, 200000);
+        setExtractedText(textString);
 
         if (textString) {
           const response = await fetch('/api/analyze-pdf', {
@@ -326,10 +365,19 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
     const isPdf = file.type.includes('pdf') || name.endsWith('.pdf');
     const isTxt = file.type.includes('text/plain') || name.endsWith('.txt');
 
+    // Si ya había un archivo digital subido (aún sin guardar el libro), se
+    // reemplaza por completo: borramos el anterior del servidor para no dejar
+    // archivos huérfanos cada vez que el usuario cambia de archivo antes de
+    // presionar "Guardar".
+    const previousSource = digitalSource;
+
     // Sube al servidor → obtenemos URL persistente "/api/files/<uuid>.<ext>".
     try {
       const { url } = await uploadFile(file);
       setDigitalSource(url);
+      if (previousSource?.startsWith('/api/files/') && previousSource !== url) {
+        deleteUploadedFile(previousSource);
+      }
     } catch (err: any) {
       console.error('Error subiendo archivo al servidor:', err);
       if (err?.code === 'DEMO_LIMIT') {
@@ -357,6 +405,29 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
      if (!digitalSource) return;
      const proxyUrl = `/api/proxy-resource?url=${encodeURIComponent(digitalSource)}`;
      await analyzePdfContent(proxyUrl);
+  };
+
+  // Reintento forzado de un solo campo (botón de IA junto al input cuando
+  // quedó vacío). Usa el texto de las primeras páginas ya extraído y, si es
+  // isbn y no aparece en el texto, el servidor busca online por título/autor.
+  const retryField = async (field: 'title' | 'author' | 'year' | 'publisher' | 'isbn' | 'subject') => {
+    if (!extractedText || retryingField) return;
+    setRetryingField(field);
+    try {
+      const response = await fetch('/api/analyze-field', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: extractedText, field, title: formData.title, author: formData.author })
+      });
+      if (response.ok) {
+        const { value } = await response.json();
+        if (value) setFormData(prev => ({ ...prev, [field]: value }));
+      }
+    } catch (err) {
+      console.error(`No se pudo reintentar el campo ${field}:`, err);
+    } finally {
+      setRetryingField(null);
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -514,33 +585,51 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
              
              <div className="md:col-span-2 [@media(max-height:500px)]:col-span-2 space-y-4 md:h-full md:overflow-y-auto md:pr-2 [@media(max-height:500px)]:h-full [@media(max-height:500px)]:overflow-y-auto settings-scrollbar">
                 <div>
-                   <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">Título *</label>
+                   <label className="text-[11px] font-semibold text-[var(--text-muted)] flex items-center justify-between mb-1">
+                      Título *
+                      {!formData.title && <AiRetryButton field="title" extractedText={extractedText} retryingField={retryingField} onRetry={retryField} />}
+                   </label>
                    <input required type="text" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} className="w-full text-sm font-medium px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-sm text-[var(--text-main)]" placeholder="Ej. El Señor de los Anillos" />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                    <div>
-                      <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">Autor</label>
+                      <label className="text-[11px] font-semibold text-[var(--text-muted)] flex items-center justify-between mb-1">
+                         Autor
+                         {!formData.author && <AiRetryButton field="author" extractedText={extractedText} retryingField={retryingField} onRetry={retryField} />}
+                      </label>
                       <input type="text" value={formData.author} onChange={e => setFormData({...formData, author: e.target.value})} className="w-full text-sm px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. J.R.R. Tolkien" />
                    </div>
                    <div>
-                      <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">Año</label>
+                      <label className="text-[11px] font-semibold text-[var(--text-muted)] flex items-center justify-between mb-1">
+                         Año
+                         {!formData.year && <AiRetryButton field="year" extractedText={extractedText} retryingField={retryingField} onRetry={retryField} />}
+                      </label>
                       <input type="text" value={formData.year} onChange={e => setFormData({...formData, year: e.target.value})} className="w-full text-sm px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. 1954" />
                    </div>
                 </div>
 
                 <div>
-                   <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">Materia</label>
+                   <label className="text-[11px] font-semibold text-[var(--text-muted)] flex items-center justify-between mb-1">
+                      Materia
+                      {!formData.subject && <AiRetryButton field="subject" extractedText={extractedText} retryingField={retryingField} onRetry={retryField} />}
+                   </label>
                    <input type="text" value={formData.subject} onChange={e => setFormData({...formData, subject: e.target.value})} className="w-full text-sm px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. Filosofía" />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                    <div>
-                      <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">Editorial</label>
+                      <label className="text-[11px] font-semibold text-[var(--text-muted)] flex items-center justify-between mb-1">
+                         Editorial
+                         {!formData.publisher && <AiRetryButton field="publisher" extractedText={extractedText} retryingField={retryingField} onRetry={retryField} />}
+                      </label>
                       <input type="text" value={formData.publisher} onChange={e => setFormData({...formData, publisher: e.target.value})} className="w-full text-sm px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. Planeta" />
                    </div>
                    <div>
-                      <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-1">ISBN</label>
+                      <label className="text-[11px] font-semibold text-[var(--text-muted)] flex items-center justify-between mb-1">
+                         ISBN
+                         {!formData.isbn && <AiRetryButton field="isbn" extractedText={extractedText} retryingField={retryingField} onRetry={retryField} />}
+                      </label>
                       <input type="text" value={formData.isbn} onChange={e => setFormData({...formData, isbn: e.target.value})} className="w-full text-sm px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. 978-3-16-148410-0" />
                    </div>
                 </div>
