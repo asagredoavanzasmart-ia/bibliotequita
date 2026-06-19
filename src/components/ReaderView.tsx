@@ -19,7 +19,7 @@
 // =============================================================================
 
 import { useLibrary } from '../hooks/useLibrary';
-import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp, FolderOpen } from 'lucide-react';
+import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp, FolderOpen, List } from 'lucide-react';
 import { useState, useRef, FormEvent, ChangeEvent, useEffect, useCallback, useMemo } from 'react';
 import type { Rendition } from 'epubjs';
 import { cn, getBookSources, resolvePrimarySource } from '../lib/utils';
@@ -1346,6 +1346,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const [isMobileLandscape, setIsMobileLandscape] = useState(
     typeof window !== 'undefined' ? window.innerWidth > window.innerHeight && window.innerHeight <= 500 && window.innerWidth <= 950 : false
   );
+  // Índice del PDF controlado desde la barra TTS compacta en móvil horizontal.
+  const [pdfOutlineOpen, setPdfOutlineOpen] = useState(false);
 
   useEffect(() => {
     const handleResize = () => {
@@ -1696,7 +1698,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         onClick={handleScreenClick}
      >
         <div className="flex-1 overflow-hidden pointer-events-auto">
-          {activeType === 'pdf' && <PDFReader url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} bottomOffset={showTtsWidget ? ttsWidgetHeight : 0} controlsVisible={pageControlsVisible} />}
+          {activeType === 'pdf' && <PDFReader url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} bottomOffset={showTtsWidget ? ttsWidgetHeight : 0} controlsVisible={pageControlsVisible} outlineOpen={pdfOutlineOpen} onToggleOutline={() => setPdfOutlineOpen(v => !v)} />}
           {activeType === 'epub' && (
             <EPUBReader
               url={activeSource}
@@ -1753,7 +1755,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
              // controles de reproducción son shrink-0 y SIEMPRE quedan visibles,
              // sin depender de hacer scroll para aparecer (eso era lo que las
              // "ocultaba" en móvil cuando el widget no entraba completo en pantalla).
-             <div ref={ttsWidgetRef} className="absolute bottom-0 left-0 right-0 z-40 bg-[var(--bg-card)] border-t border-[var(--border-card)] shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-2 duration-300 flex flex-col overflow-hidden" style={{ paddingBottom: 'env(safe-area-inset-bottom)', maxHeight: '85dvh' }}>
+             <div ref={ttsWidgetRef} onClick={(e) => e.stopPropagation()} className="absolute bottom-0 left-0 right-0 z-40 bg-[var(--bg-card)] border-t border-[var(--border-card)] shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-2 duration-300 flex flex-col overflow-hidden" style={{ paddingBottom: 'env(safe-area-inset-bottom)', maxHeight: '85dvh' }}>
                 <div className="max-w-xl mx-auto px-3 pt-2 pb-2 sm:px-4 w-full flex flex-col min-h-0 overflow-hidden">
 
                    {/* Panel de configuración colapsable (modelo/voz/origen).
@@ -1900,7 +1902,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                             <button
                               key={colorItem.id}
                               disabled={currentPhraseIndex < 0 || phrases.length === 0}
-                              onClick={() => createNoteFromCurrentPhrase(colorItem.color, colorItem.hex)}
+                              onClick={(e) => { e.stopPropagation(); createNoteFromCurrentPhrase(colorItem.color, colorItem.hex); }}
                               style={{ backgroundColor: colorItem.hex }}
                               className="w-6 h-6 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-sm cursor-pointer"
                               title={`Resaltar y anotar (${colorItem.name})`}
@@ -1913,6 +1915,25 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                        shrink-0: siempre visible, nunca empujada fuera de pantalla. En móvil
                        estrecho permite scroll horizontal y los botones no se encogen. */}
                    <div className="flex items-center justify-start sm:justify-center gap-1 sm:gap-2 overflow-x-auto no-scrollbar px-1 py-0.5 shrink-0 [&>button]:shrink-0">
+
+                      {/* Móvil horizontal + PDF: índice y contador de página
+                          compactos, integrados aquí en vez de en la toolbar
+                          propia del PDF (que se oculta en este modo). */}
+                      {isMobileLandscape && activeType === 'pdf' && (
+                        <>
+                          <button
+                            onClick={() => setPdfOutlineOpen(v => !v)}
+                            className={cn("p-2 border rounded-full transition-all active:scale-95 shadow-sm", pdfOutlineOpen ? "bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30" : "bg-[var(--bg-app)] hover:bg-slate-200/50 border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)]")}
+                            title="Índice"
+                          >
+                             <List className="w-4 h-4" />
+                          </button>
+                          <span className="text-[11px] font-mono font-bold px-1.5 tabular-nums whitespace-nowrap text-[var(--text-muted)]">
+                             {currentPage}<span className="opacity-50">/{totalPages || '--'}</span>
+                          </span>
+                          <span className="w-px h-4 bg-[var(--border-card)] mx-0.5" />
+                        </>
+                      )}
 
                       {/* Mostrar/ocultar configuración */}
                       <button
@@ -1953,12 +1974,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                          <Square className="w-4 h-4 fill-current" />
                       </button>
 
-                      {/* Play / Pause — botón central grande */}
+                      {/* Play / Pause. En móvil horizontal usa el mismo tamaño que el
+                          resto de botones (p-2) para una configuración más fácil. */}
                       <button
                         disabled={ttsStatus === 'loading'}
                         onClick={handleTtsPlayPause}
                         className={cn(
-                          "p-3.5 rounded-full text-white shadow-lg transition-all active:scale-95 duration-200 flex items-center justify-center",
+                          "rounded-full text-white shadow-lg transition-all active:scale-95 duration-200 flex items-center justify-center",
+                          isMobileLandscape ? "p-2" : "p-3.5",
                           ttsStatus === 'playing'
                             ? "bg-[var(--primary)] hover:bg-[var(--primary-hover)] ring-4 ring-[var(--primary)]/15"
                             : "bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
@@ -2013,12 +2036,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               fuera del recuadro del widget (como en la maqueta), para no robar
               ancho a la fila de controles cuando hay poco alto disponible. */}
           {showTtsWidget && isMobileLandscape && (
-             <div className="absolute top-0 left-0 bottom-0 z-40 flex flex-col items-center justify-center gap-4 px-3 bg-[var(--bg-card)]/95 backdrop-blur-md border-r border-[var(--border-card)]">
+             <div onClick={(e) => e.stopPropagation()} className="absolute top-0 left-0 bottom-0 z-40 flex flex-col items-center justify-center gap-4 px-3 bg-[var(--bg-card)]/95 backdrop-blur-md border-r border-[var(--border-card)]">
                 {activePalette.slice(0, 5).map((colorItem) => (
                    <button
                      key={colorItem.id}
                      disabled={currentPhraseIndex < 0 || phrases.length === 0}
-                     onClick={() => createNoteFromCurrentPhrase(colorItem.color, colorItem.hex)}
+                     onClick={(e) => { e.stopPropagation(); createNoteFromCurrentPhrase(colorItem.color, colorItem.hex); }}
                      style={{ backgroundColor: colorItem.hex }}
                      className="w-14 h-14 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-md cursor-pointer shrink-0"
                      title={`Resaltar y anotar (${colorItem.name})`}

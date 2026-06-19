@@ -47,9 +47,13 @@ interface PDFReaderProps {
   // Controla la visibilidad de la barra (auto-ocultado por inactividad,
   // controlado desde ReaderView). Por defecto siempre visible.
   controlsVisible?: boolean;
+  // Permite controlar el panel de índice desde fuera (móvil horizontal: el
+  // botón vive en la barra del reproductor TTS, no en la propia toolbar del PDF).
+  outlineOpen?: boolean;
+  onToggleOutline?: () => void;
 }
 
-function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPage, bottomOffset = 0, controlsVisible = true }: PDFReaderProps) {
+function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPage, bottomOffset = 0, controlsVisible = true, outlineOpen, onToggleOutline }: PDFReaderProps) {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
@@ -175,7 +179,20 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
   }, [numPages, scrollingPage, pageNumber]);
 
 
-  const [showOutline, setShowOutline] = useState(false);
+  const [showOutlineInternal, setShowOutlineInternal] = useState(false);
+  // Si se pasa outlineOpen desde fuera (móvil horizontal: botón en la barra
+  // TTS), ese valor manda y onToggleOutline es quien decide el cambio; si no,
+  // se usa el estado interno de siempre.
+  const isOutlineControlled = outlineOpen !== undefined && !!onToggleOutline;
+  const showOutline = isOutlineControlled ? outlineOpen : showOutlineInternal;
+  const setShowOutline = (next: boolean | ((prev: boolean) => boolean)) => {
+    if (isOutlineControlled) {
+      const resolved = typeof next === 'function' ? next(outlineOpen!) : next;
+      if (resolved !== outlineOpen) onToggleOutline!();
+    } else {
+      setShowOutlineInternal(next);
+    }
+  };
   const [containerWidth, setContainerWidth] = useState(window.innerWidth);
   const [containerHeight, setContainerHeight] = useState(window.innerHeight);
   const containerRef = useRef<HTMLDivElement>(null); // Para ResizeObserver en el Main Content Area
@@ -425,49 +442,50 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
            >
              <div className="flex items-center justify-center gap-1 sm:gap-4 px-2 sm:px-4 py-2.5 sm:py-3 w-full sm:w-auto bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-main)] shadow-2xl rounded-full backdrop-blur-md transition-all min-h-[48px] whitespace-nowrap pointer-events-auto">
 
-              <div className="flex items-center">
-                 <button
-                   onClick={() => setShowOutline(!showOutline)}
-                   className={cn(
-                     "p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
-                     showOutline && "text-[var(--primary)] bg-[var(--primary)]/10"
-                   )}
-                   title="Índice"
-                 >
-                    <List className="w-5 h-5" />
-                 </button>
-              </div>
-
-              <div className="w-px h-4 bg-[var(--border-card)]" />
-
-              <div className="flex items-center gap-1">
-                 <button
-                   disabled={pageNumber <= 1}
-                   onClick={() => handlePageChange(pageNumber - 1)}
-                   className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
-                   title="Página Anterior"
-                 >
-                   <ChevronLeft className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
-                 </button>
-
-                 <span className="text-sm font-mono font-bold min-w-[3.5rem] text-center px-1 tabular-nums whitespace-nowrap">
-                   {pageNumber} <span className="opacity-40 font-normal text-xs">/ {numPages || '--'}</span>
-                 </span>
-
-                 <button
-                   disabled={pageNumber >= (numPages || 1)}
-                   onClick={() => handlePageChange(pageNumber + 1)}
-                   className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
-                   title="Siguiente Página"
-                 >
-                   <ChevronRight className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
-                 </button>
-              </div>
-
-              {/* En móvil horizontal el zoom vive en la columna vertical derecha
-                  (más abajo); aquí solo se muestra en vertical/desktop. */}
+              {/* En móvil horizontal el índice y el contador de página viven en
+                  la barra del reproductor TTS (versión compacta); aquí solo se
+                  muestran en vertical/desktop/sin TTS abierto. */}
               {!isMobileLandscape && (
                 <>
+                  <div className="flex items-center">
+                     <button
+                       onClick={() => setShowOutline(!showOutline)}
+                       className={cn(
+                         "p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
+                         showOutline && "text-[var(--primary)] bg-[var(--primary)]/10"
+                       )}
+                       title="Índice"
+                     >
+                        <List className="w-5 h-5" />
+                     </button>
+                  </div>
+
+                  <div className="w-px h-4 bg-[var(--border-card)]" />
+
+                  <div className="flex items-center gap-1">
+                     <button
+                       disabled={pageNumber <= 1}
+                       onClick={() => handlePageChange(pageNumber - 1)}
+                       className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
+                       title="Página Anterior"
+                     >
+                       <ChevronLeft className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
+                     </button>
+
+                     <span className="text-sm font-mono font-bold min-w-[3.5rem] text-center px-1 tabular-nums whitespace-nowrap">
+                       {pageNumber} <span className="opacity-40 font-normal text-xs">/ {numPages || '--'}</span>
+                     </span>
+
+                     <button
+                       disabled={pageNumber >= (numPages || 1)}
+                       onClick={() => handlePageChange(pageNumber + 1)}
+                       className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
+                       title="Siguiente Página"
+                     >
+                       <ChevronRight className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
+                     </button>
+                  </div>
+
                   <div className="w-px h-4 bg-[var(--border-card)]" />
                   <div className="flex items-center gap-1">
                      <button
