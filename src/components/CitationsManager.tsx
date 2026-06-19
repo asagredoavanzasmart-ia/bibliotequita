@@ -25,11 +25,13 @@ import {
   BookOpen,
   FileSpreadsheet,
   Printer,
-  BookMarked
+  BookMarked,
+  FolderOpen
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { cn } from '../lib/utils';
 import { exportToDocx, exportToPrintPdf, createGoogleDoc, loginWithGoogle } from '../utils/exportUtils';
+import { uploadFile } from '../lib/uploadFile';
 
 export interface CitationNote {
   id: string;
@@ -147,6 +149,8 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
   const [loadingMsg, setLoadingMsg] = useState(LOADING_MESSAGES[0]);
   const [copyFeedback, setCopyFeedback] = useState(false);
   const [saveNoteFeedback, setSaveNoteFeedback] = useState(false);
+  const [savingSummaryResource, setSavingSummaryResource] = useState(false);
+  const [saveResourceFeedback, setSaveResourceFeedback] = useState(false);
   const [summarySaveStatus, setSummarySaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
 
   // New states for export dropdown, color picking, and Google Doc link
@@ -837,6 +841,41 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
       setSaveNoteFeedback(false);
       setShowSummaryView(false);
     }, 1500);
+  };
+
+  // Guarda el resumen IA como un recurso de Texto (.txt) en la pestaña
+  // Recursos del libro, marcado isSummary:true. Solo disponible cuando
+  // documentId es el del libro (no el de un recurso ya existente).
+  const handleSaveSummaryAsResource = async () => {
+    if (!editedSummary || !isBookDocument) return;
+    setSavingSummaryResource(true);
+    try {
+      const typeLabel = summaryType === 'breve' ? 'Breve' : summaryType === 'descriptivo' ? 'Descriptivo' : 'Personalizado';
+      const fileName = `Resumen-${typeLabel}-${Date.now()}.txt`;
+      const blob = new Blob([editedSummary], { type: 'text/plain;charset=utf-8' });
+      const { url } = await uploadFile(blob, fileName);
+
+      await fetch(`/api/books/${documentId}/resources`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'text',
+          title: `Resumen IA (${typeLabel})`,
+          source: url,
+          fileType: 'txt',
+          isSummary: true,
+        }),
+      });
+
+      setSaveResourceFeedback(true);
+      loadResourceCitations(); // refresca la lista para que el divisor de citas lo refleje si luego se cita
+      setTimeout(() => setSaveResourceFeedback(false), 2000);
+    } catch (e) {
+      console.error('No se pudo guardar el resumen como recurso:', e);
+    } finally {
+      setSavingSummaryResource(false);
+    }
   };
 
   const renderNoteRow = (note: CitationNote, index: number) => {
@@ -1557,6 +1596,31 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
                                  </>
                                )}
                              </button>
+                             {isBookDocument && (
+                               <button
+                                 onClick={handleSaveSummaryAsResource}
+                                 disabled={savingSummaryResource}
+                                 className="flex-1 sm:flex-initial text-xs font-extrabold text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-60 px-4 py-2.5 rounded-xl transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
+                                 title="Guarda el resumen como un recurso de Texto en la pestaña Recursos"
+                               >
+                                 {saveResourceFeedback ? (
+                                   <>
+                                     <Check className="w-3.5 h-3.5 text-white" />
+                                     Guardado
+                                   </>
+                                 ) : savingSummaryResource ? (
+                                   <>
+                                     <Loader2 className="w-3.5 h-3.5 text-white/90 animate-spin" />
+                                     Guardando…
+                                   </>
+                                 ) : (
+                                   <>
+                                     <FolderOpen className="w-3.5 h-3.5 text-white/90" />
+                                     Guardar como recurso
+                                   </>
+                                 )}
+                               </button>
+                             )}
                            </div>
                          </div>
                        </div>
