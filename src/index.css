@@ -147,6 +147,29 @@ html, body, #root {
 }
 
 /* =============================================================================
+   Capa de texto del PDF (pdf.js / react-pdf v10)
+   - El texto REAL lo dibuja el <canvas>. La capa de texto es invisible y solo
+     sirve para seleccionar/copiar. Si sus spans no son transparentes, se ve
+     "texto doble/fantasma" desplazado sobre la página. Forzamos transparencia.
+   - Selección con un resaltado azul translúcido limpio.
+   - Suprimimos el callout/menú nativo de iOS/Chrome sobre la capa de texto
+     (best-effort; el menú de selección de Android no siempre se puede ocultar).
+   ============================================================================= */
+.react-pdf__Page__textContent span,
+.react-pdf__Page__textContent br {
+  color: transparent !important;
+}
+.react-pdf__Page__textContent span::selection {
+  background: rgba(0, 85, 143, 0.30);
+}
+.react-pdf__Page__textContent span::-moz-selection {
+  background: rgba(0, 85, 143, 0.30);
+}
+.react-pdf__Page__textContent {
+  -webkit-touch-callout: none;
+}
+
+/* =============================================================================
    Estilos premium para el Índice/Outline de react-pdf (.pdf-outline)
    ============================================================================= */
 .pdf-outline {

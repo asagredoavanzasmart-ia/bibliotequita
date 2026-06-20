@@ -482,6 +482,7 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
               onTouchStart={handleTouchStart}
               onTouchMove={handleTouchMove}
               onTouchEnd={handleTouchEnd}
+              onContextMenu={(e) => e.preventDefault()}
            >
               <div className="flex flex-col items-center gap-4 md:gap-8 pb-10">
                  {Array.from(new Array(numPages || 1), (_el, index) => {

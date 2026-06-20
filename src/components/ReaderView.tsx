@@ -1187,15 +1187,17 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
     let textToRead = '';
     let source: 'selection' | 'page' = 'page';
+    // Si se inició desde una selección, leemos la página/capítulo COMPLETO pero
+    // arrancando en la frase de la selección, para que la lectura continúe con
+    // el texto que sigue (no solo el fragmento seleccionado) y se pueda
+    // pausar/detener con los controles normales.
+    const selectionSnippet = (selectedText && selectedText.trim().length > 0) ? selectedText.trim() : null;
 
-    if (selectedText && selectedText.trim().length > 0) {
-      textToRead = selectedText.trim();
-      source = 'selection';
-    } else {
+    {
       // "Inicio del capítulo" en EPUB requiere navegar la rendition al inicio
       // del capítulo actual ANTES de extraer el texto visible, ya que el
       // contenido renderizado cambia tras la navegación.
-      if (item?.type === 'epub' && ttsStartSource === 'chapter') {
+      if (item?.type === 'epub' && !selectionSnippet && ttsStartSource === 'chapter') {
         await navigateEpubToChapterStart();
         // Esperar a que epub.js termine de renderizar el nuevo contenido
         await new Promise(resolve => setTimeout(resolve, 400));
@@ -1247,7 +1249,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setPhrases(phraseList);
 
     let startIndex = 0;
-    if (source === 'page') {
+    if (selectionSnippet) {
+      // Arrancar en la frase que coincide con el texto seleccionado y seguir
+      // leyendo de corrido desde ahí.
+      startIndex = findPhraseIndexForSnippet(phraseList, selectionSnippet);
+    } else {
       switch (ttsStartSource) {
         case 'chapter':
           // EPUB ya navegó al inicio del capítulo; el texto extraído ya
@@ -1342,6 +1348,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   // New states for fullscreen and split view
   const [isFullscreen, setIsFullscreen] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
+  // Intención del usuario de mantener pantalla completa: si es true, al salir
+  // del fullscreen nativo por rotación del dispositivo (común en móvil) se
+  // re-solicita automáticamente para que NO se pierda al rotar. Solo un gesto
+  // explícito (botón/Esc) la pone en false.
+  const fullscreenIntentRef = useRef(false);
+  // Dispositivo táctil (móvil/tablet): el comportamiento de "mantener
+  // fullscreen al rotar" solo aplica aquí, no en PC.
+  const isTouchDevice = typeof window !== 'undefined' && (('ontouchstart' in window) || navigator.maxTouchPoints > 0);
   const [showControls, setShowControls] = useState(typeof window !== 'undefined' ? window.innerWidth >= 768 : true);
   const [notesPosition, setNotesPosition] = useState<'right' | 'left'>('right');
   const [splitRatio, setSplitRatio] = useState<number>(50);
@@ -1398,12 +1412,15 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     if (!isNativeFs) {
       const req = docEl.requestFullscreen || docEl.webkitRequestFullscreen || docEl.msRequestFullscreen;
       // Activamos también el modo expandido propio (oculta header/controles).
+      fullscreenIntentRef.current = true;
       setIsFullscreen(true);
       setShowControls(false);
       if (req) {
         Promise.resolve(req.call(docEl)).catch(() => { /* algunos navegadores móviles lo rechazan; el modo CSS ya cubre el caso */ });
       }
     } else {
+      // Salida explícita del usuario: ya no queremos mantener fullscreen.
+      fullscreenIntentRef.current = false;
       const exit = doc.exitFullscreen || doc.webkitExitFullscreen || doc.msExitFullscreen;
       if (exit) {
         Promise.resolve(exit.call(doc)).catch(() => {});
@@ -1413,23 +1430,48 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   }, []);
 
   // Sincroniza el estado si el usuario sale del fullscreen nativo con Esc o el
-  // gesto del sistema, para que el ícono/estado vuelvan a su sitio.
+  // gesto del sistema. En táctil, si la salida fue provocada por una rotación
+  // (no por el usuario), se re-solicita fullscreen para mantenerlo permanente.
   useEffect(() => {
     const onFsChange = () => {
       const doc: any = document;
       const isNativeFs = !!(doc.fullscreenElement || doc.webkitFullscreenElement);
       if (!isNativeFs) {
+        // Si el usuario aún quiere fullscreen (no pulsó salir) y es táctil,
+        // no degradamos el modo CSS: lo mantenemos. El re-request nativo se
+        // intenta en el handler de orientationchange (requiere gesto en
+        // algunos navegadores, pero el modo CSS fixed cubre el caso visual).
+        if (fullscreenIntentRef.current && isTouchDevice) {
+          setIsFullscreen(true);
+          return;
+        }
         setIsFullscreen(false);
         setShowControls(true);
       }
     };
     document.addEventListener('fullscreenchange', onFsChange);
     document.addEventListener('webkitfullscreenchange', onFsChange as any);
+
+    // Al rotar el dispositivo, si el usuario quiere mantener fullscreen, se
+    // re-solicita el fullscreen nativo (best-effort).
+    const onOrientationChange = () => {
+      if (!fullscreenIntentRef.current || !isTouchDevice) return;
+      const doc: any = document;
+      const docEl: any = document.documentElement;
+      const isNativeFs = !!(doc.fullscreenElement || doc.webkitFullscreenElement);
+      if (!isNativeFs) {
+        const req = docEl.requestFullscreen || docEl.webkitRequestFullscreen || docEl.msRequestFullscreen;
+        if (req) Promise.resolve(req.call(docEl)).catch(() => {});
+      }
+    };
+    window.addEventListener('orientationchange', onOrientationChange);
+
     return () => {
       document.removeEventListener('fullscreenchange', onFsChange);
       document.removeEventListener('webkitfullscreenchange', onFsChange as any);
+      window.removeEventListener('orientationchange', onOrientationChange);
     };
-  }, []);
+  }, [isTouchDevice]);
 
   // Ref siempre actualizada a handleTtsStop, para poder llamarla desde
   // listeners/cleanups sin que una closure vieja se quede "pegada".
@@ -2182,6 +2224,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
             <div className="flex items-center gap-2 sm:gap-4 shrink-0">
             <button
                 onClick={() => {
+                  fullscreenIntentRef.current = false;
                   const doc: any = document;
                   if (doc.fullscreenElement || doc.webkitFullscreenElement) {
                     const exit = doc.exitFullscreen || doc.webkitExitFullscreen || doc.msExitFullscreen;
@@ -2388,7 +2431,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                        onClick={() => {
                          setSelectionRect(null);
                          setShowTtsWidget(true);
+                         // handleTtsPlayPause captura el texto seleccionado de
+                         // forma síncrona al inicio; lo limpiamos justo después
+                         // para que el siguiente Play/Pause no quede anclado a
+                         // la selección anterior.
                          handleTtsPlayPause();
+                         setSelectedText('');
                        }}
                        className="w-7 h-7 flex items-center justify-center text-white hover:scale-110 active:scale-95 transition-transform border-l border-white/20 pl-3 ml-1 shrink-0"
                        title="Leer en voz alta"
