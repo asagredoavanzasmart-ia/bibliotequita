@@ -147,24 +147,26 @@ html, body, #root {
 }
 
 /* =============================================================================
-   Capa de texto del PDF (pdf.js / react-pdf v10)
+   Capa de texto del PDF (pdf.js / react-pdf v10 → clase real ".textLayer")
    - El texto REAL lo dibuja el <canvas>. La capa de texto es invisible y solo
-     sirve para seleccionar/copiar. Si sus spans no son transparentes, se ve
-     "texto doble/fantasma" desplazado sobre la página. Forzamos transparencia.
-   - Selección con un resaltado azul translúcido limpio.
-   - Suprimimos el callout/menú nativo de iOS/Chrome sobre la capa de texto
-     (best-effort; el menú de selección de Android no siempre se puede ocultar).
+     sirve para seleccionar/copiar. Sus spans ya son color:transparent, PERO al
+     seleccionar, Chrome aplica su ::selection por defecto que vuelve el texto
+     VISIBLE (negro) sobre el azul → "texto doble". Forzamos que el texto siga
+     transparente también en ::selection, dejando solo el fondo azul translúcido.
+   - Se suprime el callout nativo (best-effort; el menú de selección de Android
+     no siempre se puede ocultar del todo).
    ============================================================================= */
-.react-pdf__Page__textContent span,
-.react-pdf__Page__textContent br {
-  color: transparent !important;
-}
+.textLayer span::selection,
 .react-pdf__Page__textContent span::selection {
-  background: rgba(0, 85, 143, 0.30);
+  color: transparent !important;
+  background: rgba(0, 85, 143, 0.35) !important;
 }
+.textLayer span::-moz-selection,
 .react-pdf__Page__textContent span::-moz-selection {
-  background: rgba(0, 85, 143, 0.30);
+  color: transparent !important;
+  background: rgba(0, 85, 143, 0.35) !important;
 }
+.textLayer,
 .react-pdf__Page__textContent {
   -webkit-touch-callout: none;
 }

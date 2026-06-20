@@ -79,7 +79,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   const [selectedText, setSelectedText ] = useState('');
   const [selectedCitation, setSelectedCitation ] = useState<{text: string; color: string; timestamp: number; page?: number | string}>();
-  const [selectionRect, setSelectionRect ] = useState<{ top: number, left: number, width: number } | null>(null);
+  const [selectionRect, setSelectionRect ] = useState<{ top: number, left: number, width: number, bottom: number } | null>(null);
 
   // Referencia a la Rendition de epubjs — necesaria para acceder al contenido
   // del iframe interno (selección de texto para citas y extracción para TTS).
@@ -1605,7 +1605,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           const range = selection.getRangeAt(0);
           const rect = range.getBoundingClientRect();
           setSelectedText(text);
-          setSelectionRect({ top: rect.top, left: rect.left, width: rect.width });
+          setSelectionRect({ top: rect.top, left: rect.left, width: rect.width, bottom: rect.bottom });
           return;
         }
       }
@@ -1794,6 +1794,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                     top: rect.top + (iframeRect?.top || 0),
                     left: rect.left + (iframeRect?.left || 0),
                     width: rect.width,
+                    bottom: rect.bottom + (iframeRect?.top || 0),
                   });
                 });
                 // Sin esto, un click sin arrastre dentro del iframe no limpia
@@ -2399,11 +2400,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
          className={cn("flex-1 relative overflow-hidden flex", isPortrait ? "flex-col" : "flex-row", (isFullscreen && !showControls) ? "bg-[#e2e8f0]" : "bg-[#e2e8f0]")}
       >
          {selectionRect && selectedText && (
-            <div 
+            <div
               className="fixed z-[1000] bg-slate-800 text-white rounded-lg shadow-2xl flex items-center overflow-hidden animate-in fade-in zoom-in-95 duration-100"
-              style={{ 
-                top: Math.max(10, selectionRect.top - 45), 
-                left: Math.max(10, selectionRect.left + (selectionRect.width / 2) - 100) 
+              style={{
+                // Se posiciona DEBAJO de la selección: el menú nativo de Chrome
+                // (Copiar/Compartir) aparece arriba, así no se tapan entre sí.
+                top: Math.min(selectionRect.bottom + 12, window.innerHeight - 60),
+                left: Math.max(10, Math.min(selectionRect.left + (selectionRect.width / 2) - 100, window.innerWidth - 210))
               }}
               onMouseDown={e => e.preventDefault()}
             >

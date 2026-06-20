@@ -890,15 +890,18 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
          onDrop={() => handleDrop(index)}
          onDragEnd={() => setDraggedIndex(null)}
          className={cn(
-           "group bg-white border border-slate-150 rounded-lg sm:rounded-xl p-2 sm:p-4 transition-all flex gap-2.5 sm:gap-3 shadow-sm hover:shadow-md items-start",
+           "group bg-white border border-slate-150 rounded-lg sm:rounded-xl p-3 sm:p-4 transition-all flex gap-2.5 sm:gap-3 shadow-sm hover:shadow-md items-start",
            note.type === 'bookmark' ? "border-sky-300 bg-sky-50/10" : "",
            isDraggedNow ? "opacity-40 border-dashed border-[#00558F] bg-[#00558F]/5 scale-95" : ""
          )}
          style={note.type !== 'bookmark' && colorDef ? { borderLeft: `4px solid ${colorDef.hex}` } : undefined}
        >
-          {/* Drag Handle & Ordering controls */}
+          {/* Drag Handle & Ordering controls. El contenedor es visible siempre;
+              dentro, el handle de arrastre solo aplica en desktop y los botones
+              subir/bajar solo en móvil (antes el padre estaba oculto en móvil,
+              dejando las citas sin forma de reordenarse en el teléfono). */}
           {!isGroupedByColor && (
-             <div className="flex flex-col items-center justify-center gap-1.5 shrink-0 text-slate-400 self-center hidden sm:flex">
+             <div className="flex flex-col items-center justify-center gap-1.5 shrink-0 text-slate-400 self-center">
                 <div className="cursor-grab hover:text-slate-600 p-1 rounded-md active:cursor-grabbing hover:bg-slate-100 hidden sm:block" title="Arrastrar para reordenar">
                    <GripVertical className="w-4 h-4" />
                 </div>
@@ -1795,7 +1798,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
                </div>
 
                {/* Content Area / List of citations */}
-               <main className="flex-1 overflow-y-auto px-2.5 py-3 sm:px-6 md:px-8 space-y-1.5 sm:space-y-4">
+               <main className="flex-1 overflow-y-auto px-3.5 py-4 sm:px-6 md:px-8 space-y-3 sm:space-y-4">
             {sortedCitations.length === 0 ? (
                <div className="bg-white border rounded-2xl p-12 text-center shadow-sm max-w-xl mx-auto mt-8">
                   <AlertCircle className="w-10 h-10 text-slate-300 mx-auto mb-3" />
@@ -1818,7 +1821,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
                          </h3>
                        </div>
 
-                       <div className="space-y-1.5 sm:space-y-3">
+                       <div className="space-y-3 sm:space-y-3">
                          {colorCitations.map((note) => {
                            const noteIndex = sortedCitationIndexById.get(note.id) ?? 0;
                            return renderNoteRow(note, noteIndex);
@@ -1842,7 +1845,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
                          </h3>
                        </div>
 
-                       <div className="space-y-1.5 sm:space-y-3">
+                       <div className="space-y-3 sm:space-y-3">
                          {noColorCitations.map((note) => {
                            const noteIndex = sortedCitationIndexById.get(note.id) ?? 0;
                            return renderNoteRow(note, noteIndex);
@@ -1853,7 +1856,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
                  })()}
                </div>
             ) : (
-               <div className="max-w-4xl mx-auto space-y-1.5 sm:space-y-3">
+               <div className="max-w-4xl mx-auto space-y-3 sm:space-y-3">
                   {sortedCitations.map((note, index) => renderNoteRow(note, index))}
                </div>
             )}
@@ -1878,7 +1881,7 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
                          <h3 className="text-xs font-extrabold text-slate-700 tracking-wide">
                            Citas del recurso: {r.title} <span className="text-[10px] text-slate-400 font-semibold">({list.length})</span>
                          </h3>
-                         <div className="space-y-1.5 sm:space-y-3">
+                         <div className="space-y-3 sm:space-y-3">
                            {list.map((note, idx) => renderResourceNoteRow(r.docId, note, idx, list.length))}
                          </div>
                        </div>

@@ -410,9 +410,12 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
        loading={<div className="animate-pulse bg-[var(--bg-card)] w-full max-w-[600px] h-[800px] rounded-lg border border-[var(--border-card)] mt-4" />}
        className="flex h-full w-full bg-[var(--bg-app)] relative min-w-0 min-h-0 text-[var(--text-main)]"
     >
-        {/* Sidebar for Outline */}
+        {/* Sidebar for Outline. En móvil se posiciona fixed con z-[60] para
+            escapar del stacking context del panel del lector y quedar POR
+            ENCIMA de la columna de colores del reproductor TTS (z-40). En
+            desktop sigue siendo relative dentro del flujo. */}
         <div className={cn(
-          "bg-[var(--bg-card)] border-r border-[var(--border-card)] backdrop-blur-md transition-all duration-300 flex flex-col absolute md:relative z-20 h-full shadow-2xl md:shadow-none min-w-0 min-h-0",
+          "bg-[var(--bg-card)] border-r border-[var(--border-card)] backdrop-blur-md transition-all duration-300 flex flex-col fixed inset-y-0 left-0 z-[60] md:relative md:inset-auto md:z-20 h-full shadow-2xl md:shadow-none min-w-0 min-h-0",
            showOutline ? "w-64 md:w-64" : "w-0 opacity-0 overflow-hidden"
         )}>
           <div className="p-4 border-b border-[var(--border-card)] bg-[var(--bg-app)]/50 flex-none flex items-center justify-between">
@@ -617,8 +620,11 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
            </div>
          )}
 
-         {/* Asa para volver a mostrar la barra cuando se ocultó manualmente */}
-         {!hideControls && manuallyHidden && (
+         {/* Asa para volver a mostrar la barra cuando se ocultó manualmente.
+             En móvil horizontal se oculta: ahí los controles del PDF viven en
+             la barra del reproductor TTS y en la columna de zoom lateral, y
+             esta asa flotante quedaba como una "pestaña fantasma" sobrante. */}
+         {!hideControls && manuallyHidden && !isMobileLandscape && (
            <button
              onClick={() => setManuallyHidden(false)}
              className="absolute left-1/2 -translate-x-1/2 z-30 p-2 rounded-full bg-[var(--bg-card)]/70 border border-[var(--border-card)] text-[var(--text-muted)] shadow-md backdrop-blur-md pointer-events-auto transition-all"

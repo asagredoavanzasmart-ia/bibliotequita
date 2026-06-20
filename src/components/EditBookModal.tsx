@@ -488,18 +488,21 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   {/* Slot PDF */}
                   <div className="flex flex-col gap-1.5">
                      {pdfSource ? (
+                        <>
                         <div className="p-2.5 bg-[var(--bg-card)] rounded-xl border border-[var(--primary)]/30 flex items-center gap-2">
                            <span className="text-[var(--primary)] font-bold text-[10px] uppercase shrink-0">PDF</span>
                            <span className="text-[10px] text-[var(--text-muted)] font-mono truncate flex-1 min-w-0">{pdfSource.split('/').pop()}</span>
-                           {pdfSource.startsWith('/api/files/') && (
-                              <a href={pdfSource} download={`${title || 'libro'}.pdf`} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[var(--primary)] shrink-0" title="Descargar PDF">
-                                 <Download className="w-3.5 h-3.5" />
-                              </a>
-                           )}
                            <button type="button" onClick={() => handleSlotRemove('pdf')} className="text-slate-400 hover:text-red-500 shrink-0" title="Quitar PDF">
                               <X className="w-3.5 h-3.5" />
                            </button>
                         </div>
+                        {pdfSource.startsWith('/api/files/') && (
+                           <a href={pdfSource} download={`${title || 'libro'}.pdf`} target="_blank" rel="noreferrer"
+                              className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/30 hover:bg-[var(--primary)]/20 transition-colors">
+                              <Download className="w-4 h-4" /> Descargar PDF
+                           </a>
+                        )}
+                        </>
                      ) : (
                         <button
                            disabled={isAnalyzing}
@@ -516,18 +519,21 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   {/* Slot EPUB */}
                   <div className="flex flex-col gap-1.5">
                      {epubSource ? (
+                        <>
                         <div className="p-2.5 bg-[var(--bg-card)] rounded-xl border border-[var(--primary)]/30 flex items-center gap-2">
                            <span className="text-[var(--primary)] font-bold text-[10px] uppercase shrink-0">EPUB</span>
                            <span className="text-[10px] text-[var(--text-muted)] font-mono truncate flex-1 min-w-0">{epubSource.split('/').pop()}</span>
-                           {epubSource.startsWith('/api/files/') && (
-                              <a href={epubSource} download={`${title || 'libro'}.epub`} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-[var(--primary)] shrink-0" title="Descargar EPUB">
-                                 <Download className="w-3.5 h-3.5" />
-                              </a>
-                           )}
                            <button type="button" onClick={() => handleSlotRemove('epub')} className="text-slate-400 hover:text-red-500 shrink-0" title="Quitar EPUB">
                               <X className="w-3.5 h-3.5" />
                            </button>
                         </div>
+                        {epubSource.startsWith('/api/files/') && (
+                           <a href={epubSource} download={`${title || 'libro'}.epub`} target="_blank" rel="noreferrer"
+                              className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/30 hover:bg-[var(--primary)]/20 transition-colors">
+                              <Download className="w-4 h-4" /> Descargar EPUB
+                           </a>
+                        )}
+                        </>
                      ) : (
                         <button
                            type="button"
