@@ -1634,8 +1634,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   const renderPhysicalBookDashboard = () => {
     const progState = {
-      text: item.read ? "Leído" : (item.progress || 0) <= 25 ? "Consultado" : (item.progress || 0) <= 50 ? "En proceso" : (item.progress || 0) < 100 ? "Revisado" : "Leído",
-      color: item.read ? "bg-emerald-500" : (item.progress || 0) <= 25 ? "bg-slate-500" : (item.progress || 0) <= 50 ? "bg-amber-500" : (item.progress || 0) < 100 ? "bg-blue-500" : "bg-emerald-500"
+      text: item.read ? "Leído" : (item.progress || 0) === 0 ? "Sin leer" : (item.progress || 0) <= 25 ? "Consultado" : (item.progress || 0) <= 50 ? "En proceso" : (item.progress || 0) < 100 ? "Revisado" : "Leído",
+      color: item.read ? "bg-emerald-500" : (item.progress || 0) === 0 ? "bg-slate-400" : (item.progress || 0) <= 25 ? "bg-slate-500" : (item.progress || 0) <= 50 ? "bg-amber-500" : (item.progress || 0) < 100 ? "bg-blue-500" : "bg-emerald-500"
     };
     const pValue = item.read ? 100 : Math.min(100, Math.max(0, item.progress || 0));
 

@@ -120,9 +120,20 @@ export function BookmarksMenu({ documentId, currentPage, onNavigate, isEpub = fa
         )}
       </button>
 
+      {/* Backdrop de fondo difuminado en pantallas móviles para facilitar el cierre y centrar la atención */}
       {open && (
         <div
-          className="absolute right-0 top-full mt-2 w-72 bg-white rounded-xl shadow-2xl border border-slate-200 z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-150"
+          className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-40 sm:hidden animate-in fade-in duration-200"
+          onClick={() => {
+            setOpen(false);
+            setNamingPage(null);
+          }}
+        />
+      )}
+
+      {open && (
+        <div
+          className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100%-2rem)] max-w-sm sm:absolute sm:top-full sm:left-auto sm:right-0 sm:translate-x-0 sm:translate-y-0 sm:mt-2 sm:w-72 bg-white rounded-xl shadow-2xl border border-slate-200 z-50 overflow-hidden animate-in fade-in zoom-in-95 sm:zoom-in-100 sm:slide-in-from-top-2 duration-150"
           onMouseDown={e => e.stopPropagation()}
         >
           <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between">
@@ -179,6 +190,12 @@ export function BookmarksMenu({ documentId, currentPage, onNavigate, isEpub = fa
               <input
                 autoFocus
                 type="text"
+                name="bookmark-title-input"
+                id="bookmark-title-input"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="sentences"
+                spellCheck={false}
                 value={draftName}
                 onChange={e => setDraftName(e.target.value)}
                 onKeyDown={e => {

@@ -102,7 +102,7 @@ export function TrashPanel() {
                 {/* Detalles y Metadatos */}
                 <div className="flex-1 flex flex-col justify-between min-w-0">
                   <div className="flex flex-col gap-0.5">
-                    <h4 className="font-bold text-sm text-[var(--text-main)] truncate" title={item.title}>
+                    <h4 className="font-bold text-sm text-[var(--text-main)] truncate pr-28" title={item.title}>
                       {item.title}
                     </h4>
                     {item.author && (

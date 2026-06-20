@@ -43,6 +43,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   const progState = useMemo(() => {
     if (read) return { text: 'Leído', color: 'bg-emerald-500' };
     const p = progress || 0;
+    if (p === 0) return { text: 'Sin leer', color: 'bg-slate-400' };
     if (p <= 25) return { text: 'Consultado', color: 'bg-slate-500' };
     if (p <= 50) return { text: 'En proceso', color: 'bg-amber-500' };
     if (p < 100) return { text: 'Revisado', color: 'bg-blue-500' };

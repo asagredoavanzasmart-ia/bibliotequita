@@ -532,7 +532,7 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
            </div>
 
          {/* Toolbar Static at Bottom */}
-         {!hideControls && (
+         {!hideControls && !isMobileLandscape && (
            <div
              className={cn(
                "absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none z-30 w-[calc(100%-1.5rem)] sm:w-auto sm:max-w-xl transition-all duration-300",

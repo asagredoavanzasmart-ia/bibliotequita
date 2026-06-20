@@ -104,7 +104,7 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
             {activeTab !== 'trash' && activeTab !== 'analytics' && (
               <button 
                  onClick={onOpenAddManual}
-                 className="hidden md:flex bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white px-8 py-3 rounded-xl text-sm font-bold shadow-md shadow-[var(--primary)]/20 items-center gap-2 transition-all hover:-translate-y-0.5 active:scale-95"
+                 className="hidden lg:flex bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white px-8 py-3 rounded-xl text-sm font-bold shadow-md shadow-[var(--primary)]/20 items-center gap-2 transition-all hover:-translate-y-0.5 active:scale-95"
               >
                  Añadir Recurso
               </button>

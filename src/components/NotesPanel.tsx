@@ -15,7 +15,7 @@
 // =============================================================================
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Trash2, Edit2, Send, Tag } from 'lucide-react';
+import { Trash2, Edit2, Send, Tag, Mic, Square, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { cn } from '../lib/utils';
 
@@ -66,6 +66,23 @@ export function NotesPanel({ documentId, onNavigateToPage, onNavigateToCitation,
   const [activePalette, setActivePalette] = useState<{ id: string, color: string, bgClass: string, borderClass: string, textClass: string, name: string, hex: string }[]>([]);
   const notesEndRef = useRef<HTMLDivElement>(null);
   const lastCitationTimestampRef = useRef<number | null>(null);
+
+  // Móvil/tablet: ocultamos el título "Anotaciones" para ganar espacio vertical
+  // y dejar más sitio a las notas cuando el teclado está abierto.
+  const [isCompact, setIsCompact] = useState(typeof window !== 'undefined' ? window.innerWidth < 1024 : false);
+  useEffect(() => {
+    const onResize = () => setIsCompact(window.innerWidth < 1024);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // Grabación de notas de voz.
+  const [isRecording, setIsRecording] = useState(false);
+  const [isProcessingAudio, setIsProcessingAudio] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioStreamRef = useRef<MediaStream | null>(null);
 
   // Load color palette
   useEffect(() => {
@@ -171,6 +188,92 @@ export function NotesPanel({ documentId, onNavigateToPage, onNavigateToCitation,
     setEditorContent('');
   };
 
+  // Envía el audio grabado al servidor: lo transcribe, lo ordena y, si es una
+  // pregunta, genera una explicación. El resultado se guarda como una nota más,
+  // que se ordena junto al resto (por página/cronología) igual que las demás.
+  const processVoiceNote = async (blob: Blob) => {
+    setIsProcessingAudio(true);
+    setAudioError(null);
+    try {
+      const audioBase64: string = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+
+      const res = await fetch('/api/gemini/voice-note', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audioBase64 }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'No se pudo procesar la nota de voz.');
+      }
+      const data = await res.json();
+      const content: string = (data?.content || '').trim();
+      if (!content) throw new Error('La transcripción quedó vacía.');
+
+      const newNote: Note = {
+        id: crypto.randomUUID(),
+        documentId,
+        content,
+        pageReference: currentPage,
+        timestamp: Date.now(),
+        type: 'note',
+      };
+      saveNotes([...notes, newNote]);
+    } catch (err: any) {
+      setAudioError(err?.message || 'Error al procesar el audio.');
+    } finally {
+      setIsProcessingAudio(false);
+    }
+  };
+
+  const stopStream = () => {
+    audioStreamRef.current?.getTracks().forEach(t => t.stop());
+    audioStreamRef.current = null;
+  };
+
+  const startRecording = async () => {
+    setAudioError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = stream;
+      audioChunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        stopStream();
+        if (blob.size > 0) processVoiceNote(blob);
+      };
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+    } catch (err) {
+      setAudioError('No se pudo acceder al micrófono.');
+      stopStream();
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+  };
+
+  // Limpieza: si el componente se desmonta mientras graba, soltamos el micrófono.
+  useEffect(() => () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    stopStream();
+  }, []);
+
   const handleAddBookmark = () => {
      const newBookmark: Note = {
         id: crypto.randomUUID(),
@@ -195,12 +298,16 @@ export function NotesPanel({ documentId, onNavigateToPage, onNavigateToCitation,
 
   return (
     <div className="flex flex-col bg-[#fdfdfd] h-full w-full">
-      <div className="flex px-4 py-3 shrink-0 items-center justify-between border-b border-slate-100 bg-white">
-         <h3 className="font-bold text-sm text-slate-700 flex items-center gap-2">
-            <Edit2 className="w-4 h-4 text-[#00558F]" />
-            Anotaciones
-         </h3>
-      </div>
+      {/* En móvil/tablet ocultamos el encabezado para no robar alto al listado
+          de notas (especialmente con el teclado abierto). */}
+      {!isCompact && (
+        <div className="flex px-4 py-3 shrink-0 items-center justify-between border-b border-slate-100 bg-white">
+           <h3 className="font-bold text-sm text-slate-700 flex items-center gap-2">
+              <Edit2 className="w-4 h-4 text-[#00558F]" />
+              Anotaciones
+           </h3>
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto px-2 py-4 sm:px-4 space-y-3 bg-[#fdfdfd] no-scrollbar">
          {notes.length === 0 ? (
             <div className="text-center text-[#7D94A0] text-sm mt-10 px-4">
@@ -389,21 +496,54 @@ export function NotesPanel({ documentId, onNavigateToPage, onNavigateToCitation,
          <div ref={notesEndRef} className="h-4" />
       </div>
 
-      <div className="p-3 border-t border-slate-100 bg-[#fdfdfd] shrink-0 flex items-end gap-2 shadow-[0_-10px_20px_-10px_rgba(0,0,0,0.05)] relative z-20">
-         <textarea 
-           value={editorContent}
-           onChange={e => setEditorContent(e.target.value)}
-           placeholder="Escribe una nota..."
-           rows={3}
-           className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:border-[#00558F] focus:ring-1 focus:ring-[#00558F] focus:bg-white transition-all resize-none shadow-sm no-scrollbar"
-         />
-         <button 
-           onClick={handleSaveNote}
-           disabled={!editorContent.trim()}
-           className="bg-[#00558F] hover:bg-[#004270] disabled:bg-slate-200 disabled:text-white text-white p-3 rounded-xl transition-colors shrink-0 flex items-center justify-center transform active:scale-95 shadow-sm"
-         >
-           <Send className="w-4 h-4 ml-0.5" />
-         </button>
+      <div className="p-2.5 sm:p-3 border-t border-slate-100 bg-[#fdfdfd] shrink-0 shadow-[0_-10px_20px_-10px_rgba(0,0,0,0.05)] relative z-20">
+         {audioError && (
+           <div className="mb-2 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5">
+             {audioError}
+           </div>
+         )}
+         {isRecording && (
+           <div className="mb-2 flex items-center gap-2 text-xs text-rose-600 font-medium">
+             <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+             Grabando nota de voz…
+           </div>
+         )}
+         {isProcessingAudio && (
+           <div className="mb-2 flex items-center gap-2 text-xs text-[#00558F] font-medium">
+             <Loader2 className="w-3.5 h-3.5 animate-spin" />
+             Procesando audio…
+           </div>
+         )}
+         <div className="flex items-end gap-2">
+           <textarea
+             value={editorContent}
+             onChange={e => setEditorContent(e.target.value)}
+             placeholder="Escribe una nota…"
+             rows={isCompact ? 1 : 2}
+             className="flex-1 bg-slate-50 border border-slate-200 rounded-2xl px-3.5 py-2.5 text-sm focus:border-[#00558F] focus:ring-1 focus:ring-[#00558F] focus:bg-white transition-all resize-none shadow-sm no-scrollbar max-h-32"
+           />
+           {/* Botón de nota de voz */}
+           <button
+             onClick={isRecording ? stopRecording : startRecording}
+             disabled={isProcessingAudio}
+             title={isRecording ? 'Detener grabación' : 'Grabar nota de voz'}
+             className={cn(
+               "p-3 rounded-full transition-colors shrink-0 flex items-center justify-center transform active:scale-95 shadow-sm disabled:opacity-50",
+               isRecording ? "bg-rose-500 hover:bg-rose-600 text-white animate-pulse" : "bg-white border border-slate-200 text-rose-500 hover:bg-rose-50"
+             )}
+           >
+             {isProcessingAudio ? <Loader2 className="w-4 h-4 animate-spin" /> : isRecording ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+           </button>
+           {/* Botón de enviar nota escrita */}
+           <button
+             onClick={handleSaveNote}
+             disabled={!editorContent.trim()}
+             title="Guardar nota"
+             className="bg-[#00558F] hover:bg-[#004270] disabled:bg-slate-200 disabled:text-white text-white p-3 rounded-full transition-colors shrink-0 flex items-center justify-center transform active:scale-95 shadow-sm"
+           >
+             <Send className="w-4 h-4 ml-0.5" />
+           </button>
+         </div>
       </div>
 
     </div>

@@ -75,7 +75,8 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
   const progState = useMemo(() => {
     if (item.read) return { text: "Leído", color: "bg-emerald-500" };
     const p = item.progress || 0;
-    // 0–25% Consultado · 26–50% En proceso · 51–99% Revisado · 100% Leído
+    // 0% Sin leer · 1–25% Consultado · 26–50% En proceso · 51–99% Revisado · 100% Leído
+    if (p === 0) return { text: "Sin leer", color: "bg-slate-400" };
     if (p <= 25) return { text: "Consultado", color: "bg-slate-500" };
     if (p <= 50) return { text: "En proceso", color: "bg-amber-500" };
     if (p < 100) return { text: "Revisado", color: "bg-blue-500" };

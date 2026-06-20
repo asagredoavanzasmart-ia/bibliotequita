@@ -1875,6 +1875,73 @@ ${text}
   });
 
   // -------------------------------------------------------------------------
+  // Nota de voz → texto ordenado (y explicación si es una pregunta).
+  // El cliente graba audio (MediaRecorder), lo envía en base64, y Gemini:
+  //   1. Transcribe el audio.
+  //   2. Limpia/ordena la transcripción (puntuación, mayúsculas, sin muletillas).
+  //   3. Si el contenido es una pregunta, genera una explicación en su lugar.
+  // Devuelve { content, isQuestion } para guardarlo como una nota más.
+  // -------------------------------------------------------------------------
+  app.post("/api/gemini/voice-note", aiLimiter, async (req, res) => {
+    const audioBase64 = reqString(req.body?.audioBase64, 25 * 1024 * 1024);
+    if (!audioBase64) return res.status(400).json({ error: "Audio requerido" });
+
+    const match = audioBase64.match(/^data:(audio\/[\w+.-]+);base64,(.+)$/);
+    let mimeType = "audio/webm";
+    let base64Data = audioBase64;
+    if (match) {
+      mimeType = match[1];
+      base64Data = match[2];
+    }
+
+    try {
+      const instruction =
+        "Eres un asistente que procesa notas de voz de un lector mientras estudia un libro. " +
+        "El idioma es español. Primero transcribe el audio. Luego decide:\n" +
+        "- Si es una afirmación, idea o apunte: devuelve la transcripción LIMPIA y bien escrita " +
+        "(puntuación y mayúsculas correctas, sin muletillas ni repeticiones, conservando el sentido). " +
+        "Marca isQuestion=false.\n" +
+        "- Si es una PREGUNTA: genera una explicación clara y bien redactada que la responda, " +
+        "en formato de nota de estudio (puedes usar Markdown sencillo). Marca isQuestion=true.\n" +
+        "Devuelve SOLO el campo 'content' con el texto final y 'isQuestion'.";
+
+      const response = await generateContentWithRetry({
+        model: "gemini-2.5-flash",
+        contents: [
+          { text: instruction },
+          { inlineData: { mimeType, data: base64Data } },
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              content: { type: Type.STRING },
+              isQuestion: { type: Type.BOOLEAN },
+            },
+            required: ["content", "isQuestion"],
+          },
+        },
+      });
+
+      const parsed = JSON.parse(response?.text || "{}");
+      const content = typeof parsed.content === "string" ? parsed.content.trim() : "";
+      if (!content) return res.status(500).json({ error: "No se pudo transcribir el audio." });
+      res.json({ content, isQuestion: !!parsed.isQuestion });
+    } catch (error: any) {
+      console.error("Error processing voice note with Gemini:", error);
+      const status = String(error?.status || "");
+      if (status.includes("PERMISSION_DENIED") || status.includes("403") || status.includes("400")) {
+        return res.status(503).json({
+          error: "La API de Gemini está bloqueada o la GEMINI_API_KEY no es válida en este servidor.",
+          code: "GEMINI_API_BLOCKED",
+        });
+      }
+      res.status(500).json({ error: "Fallo al procesar la nota de voz." });
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // TTS Proxy Endpoint (Soporta ElevenLabs y Google Gemini TTS multimodal)
   // -------------------------------------------------------------------------
   interface CacheEntry {
