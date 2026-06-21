@@ -385,7 +385,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                    (sin forzar 3:4). Solo se fija la altura; el ancho se ajusta
                    solo. Recorte mínimo (2% por lado) únicamente para limpiar
                    bordes con imperfecciones, no para encuadrar la portada. */}
-               <div className="relative group h-72 flex items-center justify-center bg-[var(--bg-card)] rounded-2xl overflow-hidden shadow-sm transition-all">
+               <div className="relative group h-72 flex items-center justify-center overflow-hidden transition-all">
                   {coverUrl ? (
                      <div className="h-full w-full overflow-hidden rounded-2xl flex items-center justify-center">
                         <img
