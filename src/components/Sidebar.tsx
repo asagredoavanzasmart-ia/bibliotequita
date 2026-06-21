@@ -157,9 +157,7 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
           </button>
         )}
         <div className={cn("flex items-center mb-6", collapsed ? "justify-center mt-6" : "gap-3")}>
-          <div className="w-10 h-10 bg-[#FFA300] rounded-lg flex items-center justify-center shrink-0">
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
-          </div>
+          <img src="/logo.png" alt="Biblioteca" className="w-10 h-10 rounded-lg shrink-0 object-cover shadow-sm" />
           {!collapsed && (
             <div className="min-w-0 flex-1">
               <h1 className="text-sm font-extrabold tracking-tight uppercase leading-none truncate">Biblioteca</h1>

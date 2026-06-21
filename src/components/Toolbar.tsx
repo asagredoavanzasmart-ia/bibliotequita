@@ -60,10 +60,10 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
 
   return (
     <>
-      <div className="flex flex-col gap-4 w-full border-b border-slate-200/50 pb-2 sm:pb-4 relative z-10 shrink-0">
-        <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+      <div className="flex flex-col gap-4 w-full border-b border-slate-200/50 relative z-10 shrink-0">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-4 px-4 md:px-6 lg:px-8 py-3 lg:py-4">
 
-          <div className="flex-1 w-full flex items-center gap-2 lg:bg-transparent bg-[var(--sidebar-bg)] -mx-4 -mt-4 px-4 py-3 lg:mx-0 lg:mt-0 lg:px-0 lg:py-0">
+          <div className="flex-1 w-full flex items-center gap-2 lg:bg-transparent bg-[var(--sidebar-bg)] -mx-4 -my-3 px-4 py-3 lg:mx-0 lg:my-0 lg:px-0 lg:py-0">
              {onOpenSidebar && (
                <button
                  className="lg:hidden p-2.5 text-white/70 hover:bg-white/10 rounded-lg shrink-0 transition-colors -ml-2"

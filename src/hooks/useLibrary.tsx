@@ -21,7 +21,7 @@ import { BookItem, PlaylistData, StageData, CategoryData, CardSettings } from '.
 import { deleteUploadedFile } from '../lib/uploadFile';
 
 // Temas disponibles (ver index.css → [data-theme="..."] para los tokens CSS).
-export type ThemeMode = 'blue' | 'dark' | 'hc' | 'emerald' | 'sunset' | 'purple';
+export type ThemeMode = 'blue' | 'dark' | 'hc' | 'emerald' | 'sunset' | 'purple' | 'aurora' | 'custom';
 export type FontFamily = 'Inter' | 'Lora' | 'Playfair Display' | 'Poppins' | 'Roboto';
 
 interface LibraryContextType {
@@ -137,6 +137,17 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  // Tema "custom": empuja los 3 colores elegidos por el usuario como variables
+  // CSS (--custom-dark/mid/light), que index.css lee en [data-theme="custom"].
+  useEffect(() => {
+    const palette = cardSettings.customPalette;
+    if (theme === 'custom' && palette) {
+      document.documentElement.style.setProperty('--custom-dark', palette.dark);
+      document.documentElement.style.setProperty('--custom-mid', palette.mid);
+      document.documentElement.style.setProperty('--custom-light', palette.light);
+    }
+  }, [theme, cardSettings.customPalette]);
 
   useEffect(() => {
     let fontValue = '"Inter", sans-serif';

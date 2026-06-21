@@ -192,7 +192,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-[#00558F]/10 blur-[120px] pointer-events-none z-0" />
         <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-[#A0CFEB]/30 blur-[120px] pointer-events-none z-0" />
 
-        <div className="flex-1 flex flex-col p-4 md:p-6 lg:p-8 overflow-hidden z-20">
+        <div className="flex-1 flex flex-col overflow-hidden z-20">
           <Toolbar
             onOpenSidebar={() => setSidebarOpen(true)}
             activeTab={activeTab}
@@ -208,6 +208,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
             onOpenAddManual={() => setShowManualAdd(true)}
             user={user}
           />
+          <div className="flex-1 flex flex-col px-4 md:px-6 lg:px-8 pb-4 md:pb-6 lg:pb-8 overflow-hidden">
           {/* Banner de cuota de contenidos */}
           {demoQuota && (
             <div className={cn(
@@ -308,6 +309,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
                </div>
             </div>
           )}
+          </div>
         </div>
       </main>
       

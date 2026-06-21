@@ -381,12 +381,22 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
 
             {/* ---------- Col 1: Portada + archivo + posesión ---------- */}
             <div className="md:col-span-4 [@media(max-height:500px)_and_(orientation:landscape)]:col-span-4 flex flex-col gap-4">
-               {/* Portada con overlay hover */}
-               <div className="relative group aspect-[3/4] bg-[var(--bg-card)] rounded-2xl border-2 border-dashed border-slate-200 overflow-hidden shadow-sm transition-all hover:border-[var(--primary)]/50">
+               {/* Portada: se respeta la proporción original de la imagen subida
+                   (sin forzar 3:4). Solo se fija la altura; el ancho se ajusta
+                   solo. Recorte mínimo (2% por lado) únicamente para limpiar
+                   bordes con imperfecciones, no para encuadrar la portada. */}
+               <div className="relative group h-72 flex items-center justify-center bg-[var(--bg-card)] rounded-2xl overflow-hidden shadow-sm transition-all">
                   {coverUrl ? (
-                     <img src={coverUrl} alt={title || 'Cover'} className="w-full h-full object-cover" />
+                     <div className="h-full w-full overflow-hidden rounded-2xl flex items-center justify-center">
+                        <img
+                           src={coverUrl}
+                           alt={title || 'Cover'}
+                           className="h-full w-auto max-w-none object-contain rounded-xl"
+                           style={{ clipPath: 'inset(0 2% 0 2%)' }}
+                        />
+                     </div>
                   ) : (
-                     <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">
+                     <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl">
                         <ImageIcon className="w-12 h-12 mb-2 opacity-50" />
                         <span className="text-xs font-medium">Sin portada</span>
                      </div>
@@ -484,33 +494,40 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   </button>
                </div>
 
-               {/* Slots independientes: PDF y EPUB pueden coexistir en el mismo libro */}
+               {/* Slots independientes: PDF y EPUB pueden coexistir en el mismo libro.
+                   Un solo botón por formato: blanco/vacío si no hay archivo,
+                   verde con check si hay uno cargado, con íconos de
+                   descargar y eliminar integrados en el mismo botón. */}
                <div className="grid grid-cols-2 gap-2">
                   {/* Slot PDF */}
                   <div className="flex flex-col gap-1.5">
                      {pdfSource ? (
-                        <>
-                        <div className="p-2.5 bg-[var(--bg-card)] rounded-xl border border-[var(--primary)]/30 flex items-center gap-2">
-                           <span className="text-[var(--primary)] font-bold text-[10px] uppercase shrink-0">PDF</span>
-                           <span className="text-[10px] text-[var(--text-muted)] font-mono truncate flex-1 min-w-0">{pdfSource.split('/').pop()}</span>
-                           <button type="button" onClick={() => handleSlotRemove('pdf')} className="text-slate-400 hover:text-red-500 shrink-0" title="Quitar PDF">
-                              <X className="w-3.5 h-3.5" />
-                           </button>
+                        <div className="px-3 py-2.5 flex items-center justify-between gap-1.5 rounded-xl text-xs font-bold border bg-emerald-50 text-emerald-700 border-emerald-300">
+                           <span className="flex items-center gap-1.5 truncate">
+                              <CheckCircle2 className="w-4 h-4 shrink-0" /> PDF
+                           </span>
+                           <span className="flex items-center gap-1 shrink-0">
+                              {pdfSource.startsWith('/api/files/') && (
+                                 <a href={pdfSource} download={`${title || 'libro'}.pdf`} target="_blank" rel="noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    title="Descargar PDF"
+                                    className="p-1 rounded-md text-emerald-600 hover:bg-emerald-100 transition-colors">
+                                    <Download className="w-3.5 h-3.5" />
+                                 </a>
+                              )}
+                              <button type="button" onClick={() => handleSlotRemove('pdf')} title="Eliminar PDF"
+                                 className="p-1 rounded-md text-emerald-600 hover:bg-red-100 hover:text-red-600 transition-colors">
+                                 <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                           </span>
                         </div>
-                        {pdfSource.startsWith('/api/files/') && (
-                           <a href={pdfSource} download={`${title || 'libro'}.pdf`} target="_blank" rel="noreferrer"
-                              className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/30 hover:bg-[var(--primary)]/20 transition-colors">
-                              <Download className="w-4 h-4" /> Descargar PDF
-                           </a>
-                        )}
-                        </>
                      ) : (
                         <button
                            disabled={isAnalyzing}
                            type="button"
                            onClick={() => pdfInputRef.current?.click()}
                            className={cn('px-3 py-2.5 flex items-center justify-center gap-1.5 rounded-xl text-xs font-bold border transition-colors',
-                              isAnalyzing ? 'bg-slate-100 text-slate-400 border-slate-200 opacity-70' : 'bg-[var(--bg-card)] text-slate-500 border-slate-200 hover:border-slate-300')}
+                              isAnalyzing ? 'bg-slate-100 text-slate-400 border-slate-200 opacity-70' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300')}
                         >
                            <UploadCloud className={cn('w-4 h-4', isAnalyzing && 'animate-pulse')} /> PDF
                         </button>
@@ -520,26 +537,30 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   {/* Slot EPUB */}
                   <div className="flex flex-col gap-1.5">
                      {epubSource ? (
-                        <>
-                        <div className="p-2.5 bg-[var(--bg-card)] rounded-xl border border-[var(--primary)]/30 flex items-center gap-2">
-                           <span className="text-[var(--primary)] font-bold text-[10px] uppercase shrink-0">EPUB</span>
-                           <span className="text-[10px] text-[var(--text-muted)] font-mono truncate flex-1 min-w-0">{epubSource.split('/').pop()}</span>
-                           <button type="button" onClick={() => handleSlotRemove('epub')} className="text-slate-400 hover:text-red-500 shrink-0" title="Quitar EPUB">
-                              <X className="w-3.5 h-3.5" />
-                           </button>
+                        <div className="px-3 py-2.5 flex items-center justify-between gap-1.5 rounded-xl text-xs font-bold border bg-emerald-50 text-emerald-700 border-emerald-300">
+                           <span className="flex items-center gap-1.5 truncate">
+                              <CheckCircle2 className="w-4 h-4 shrink-0" /> EPUB
+                           </span>
+                           <span className="flex items-center gap-1 shrink-0">
+                              {epubSource.startsWith('/api/files/') && (
+                                 <a href={epubSource} download={`${title || 'libro'}.epub`} target="_blank" rel="noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    title="Descargar EPUB"
+                                    className="p-1 rounded-md text-emerald-600 hover:bg-emerald-100 transition-colors">
+                                    <Download className="w-3.5 h-3.5" />
+                                 </a>
+                              )}
+                              <button type="button" onClick={() => handleSlotRemove('epub')} title="Eliminar EPUB"
+                                 className="p-1 rounded-md text-emerald-600 hover:bg-red-100 hover:text-red-600 transition-colors">
+                                 <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                           </span>
                         </div>
-                        {epubSource.startsWith('/api/files/') && (
-                           <a href={epubSource} download={`${title || 'libro'}.epub`} target="_blank" rel="noreferrer"
-                              className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/30 hover:bg-[var(--primary)]/20 transition-colors">
-                              <Download className="w-4 h-4" /> Descargar EPUB
-                           </a>
-                        )}
-                        </>
                      ) : (
                         <button
                            type="button"
                            onClick={() => epubInputRef.current?.click()}
-                           className="px-3 py-2.5 flex items-center justify-center gap-1.5 rounded-xl text-xs font-bold border transition-colors bg-[var(--bg-card)] text-slate-500 border-slate-200 hover:border-slate-300"
+                           className="px-3 py-2.5 flex items-center justify-center gap-1.5 rounded-xl text-xs font-bold border transition-colors bg-white text-slate-500 border-slate-200 hover:border-slate-300"
                         >
                            <UploadCloud className="w-4 h-4" /> EPUB
                         </button>

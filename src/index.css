@@ -92,6 +92,35 @@ html, body, #root {
     --sidebar-bg: #2e1065;
   }
 
+  [data-theme="aurora"] {
+    --primary: #1f93ff;
+    --primary-hover: #1e2986;
+    --secondary: #a789fd;
+    --bg-app: #f4f6ff;
+    --bg-card: rgba(255, 255, 255, 0.55);
+    --bg-card-hover: rgba(255, 255, 255, 0.85);
+    --border-card: rgba(167, 137, 253, 0.35);
+    --text-main: #1e2986;
+    --text-muted: #4b4fa8;
+    --sidebar-bg: #1e2986;
+  }
+
+  /* Tema "custom": los 3 colores (--custom-dark/mid/light) los fija JS
+     en document.documentElement según la paleta que el usuario eligió en
+     Ajustes → Apariencia (ver useLibrary.tsx applyCustomPalette). */
+  [data-theme="custom"] {
+    --primary: var(--custom-mid, #1f93ff);
+    --primary-hover: var(--custom-dark, #1e2986);
+    --secondary: var(--custom-light, #a789fd);
+    --bg-app: #f4f6fb;
+    --bg-card: rgba(255, 255, 255, 0.55);
+    --bg-card-hover: rgba(255, 255, 255, 0.85);
+    --border-card: color-mix(in srgb, var(--custom-light, #a789fd) 35%, transparent);
+    --text-main: var(--custom-dark, #1e2986);
+    --text-muted: color-mix(in srgb, var(--custom-dark, #1e2986) 65%, #64748b);
+    --sidebar-bg: var(--custom-dark, #1e2986);
+  }
+
   body {
     background-color: var(--bg-app);
     color: var(--text-main);

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BookOpen, Lock, User, Eye, EyeOff } from 'lucide-react';
+import { Lock, User, Eye, EyeOff } from 'lucide-react';
 
 export function LoginScreen({ error: urlError }: { error?: string }) {
   const [username, setUsername] = useState('');
@@ -57,9 +57,7 @@ export function LoginScreen({ error: urlError }: { error?: string }) {
       >
         {/* Logo */}
         <div className="flex flex-col items-center gap-3">
-          <div className="w-16 h-16 rounded-2xl bg-[var(--primary)]/10 flex items-center justify-center border border-[var(--primary)]/20">
-            <BookOpen className="w-8 h-8 text-[var(--primary)]" />
-          </div>
+          <img src="/logo.png" alt="Biblioteca" className="w-16 h-16 rounded-2xl shadow-md object-cover" />
           <h1 className="text-2xl font-bold tracking-tight">Biblioteca</h1>
           <p className="text-sm text-[var(--text-muted)] text-center font-medium">
             Tu biblioteca personal de libros y artículos

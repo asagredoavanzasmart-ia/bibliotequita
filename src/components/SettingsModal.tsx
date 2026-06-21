@@ -31,6 +31,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
     { id: 'emerald', name: 'Verde Bosque', desc: 'Tonos esmeralda que transmiten calma y concentración.', colors: ['bg-[#059669]', 'bg-[#6EE7B7]', 'bg-[#ecfdf5]'] },
     { id: 'sunset', name: 'Atardecer Cálido', desc: 'Naranjas vibrantes para mayor energía.', colors: ['bg-[#EA580C]', 'bg-[#FDBA74]', 'bg-[#fff7ed]'] },
     { id: 'purple', name: 'Noche Púrpura', desc: 'Estilo creativo y elegante en tonos violeta.', colors: ['bg-[#6D28D9]', 'bg-[#C4B5FD]', 'bg-[#f5f3ff]'] },
+    { id: 'aurora', name: 'Aurora', desc: 'Degradado azul-violeta de la nueva identidad visual.', colors: ['bg-[#1e2986]', 'bg-[#1f93ff]', 'bg-[#a789fd]'] },
   ];
 
   const fonts: { id: typeof fontFamily; name: string }[] = [
@@ -52,6 +53,15 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const [editPlaylistId, setEditPlaylistId] = useState<string | null>(null);
   const [editPlaylistName, setEditPlaylistName] = useState('');
   const [editPlaylistColor, setEditPlaylistColor] = useState('');
+
+  // Paleta personalizada (tema "custom")
+  const customDark = cardSettings.customPalette?.dark || '#1e2986';
+  const customMid = cardSettings.customPalette?.mid || '#1f93ff';
+  const customLight = cardSettings.customPalette?.light || '#a789fd';
+  const applyCustomPalette = (next: { dark: string; mid: string; light: string }) => {
+    setCardSettings({ ...cardSettings, customPalette: next });
+    setTheme('custom');
+  };
 
   const modalContent = (
     <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
@@ -129,9 +139,42 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                                </div>
                             </button>
                          ))}
+
+                         {/* Paleta personalizada: el usuario elige 3 colores (oscuro/medio/claro)
+                             y se aplican en vivo como tema "custom" (ver index.css). */}
+                         <div className={cn("p-4 rounded-xl border transition-all", theme === 'custom' ? "border-[var(--primary)] bg-[var(--primary)]/5 ring-1 ring-[var(--primary)] shadow-sm" : "border-slate-200/50 bg-[var(--bg-card)]")}>
+                            <button
+                              onClick={() => setTheme('custom')}
+                              className="w-full flex items-start gap-4 text-left mb-3"
+                            >
+                               <div className="flex gap-1 flex-shrink-0 mt-1">
+                                  <div className="w-4 h-4 rounded-full shadow-sm border border-black/10" style={{ backgroundColor: customDark }} />
+                                  <div className="w-4 h-4 rounded-full shadow-sm border border-black/10" style={{ backgroundColor: customMid }} />
+                                  <div className="w-4 h-4 rounded-full shadow-sm border border-black/10" style={{ backgroundColor: customLight }} />
+                               </div>
+                               <div>
+                                  <div className="font-bold text-sm mb-1">Paleta personalizada</div>
+                                  <div className="text-xs text-[var(--text-muted)] leading-relaxed">Elige 3 colores (oscuro, medio y claro) para crear tu propio tema.</div>
+                               </div>
+                            </button>
+                            <div className="flex items-center gap-3 pl-1">
+                               <label className="flex flex-col items-center gap-1 cursor-pointer">
+                                  <input type="color" value={customDark} onChange={e => applyCustomPalette({ dark: e.target.value, mid: customMid, light: customLight })} className="w-9 h-9 rounded-lg border border-slate-200/50 cursor-pointer bg-transparent" />
+                                  <span className="text-[10px] text-[var(--text-muted)]">Oscuro</span>
+                               </label>
+                               <label className="flex flex-col items-center gap-1 cursor-pointer">
+                                  <input type="color" value={customMid} onChange={e => applyCustomPalette({ dark: customDark, mid: e.target.value, light: customLight })} className="w-9 h-9 rounded-lg border border-slate-200/50 cursor-pointer bg-transparent" />
+                                  <span className="text-[10px] text-[var(--text-muted)]">Medio</span>
+                               </label>
+                               <label className="flex flex-col items-center gap-1 cursor-pointer">
+                                  <input type="color" value={customLight} onChange={e => applyCustomPalette({ dark: customDark, mid: customMid, light: e.target.value })} className="w-9 h-9 rounded-lg border border-slate-200/50 cursor-pointer bg-transparent" />
+                                  <span className="text-[10px] text-[var(--text-muted)]">Claro</span>
+                               </label>
+                            </div>
+                         </div>
                        </div>
                    </div>
-                   
+
                    <div>
                        <h3 className="text-lg font-bold mb-4">Tipografía (Google Fonts)</h3>
                        <div className="grid gap-3">

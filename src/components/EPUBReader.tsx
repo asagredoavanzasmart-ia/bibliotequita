@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ReactReader } from 'react-reader';
-import type { Rendition } from 'epubjs';
+import type { Rendition, Location as EpubLocation } from 'epubjs';
 import type { NavItem } from 'epubjs';
 import { get } from 'idb-keyval';
-import { List, ZoomIn, ZoomOut, ChevronLeft, ChevronDown } from 'lucide-react';
+import { List, ZoomIn, ZoomOut, ChevronLeft, ChevronDown, BookOpen, AlignJustify } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface EPUBReaderProps {
@@ -25,18 +25,30 @@ interface EPUBReaderProps {
 const FONT_SIZES = [80, 90, 100, 110, 125, 150, 175, 200];
 const DEFAULT_FONT_SIZE_INDEX = 2; // 100%
 const MOBILE_DEFAULT_FONT_SIZE_INDEX = 4; // 125%
+const VIEW_MODE_STORAGE_KEY = 'epub_view_mode';
+
+type EpubViewMode = 'paginated' | 'scroll';
+
+// react-reader monta por defecto dos flechas "‹"/"›" (ver
+// node_modules/react-reader/dist/react-reader.es.js, ReactReaderStyle.arrow)
+// en gris casi invisible y sin feedback de clic; su acción real (next/prev)
+// tampoco corresponde a "página" en flow scrolled-doc. Se ocultan por
+// completo: la navegación de modo Páginas vive en el overlay de gestos propio
+// (ver renderPageGestureOverlay) y en modo Scroll no hay equivalente útil.
+const HIDDEN_ARROW_STYLE = { display: 'none' } as const;
+const READER_STYLES_NO_ARROWS = {
+  arrow: HIDDEN_ARROW_STYLE,
+  arrowHover: HIDDEN_ARROW_STYLE,
+};
 
 // El layout "paginado" de epubjs reparte el texto en columnas cuyo ancho se
 // fija en píxeles según el contenedor en el momento del render; al
 // redimensionar el panel (abrir/cerrar Anotaciones) ese ancho queda obsoleto
 // y el contenido se desborda o se corta, sin importar cuántas veces se llame
-// a spread()/resize() después.
-//
-// flow "scrolled-doc" es el formato estándar de una sola columna continua: el
-// contenido siempre ocupa el 100% del ancho disponible (como una página web
-// normal) y se redimensiona junto con el contenedor sin recalcular columnas.
-// Como el EPUB no maneja "páginas" (las citas tampoco las usan), esto es
-// válido en todos los tamaños de pantalla y con o sin el panel de notas abierto.
+// a spread()/resize() después. Por eso el modo Páginas debe re-disparar
+// resize() del rendition cada vez que el contenedor cambia de tamaño (ver
+// ResizeObserver más abajo) — en modo Scroll esto no hace falta porque el
+// contenido siempre ocupa el 100% del ancho disponible sin columnas fijas.
 
 export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnBar = false, mergedBarPortalTarget = null }: EPUBReaderProps) {
   const [location, setLocation] = useState<string | number>(0);
@@ -46,7 +58,24 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
   const [showToc, setShowToc] = useState(false);
   const [fontSizeIndex, setFontSizeIndex] = useState(DEFAULT_FONT_SIZE_INDEX);
   const [manuallyHidden, setManuallyHidden] = useState(false);
+  const [viewMode, setViewMode] = useState<EpubViewMode>(() => {
+    const saved = typeof window !== 'undefined' ? window.localStorage.getItem(VIEW_MODE_STORAGE_KEY) : null;
+    return saved === 'scroll' ? 'scroll' : 'paginated';
+  });
+  // Progreso mostrado en la franja: página N/M en modo Páginas, % en modo Scroll.
+  const [pageProgress, setPageProgress] = useState<{ page: number; total: number } | null>(null);
+  const [percentProgress, setPercentProgress] = useState<number | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const locationsReadyRef = useRef(false);
+
+  const setViewModePersisted = useCallback((mode: EpubViewMode) => {
+    setViewMode(mode);
+    setPageProgress(null);
+    setPercentProgress(null);
+    locationsReadyRef.current = false;
+    try { window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode); } catch { /* localStorage puede no estar disponible (modo privado) */ }
+  }, []);
 
   // Drag handle de la franja integrada: mismo patrón de threshold (60px) que
   // el swipe-close del sidebar en Dashboard.tsx, adaptado a eje Y.
@@ -65,6 +94,99 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     else if (delta < -60) setManuallyHidden(false);
   };
 
+  // --- Gestos del modo Páginas (swipe + tap-zone + slide/peek) ---
+  // epub.js no anima la transición de next()/prev(); el efecto de "asomar" la
+  // página siguiente se construye aparte: durante el arrastre se traslada
+  // visualmente todo el panel con CSS transform (sin tocar el rendition real),
+  // y solo al soltar el dedo se dispara next()/prev() una vez confirmado el
+  // gesto. Esto evita pedirle a epubjs relayouts a mitad de gesto.
+  //
+  // Los listeners se adjuntan DENTRO del iframe de epubjs (ver
+  // rendition.hooks.content.register más abajo) porque el contenido vive en
+  // otro documento y no burbujea touch events hacia el DOM de React. Por eso
+  // se usa un ref con los handlers "vivos": el listener del iframe se
+  // registra una sola vez por sección cargada, pero debe ejecutar siempre la
+  // versión más reciente de la lógica (que sí depende de state).
+  const [dragOffset, setDragOffset] = useState(0);
+  const [dragAnimating, setDragAnimating] = useState(false);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const dragWidthRef = useRef(0);
+
+  const handlePageGestureStart = useCallback((e: TouchEvent) => {
+    if (viewMode !== 'paginated') return;
+    // No interceptar el gesto si el usuario está seleccionando texto: epubjs
+    // emite 'selected'/'click' en el iframe interno y la toolbar de citas
+    // depende de que esos eventos lleguen sin que este gesto los tape.
+    const target = e.target as Node;
+    const sel = (target?.getRootNode?.() as Document)?.getSelection?.() ?? (e.view as Window | null)?.getSelection?.();
+    if (sel && !sel.isCollapsed) return;
+    dragStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    dragWidthRef.current = containerRef.current?.clientWidth || window.innerWidth;
+  }, [viewMode]);
+
+  const handlePageGestureMove = useCallback((e: TouchEvent) => {
+    if (!dragStartRef.current) return;
+    const dx = e.touches[0].clientX - dragStartRef.current.x;
+    const dy = e.touches[0].clientY - dragStartRef.current.y;
+    // Gesto predominantemente vertical: es scroll/lectura normal, no swipe de página.
+    if (Math.abs(dy) > Math.abs(dx) * 1.5 && Math.abs(dx) < 15) return;
+    setDragOffset(dx);
+  }, []);
+
+  const handlePageGestureEnd = useCallback((e: TouchEvent) => {
+    if (!dragStartRef.current) return;
+    const start = dragStartRef.current;
+    dragStartRef.current = null;
+    const dx = e.changedTouches[0].clientX - start.x;
+    const dy = e.changedTouches[0].clientY - start.y;
+    const width = dragWidthRef.current || window.innerWidth;
+
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
+      // Tap, no swipe: tercio izq/der pasa de página, tercio central alterna
+      // la visibilidad de la franja (mismo rol que el tap-to-toggle de PDF).
+      setDragOffset(0);
+      const tapX = e.changedTouches[0].clientX;
+      const third = width / 3;
+      if (tapX < third) {
+        renditionRef.current?.prev();
+      } else if (tapX > third * 2) {
+        renditionRef.current?.next();
+      } else {
+        setManuallyHidden(v => !v);
+      }
+      return;
+    }
+
+    const threshold = width * 0.3;
+    setDragAnimating(true);
+    if (dx <= -threshold) {
+      setDragOffset(-width);
+      window.setTimeout(() => { renditionRef.current?.next(); setDragOffset(0); setDragAnimating(false); }, 220);
+    } else if (dx >= threshold) {
+      setDragOffset(width);
+      window.setTimeout(() => { renditionRef.current?.prev(); setDragOffset(0); setDragAnimating(false); }, 220);
+    } else {
+      setDragOffset(0);
+      window.setTimeout(() => setDragAnimating(false), 220);
+    }
+  }, []);
+
+  // Ref estable que el listener del iframe consulta en cada evento, para
+  // siempre invocar la versión más reciente de los handlers sin tener que
+  // re-registrar el listener cada vez que cambia el estado de React.
+  const pageGestureHandlersRef = useRef({
+    onStart: (e: Event) => handlePageGestureStart(e as TouchEvent),
+    onMove: (e: Event) => handlePageGestureMove(e as TouchEvent),
+    onEnd: (e: Event) => handlePageGestureEnd(e as TouchEvent),
+  });
+  useEffect(() => {
+    pageGestureHandlersRef.current = {
+      onStart: (e: Event) => handlePageGestureStart(e as TouchEvent),
+      onMove: (e: Event) => handlePageGestureMove(e as TouchEvent),
+      onEnd: (e: Event) => handlePageGestureEnd(e as TouchEvent),
+    };
+  }, [handlePageGestureStart, handlePageGestureMove, handlePageGestureEnd]);
+
   const handleGetRendition = useCallback((rendition: Rendition) => {
     renditionRef.current = rendition;
     // En móvil el texto al 100% resulta pequeño; arrancamos con una fuente
@@ -74,6 +196,41 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     setFontSizeIndex(initialIndex);
     rendition.themes.fontSize(`${FONT_SIZES[initialIndex]}%`);
     rendition.book.loaded.navigation.then((nav) => setToc(nav.toc));
+
+    // book.locations.generate() necesita recorrer todo el libro una vez; se
+    // dispara en segundo plano sin bloquear la lectura. Habilita el % de
+    // progreso en modo Scroll (página/total real ya viene gratis del propio
+    // evento "relocated" en modo Páginas, sin necesitar locations).
+    rendition.book.ready.then(() => rendition.book.locations.generate(1024)).then(() => {
+      locationsReadyRef.current = true;
+      const current = rendition.location?.start?.cfi;
+      if (current) {
+        setPercentProgress(Math.round(rendition.book.locations.percentageFromCfi(current) * 100));
+      }
+    }).catch(() => { /* EPUB sin spine recorrible; deja el indicador vacío */ });
+
+    rendition.on('relocated', (loc: EpubLocation) => {
+      if (loc?.start?.displayed) {
+        setPageProgress({ page: loc.start.displayed.page, total: loc.start.displayed.total });
+      }
+      if (locationsReadyRef.current && loc?.start?.cfi) {
+        setPercentProgress(Math.round(rendition.book.locations.percentageFromCfi(loc.start.cfi) * 100));
+      }
+    });
+
+    // El contenido de cada sección se renderiza en un <iframe> propio (otro
+    // documento, no burbujea hacia el DOM padre de React) por lo que el
+    // swipe/tap del modo Páginas se adjunta directamente dentro de cada
+    // iframe que epubjs vaya montando — mismo patrón que usa la propia
+    // librería react-reader para su listener de "wheel" (pageTurnOnScroll).
+    rendition.hooks.content.register((contents: any) => {
+      const doc = contents?.window?.document;
+      if (!doc) return;
+      doc.addEventListener('touchstart', pageGestureHandlersRef.current.onStart, { passive: true });
+      doc.addEventListener('touchmove', pageGestureHandlersRef.current.onMove, { passive: true });
+      doc.addEventListener('touchend', pageGestureHandlersRef.current.onEnd, { passive: true });
+    });
+
     getRendition?.(rendition);
   }, [getRendition]);
 
@@ -87,6 +244,22 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     renditionRef.current?.display(href);
     setShowToc(false);
   }, []);
+
+  // El layout paginado fija el ancho de columna en píxeles al montar; si el
+  // contenedor cambia de tamaño después (fullscreen, colapso de la franja
+  // integrada, rotación) hay que avisar a epubjs explícitamente o el texto
+  // queda recortado u ocupa solo una porción del espacio disponible.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      const rendition = renditionRef.current;
+      if (!rendition) return;
+      rendition.resize(el.clientWidth, el.clientHeight);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [viewMode]);
 
   useEffect(() => {
     let objectUrl: string | null = null;
@@ -148,6 +321,33 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
 
       <div className="w-px h-4 bg-[var(--border-card)]" />
 
+      <button
+        onClick={() => setViewModePersisted(viewMode === 'paginated' ? 'scroll' : 'paginated')}
+        className="p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+        title={viewMode === 'paginated' ? "Cambiar a vista de scroll continuo" : "Cambiar a vista de páginas"}
+      >
+        {viewMode === 'paginated' ? <BookOpen className="w-5 h-5" /> : <AlignJustify className="w-5 h-5" />}
+      </button>
+
+      <div className="w-px h-4 bg-[var(--border-card)]" />
+
+      {viewMode === 'paginated' && pageProgress && (
+        <>
+          <span className="text-xs font-mono font-semibold tabular-nums text-[var(--text-muted)] px-1" title="Página actual">
+            {pageProgress.page} / {pageProgress.total}
+          </span>
+          <div className="w-px h-4 bg-[var(--border-card)]" />
+        </>
+      )}
+      {viewMode === 'scroll' && percentProgress !== null && (
+        <>
+          <span className="text-xs font-mono font-semibold tabular-nums text-[var(--text-muted)] px-1" title="Progreso de lectura">
+            {percentProgress}%
+          </span>
+          <div className="w-px h-4 bg-[var(--border-card)]" />
+        </>
+      )}
+
       <div className="flex items-center gap-1">
         <button
           disabled={fontSizeIndex <= 0}
@@ -200,20 +400,31 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
             )
          ) : (
            <>
-            <div className="flex-1 min-h-0 relative">
-              <ReactReader
-                url={actualUrl}
-                location={location}
-                locationChanged={(epubcfi: string) => setLocation(epubcfi)}
-                getRendition={handleGetRendition}
-                epubInitOptions={{
-                   openAs: 'epub'
+            <div ref={containerRef} className="flex-1 min-h-0 relative overflow-hidden">
+              <div
+                className="absolute inset-0"
+                style={{
+                  transform: dragOffset !== 0 ? `translateX(${dragOffset}px)` : undefined,
+                  transition: dragAnimating ? 'transform 220ms ease-out' : undefined,
                 }}
-                epubOptions={{
-                  flow: 'scrolled-doc',
-                  manager: 'continuous',
-                }}
-              />
+              >
+                <ReactReader
+                  key={viewMode}
+                  url={actualUrl}
+                  location={location}
+                  locationChanged={(epubcfi: string) => setLocation(epubcfi)}
+                  getRendition={handleGetRendition}
+                  readerStyles={READER_STYLES_NO_ARROWS as any}
+                  epubInitOptions={{
+                     openAs: 'epub'
+                  }}
+                  epubOptions={
+                    viewMode === 'paginated'
+                      ? { flow: 'paginated', manager: 'default', spread: 'none' }
+                      : { flow: 'scrolled-doc', manager: 'continuous' }
+                  }
+                />
+              </div>
 
               {/* Panel de Índice (TOC): overlay a pantalla completa por encima de
                   cualquier otro contenido (incluido el reproductor TTS y el

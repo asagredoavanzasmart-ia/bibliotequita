@@ -24,6 +24,8 @@ export interface CardSettings {
   // Orden de esas secciones en el sidebar (lista de ids); si falta alguna,
   // se añade al final con el orden por defecto.
   navOrder?: NavSectionId[];
+  // Paleta personalizada (tema "custom"), elegida por el usuario con 3 colores.
+  customPalette?: { dark: string; mid: string; light: string };
 }
 
 export type NavSectionId = 'favoritos' | 'leidos' | 'porleer' | 'destacados' | 'fisico' | 'digital';
