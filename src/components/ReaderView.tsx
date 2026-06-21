@@ -36,8 +36,6 @@ import { BookmarksMenu } from './BookmarksMenu';
 import { AuditorPanel } from './AuditorPanel';
 import { ResourcesPanel } from './ResourcesPanel';
 import { useReadingTimeTracker } from '../hooks/useReadingTime';
-import { StarRating } from './StarRating';
-import { DraggableProgress } from './BookGrid';
 
 interface ReaderViewProps {
   bookId: string;
@@ -1639,134 +1637,22 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // hardcodeados, y reutiliza la etiqueta "Físico" (texto + icono) que ya usa
   // BookGrid, en vez de una píldora ad-hoc fuera de la línea gráfica.
   // Solo se desactiva lo que no aplica sin texto digital: TTS y resaltado.
+  // Libro solo físico: no hay archivo que mostrar en el área de lectura, así
+  // que esta queda neutra (mismo fondo que el lector digital) con un único
+  // CTA para subir la versión digital. Título, portada, progreso, rating y
+  // metadatos viven en la pestaña Info (EditBookModal), igual que en
+  // digital — no se crea una "ventana"/tarjeta de detalle aparte.
   const renderPhysicalBookDashboard = () => {
-    const progState = {
-      text: item.read ? "Leído" : (item.progress || 0) === 0 ? "Sin leer" : (item.progress || 0) <= 25 ? "Consultado" : (item.progress || 0) <= 50 ? "En proceso" : (item.progress || 0) < 100 ? "Revisado" : "Leído",
-      color: item.read ? "bg-emerald-500" : (item.progress || 0) === 0 ? "bg-slate-400" : (item.progress || 0) <= 25 ? "bg-slate-500" : (item.progress || 0) <= 50 ? "bg-amber-500" : (item.progress || 0) < 100 ? "bg-blue-500" : "bg-emerald-500"
-    };
-    const pValue = item.read ? 100 : Math.min(100, Math.max(0, item.progress || 0));
-
     return (
-      <div className="w-full h-full overflow-y-auto bg-[var(--bg-app)] animate-in fade-in duration-300">
-        <div className="max-w-3xl mx-auto p-4 sm:p-8 flex flex-col md:flex-row gap-6 md:gap-8 items-stretch min-h-full">
-
-          {/* Columna Izquierda: Portada */}
-          <div className="w-full md:w-52 shrink-0 flex flex-col items-center gap-3">
-            <div className="relative aspect-[2/3] w-40 md:w-full rounded-2xl overflow-hidden bg-gradient-to-br from-[var(--primary)] to-slate-800 shadow-lg border border-[var(--border-card)] flex flex-col items-center justify-center p-3 text-center">
-              {item.thumbnailUrl ? (
-                <img src={item.thumbnailUrl} alt={item.title} className="absolute inset-0 w-full h-full object-cover" />
-              ) : (
-                <div className="flex flex-col items-center justify-center h-full">
-                  <BookOpen className="w-12 h-12 text-white/30 mb-2" />
-                  <span className="text-white/60 text-xs font-bold uppercase tracking-wider">Libro Físico</span>
-                </div>
-              )}
-            </div>
-            {/* Misma etiqueta "Físico" (texto + icono) usada en BookGrid, en vez
-                de una píldora sólida fuera de la línea gráfica. */}
-            <span className="flex items-center gap-1 text-[var(--primary)] uppercase font-bold text-xs">
-              <BookIcon className="w-3.5 h-3.5" /> Físico
-            </span>
-
-            {/* Rating */}
-            <div className="flex flex-col items-center gap-1 mt-1">
-              <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">Tu Calificación</span>
-              <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="lg" />
-            </div>
-          </div>
-
-          {/* Columna Derecha: Detalles + Acciones */}
-          <div className="flex-1 flex flex-col justify-between gap-6">
-            <div className="space-y-4">
-              <div>
-                <span className="text-[10px] text-[var(--primary)] font-black uppercase tracking-wider">Título</span>
-                <h1 className="text-xl sm:text-2xl font-black text-[var(--text-main)] leading-tight">{item.title}</h1>
-              </div>
-
-              {item.author && (
-                <div>
-                  <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">Autor</span>
-                  <p className="text-sm font-semibold text-[var(--text-main)]">{item.author}</p>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-4">
-                {item.year && (
-                  <div>
-                    <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">Año</span>
-                    <p className="text-sm font-semibold text-[var(--text-main)]">{item.year}</p>
-                  </div>
-                )}
-                {item.publisher && (
-                  <div>
-                    <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">Editorial</span>
-                    <p className="text-sm font-semibold text-[var(--text-main)]">{item.publisher}</p>
-                  </div>
-                )}
-                {item.isbn && (
-                  <div>
-                    <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">ISBN</span>
-                    <p className="text-sm font-mono font-semibold text-[var(--text-main)]">{item.isbn}</p>
-                  </div>
-                )}
-                {item.subject && (
-                  <div>
-                    <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">Tema / Materia</span>
-                    <p className="text-sm font-semibold text-[var(--text-main)]">{item.subject}</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Progreso: misma barra arrastrable que el resto de la app — se
-                  actualiza arrastrando o tocando directamente sobre la barra. */}
-              <div className="space-y-1.5 pt-2">
-                <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider">
-                  <span className="text-[var(--text-muted)]">Progreso de Lectura (arrastra para actualizar)</span>
-                  <span className={cn(progState.color.replace('bg-', 'text-'))}>{pValue}% ({progState.text})</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <DraggableProgress
-                    value={pValue}
-                    color={progState.color}
-                    onChange={(v) => updateItem(item.id, { progress: v, ...(item.read && v < 100 ? { read: false } : {}) })}
-                  />
-                  <button
-                    onClick={() => updateItem(item.id, { read: !item.read })}
-                    className={cn("text-xs font-bold px-3 py-1 rounded-lg border transition-all shrink-0", item.read ? "bg-emerald-50 border-emerald-200 text-emerald-600" : "bg-[var(--bg-card)] border-[var(--border-card)] text-[var(--text-muted)] hover:border-[var(--primary)]")}
-                  >
-                    {item.read ? "Leído" : "Marcar Leído"}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Botones de acción principales — una sola línea cada uno, igual
-                que el resto de botones de la toolbar del lector. */}
-            <div className="grid grid-cols-2 gap-3 pt-4 border-t border-[var(--border-card)] shrink-0">
-              <button
-                onClick={() => setActiveTab('edit')}
-                className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-[var(--border-card)] hover:border-[var(--primary)] text-[var(--text-main)] hover:text-[var(--primary)] font-bold text-sm whitespace-nowrap transition-all shadow-sm active:scale-95 bg-[var(--bg-card)]"
-              >
-                <Info className="w-4 h-4" />
-                Editar Info
-              </button>
-              <button
-                onClick={() => setShowNotes(!showNotes)}
-                className={cn(
-                  "flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-sm whitespace-nowrap transition-all shadow-sm active:scale-95 border",
-                  showNotes
-                    ? "bg-[var(--primary)] text-white border-[var(--primary)]"
-                    : "bg-[var(--bg-card)] border-[var(--border-card)] hover:border-[var(--primary)] text-[var(--text-main)] hover:text-[var(--primary)]"
-                )}
-              >
-                <MessageSquareQuote className="w-4 h-4" />
-                {showNotes ? "Cerrar Notas" : "Apuntes y Notas"}
-              </button>
-            </div>
-
-          </div>
-
-        </div>
+      <div className="w-full h-full flex items-center justify-center bg-[#e2e8f0] animate-in fade-in duration-300">
+        <button
+          onClick={() => setActiveTab('edit')}
+          className="flex flex-col items-center gap-3 px-8 py-6 rounded-2xl border border-dashed border-[var(--border-card)] hover:border-[var(--primary)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:text-[var(--primary)] transition-all shadow-sm active:scale-95"
+        >
+          <BookIcon className="w-10 h-10" />
+          <span className="font-bold text-sm">Subir versión digital</span>
+          <span className="text-xs">Este libro solo está registrado como físico</span>
+        </button>
       </div>
     );
   };
@@ -2324,8 +2210,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                isPhysicalOnly ? (
                  // Libro solo físico: mismo motor que el digital, solo se
                  // desactiva lo que no aplica sin texto digital (TTS, brillo).
-                 // Pantalla completa y Notas se mantienen.
+                 // Marcadores, Pantalla completa y Notas se mantienen.
                  <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+                  <BookmarksMenu
+                     documentId={bookId}
+                     currentPage={currentPage}
+                     isEpub={false}
+                     onNavigate={() => {}}
+                  />
                   <button
                       onClick={toggleFullscreen}
                       className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[#00558F] text-white border-[#00558F]" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}

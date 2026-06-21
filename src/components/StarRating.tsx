@@ -12,6 +12,7 @@
 // =============================================================================
 
 import { useState, useRef } from 'react';
+import { X } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface StarRatingProps {
@@ -28,7 +29,7 @@ const STAR_POINTS = "12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 
 function clampRating(v: number): number {
   if (!Number.isFinite(v)) return 0;
   const rounded = Math.round(v * 10) / 10;
-  return Math.min(5, Math.max(1, rounded));
+  return Math.min(5, Math.max(0, rounded));
 }
 
 // Color del número según tramo: rojo 1,0–2,0 · naranjo 2,1–2,9 · amarillo 3,0–5,0
@@ -154,6 +155,16 @@ export function StarRating({ value, onChange, size = 'sm', readOnly = false }: S
         >
           {value > 0 ? value.toFixed(1).replace('.', ',') : '–'}
         </span>
+      )}
+
+      {!readOnly && value > 0 && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onChange(0); }}
+          title="Quitar calificación"
+          className="text-slate-300 hover:text-rose-500 transition-colors shrink-0"
+        >
+          <X className={size === 'sm' ? 'w-3 h-3' : 'w-3.5 h-3.5'} />
+        </button>
       )}
     </div>
   );

@@ -172,7 +172,7 @@ export function BookmarksMenu({ documentId, currentPage, onNavigate, isEpub = fa
                   </button>
                   <button
                     onClick={() => handleDelete(b.id)}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-500 transition-all"
+                    className="p-1 text-slate-400 hover:text-rose-500 transition-colors shrink-0"
                     title="Eliminar marcador"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
