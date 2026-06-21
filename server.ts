@@ -2020,6 +2020,10 @@ ${text}
     if (fs.existsSync(credentialsPath)) {
       return { keyFile: credentialsPath };
     }
+    console.error(
+      `[ERROR] No se encontraron credenciales de Google Cloud TTS: ni GOOGLE_TTS_CREDENTIALS_BASE64, ` +
+      `ni GOOGLE_TTS_CREDENTIALS_JSON, ni el archivo físico "${credentialsPath}" existen en este entorno.`
+    );
     return null;
   }
 
@@ -2050,6 +2054,10 @@ ${text}
       const client = await auth.getClient();
       const tokenResponse = await (client as any).getAccessToken();
       const accessToken = tokenResponse.token;
+      if (!accessToken) {
+        console.error("[Google Standard TTS] getAccessToken() no devolvió un token válido.", tokenResponse);
+        return res.status(503).json({ error: "No se pudo autenticar con Google Cloud TTS (token vacío)." });
+      }
 
       const languageCode = voiceName.split("-").slice(0, 2).join("-");
 
