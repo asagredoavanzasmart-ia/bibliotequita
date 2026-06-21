@@ -477,13 +477,29 @@ async function startServer() {
     next();
   };
 
+  // Bloquea endpoints de IA (análisis, resúmenes, generación de índice, etc.)
+  // si el admin desactivó user_limits.ai_tools_enabled para este usuario. El
+  // admin nunca queda bloqueado.
+  const requireAiToolsEnabled = async (req: any, res: Response, next: NextFunction) => {
+    if (!supabase || req.user?.role === "admin") return next();
+    const { data: limits } = await supabase
+      .from("user_limits")
+      .select("ai_tools_enabled")
+      .eq("user_id", req.user.id)
+      .maybeSingle();
+    if (limits?.ai_tools_enabled === false) {
+      return res.status(403).json({ error: "Las herramientas de IA están desactivadas para tu cuenta.", code: "AI_TOOLS_DISABLED" });
+    }
+    next();
+  };
+
   // GET /api/admin/users — lista usuarios con sus límites.
   app.get("/api/admin/users", requireAdmin, async (_req, res) => {
     if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
 
     const { data, error } = await supabase
       .from("users")
-      .select("id, username, email, role, is_active, created_at, user_limits(max_uploads, max_tts_chars, max_ai_summaries)")
+      .select("id, username, email, role, is_active, created_at, user_limits(max_uploads, max_tts_chars, max_ai_summaries, max_audit_analyses, ai_tools_enabled)")
       .order("created_at", { ascending: true });
 
     if (error) return res.status(500).json({ error: error.message });
@@ -494,7 +510,7 @@ async function startServer() {
   app.post("/api/admin/users", requireAdmin, async (req, res) => {
     if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
 
-    const { username, password, role, max_uploads, max_tts_chars, max_ai_summaries } = req.body;
+    const { username, password, role, max_uploads, max_tts_chars, max_ai_summaries, max_audit_analyses, ai_tools_enabled } = req.body;
     if (!username || !password) {
       return res.status(400).json({ error: "Usuario y contraseña requeridos." });
     }
@@ -519,6 +535,8 @@ async function startServer() {
         max_uploads: max_uploads ?? 3,
         max_tts_chars: max_tts_chars ?? 0,
         max_ai_summaries: max_ai_summaries ?? 0,
+        max_audit_analyses: max_audit_analyses ?? 0,
+        ai_tools_enabled: ai_tools_enabled ?? true,
       });
 
     if (limitsError) return res.status(400).json({ error: limitsError.message });
@@ -531,7 +549,7 @@ async function startServer() {
     if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
 
     const { id } = req.params;
-    const { role, is_active, max_uploads, max_tts_chars, max_ai_summaries } = req.body;
+    const { role, is_active, max_uploads, max_tts_chars, max_ai_summaries, max_audit_analyses, ai_tools_enabled } = req.body;
 
     if (role !== undefined || is_active !== undefined) {
       const patch: Record<string, unknown> = {};
@@ -545,11 +563,13 @@ async function startServer() {
       if (error) return res.status(400).json({ error: error.message });
     }
 
-    if (max_uploads !== undefined || max_tts_chars !== undefined || max_ai_summaries !== undefined) {
+    if (max_uploads !== undefined || max_tts_chars !== undefined || max_ai_summaries !== undefined || max_audit_analyses !== undefined || ai_tools_enabled !== undefined) {
       const patch: Record<string, unknown> = {};
       if (max_uploads !== undefined) patch.max_uploads = max_uploads;
       if (max_tts_chars !== undefined) patch.max_tts_chars = max_tts_chars;
       if (max_ai_summaries !== undefined) patch.max_ai_summaries = max_ai_summaries;
+      if (max_audit_analyses !== undefined) patch.max_audit_analyses = max_audit_analyses;
+      if (ai_tools_enabled !== undefined) patch.ai_tools_enabled = !!ai_tools_enabled;
 
       const { error } = await supabase.from("user_limits").update(patch).eq("user_id", id);
       if (error) return res.status(400).json({ error: error.message });
@@ -1484,7 +1504,7 @@ async function startServer() {
   // -------------------------------------------------------------------------
   // Gemini endpoints (con rate limit propio)
   // -------------------------------------------------------------------------
-  app.post("/api/analyze-pdf", aiLimiter, async (req, res) => {
+  app.post("/api/analyze-pdf", aiLimiter, requireAiToolsEnabled, async (req, res) => {
     const text = reqString(req.body?.text, 200000);
     if (!text) return res.status(400).json({ error: "Texto requerido (no vacío, máx 200k)" });
 
@@ -1595,7 +1615,7 @@ Si no encuentras un valor, devuelve cadena vacía "".`,
     return "";
   }
 
-  app.post("/api/analyze-field", aiLimiter, async (req, res) => {
+  app.post("/api/analyze-field", aiLimiter, requireAiToolsEnabled, async (req, res) => {
     const text = reqString(req.body?.text, 200000);
     const field = reqString(req.body?.field, 32);
     const knownTitle = reqString(req.body?.title, 300);
@@ -1670,7 +1690,7 @@ Si no encuentras el valor tras revisar cuidadosamente, devuelve cadena vacía ""
   // páginas (no escanea el libro completo: es caro y la TOC casi siempre está
   // al inicio). Devuelve { chapters: [{title, page}] } o lista vacía si no
   // encuentra una tabla de contenidos real en el texto provisto.
-  app.post("/api/generate-toc", aiLimiter, async (req, res) => {
+  app.post("/api/generate-toc", aiLimiter, requireAiToolsEnabled, async (req, res) => {
     const text = reqString(req.body?.text, 100000);
     if (!text) return res.status(400).json({ error: "Texto requerido (no vacío, máx 100k)" });
 
@@ -1733,7 +1753,7 @@ Reglas:
     }
   });
 
-  app.post("/api/analyze-url", aiLimiter, async (req, res) => {
+  app.post("/api/analyze-url", aiLimiter, requireAiToolsEnabled, async (req, res) => {
     const url = reqString(req.body?.url, 2048);
     if (!url) return res.status(400).json({ error: "URL requerida" });
     const check = await isSafePublicUrl(url);
@@ -1804,7 +1824,7 @@ ${text}
     }
   });
 
-  app.post("/api/analyze-image", aiLimiter, async (req, res) => {
+  app.post("/api/analyze-image", aiLimiter, requireAiToolsEnabled, async (req, res) => {
     const imageBase64 = reqString(req.body?.imageBase64, 20 * 1024 * 1024);
     if (!imageBase64) return res.status(400).json({ error: "Imagen requerida" });
 
@@ -2366,7 +2386,7 @@ ${text}
   // -------------------------------------------------------------------------
   // Auditor Científico — analiza un recurso PDF ya almacenado en el servidor
   // -------------------------------------------------------------------------
-  app.post("/api/audit-resource", aiLimiter, async (req, res) => {
+  app.post("/api/audit-resource", aiLimiter, requireAiToolsEnabled, async (req: any, res) => {
     const fileName = reqString(req.body?.fileName, 260);
     if (!fileName) {
       return res.status(400).json({ error: "fileName requerido." });
@@ -2374,6 +2394,25 @@ ${text}
     // Sólo nombres de archivo, sin rutas relativas
     if (fileName.includes("..") || fileName.includes("/") || fileName.includes("\\")) {
       return res.status(400).json({ error: "Nombre de archivo inválido." });
+    }
+
+    // Límite de análisis de estudios asignado por el admin
+    // (user_limits.max_audit_analyses). El admin no tiene restricciones.
+    if (supabase && req.user?.role !== "admin") {
+      const { data: limits } = await supabase
+        .from("user_limits")
+        .select("max_audit_analyses, audit_analyses_used")
+        .eq("user_id", req.user.id)
+        .maybeSingle();
+
+      const maxAuditAnalyses = limits?.max_audit_analyses ?? 0;
+      const usedAuditAnalyses = limits?.audit_analyses_used ?? 0;
+      if (maxAuditAnalyses > 0 && usedAuditAnalyses >= maxAuditAnalyses) {
+        return res.status(429).json({
+          error: `Has alcanzado el límite de ${maxAuditAnalyses} análisis de estudios.`,
+          code: "AUDIT_LIMIT",
+        });
+      }
     }
 
     const filePath = path.join(UPLOAD_DIR, fileName);
@@ -2590,6 +2629,18 @@ SECCIÓN guia_de_aprendizaje:
         parsed = JSON.parse(text);
       } catch {
         return res.status(500).json({ error: "Respuesta de Gemini no es JSON válido." });
+      }
+
+      if (supabase && req.user?.role !== "admin") {
+        const { data: limits } = await supabase
+          .from("user_limits")
+          .select("audit_analyses_used")
+          .eq("user_id", req.user.id)
+          .maybeSingle();
+        await supabase
+          .from("user_limits")
+          .update({ audit_analyses_used: (limits?.audit_analyses_used ?? 0) + 1 })
+          .eq("user_id", req.user.id);
       }
 
       res.json({ result: parsed });

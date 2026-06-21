@@ -2,7 +2,8 @@
 // AdminPanel.tsx — Gestión de usuarios (solo administradores)
 // -----------------------------------------------------------------------------
 // Permite crear cuentas de prueba, editar sus límites (subidas, TTS, resúmenes
-// con IA), activarlas/desactivarlas y eliminarlas. Habla con /api/admin/users.
+// con IA, análisis de estudios), activar/desactivar las herramientas de IA,
+// activarlas/desactivarlas y eliminarlas. Habla con /api/admin/users.
 // =============================================================================
 
 import { useEffect, useState } from 'react';
@@ -20,6 +21,8 @@ interface AdminUser {
     max_uploads: number;
     max_tts_chars: number;
     max_ai_summaries: number;
+    max_audit_analyses: number;
+    ai_tools_enabled: boolean;
   } | null;
 }
 
@@ -34,6 +37,8 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
   const [newMaxUploads, setNewMaxUploads] = useState(3);
   const [newMaxTts, setNewMaxTts] = useState(0);
   const [newMaxAi, setNewMaxAi] = useState(0);
+  const [newMaxAudit, setNewMaxAudit] = useState(0);
+  const [newAiToolsEnabled, setNewAiToolsEnabled] = useState(true);
   const [creating, setCreating] = useState(false);
 
   const loadUsers = () => {
@@ -70,6 +75,8 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
           max_uploads: newMaxUploads,
           max_tts_chars: newMaxTts,
           max_ai_summaries: newMaxAi,
+          max_audit_analyses: newMaxAudit,
+          ai_tools_enabled: newAiToolsEnabled,
         }),
       });
       const data = await res.json();
@@ -80,6 +87,8 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
       setNewMaxUploads(3);
       setNewMaxTts(0);
       setNewMaxAi(0);
+      setNewMaxAudit(0);
+      setNewAiToolsEnabled(true);
       loadUsers();
     } catch (e: any) {
       setError(e.message);
@@ -176,6 +185,14 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
                 Límite de resúmenes IA (0 = sin límite)
                 <input type="number" min={0} value={newMaxAi} onChange={e => setNewMaxAi(Number(e.target.value))} className="px-3 py-2 rounded-lg border border-[var(--border-card)] bg-[var(--bg-app)] text-sm" />
               </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-[var(--text-muted)]">
+                Límite de análisis de estudios (0 = sin límite)
+                <input type="number" min={0} value={newMaxAudit} onChange={e => setNewMaxAudit(Number(e.target.value))} className="px-3 py-2 rounded-lg border border-[var(--border-card)] bg-[var(--bg-app)] text-sm" />
+              </label>
+              <label className="flex items-center gap-2 text-xs font-medium text-[var(--text-muted)] sm:col-span-2">
+                <input type="checkbox" checked={newAiToolsEnabled} onChange={e => setNewAiToolsEnabled(e.target.checked)} className="w-4 h-4 accent-[var(--primary)]" />
+                Herramientas de IA habilitadas
+              </label>
             </div>
             <button
               onClick={handleCreate}
@@ -225,7 +242,7 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
                     </div>
 
                     {u.user_limits && (
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                         <label className="flex flex-col gap-1 text-xs font-medium text-[var(--text-muted)]">
                           Subidas
                           <input
@@ -249,6 +266,22 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
                             onBlur={e => updateUser(u.id, { max_ai_summaries: Number(e.target.value) })}
                             className="px-3 py-2 rounded-lg border border-[var(--border-card)] bg-[var(--bg-app)] text-sm"
                           />
+                        </label>
+                        <label className="flex flex-col gap-1 text-xs font-medium text-[var(--text-muted)]">
+                          Análisis de estudios
+                          <input
+                            type="number" min={0} defaultValue={u.user_limits.max_audit_analyses}
+                            onBlur={e => updateUser(u.id, { max_audit_analyses: Number(e.target.value) })}
+                            className="px-3 py-2 rounded-lg border border-[var(--border-card)] bg-[var(--bg-app)] text-sm"
+                          />
+                        </label>
+                        <label className="flex items-center gap-2 text-xs font-medium text-[var(--text-muted)] sm:col-span-4">
+                          <input
+                            type="checkbox" checked={u.user_limits.ai_tools_enabled}
+                            onChange={e => updateUser(u.id, { ai_tools_enabled: e.target.checked })}
+                            className="w-4 h-4 accent-[var(--primary)]"
+                          />
+                          Herramientas de IA habilitadas
                         </label>
                       </div>
                     )}
