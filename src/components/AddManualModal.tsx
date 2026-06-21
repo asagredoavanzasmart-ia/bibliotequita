@@ -479,7 +479,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[9999]">
       <div className="bg-[var(--bg-app)] rounded-2xl shadow-xl w-full max-w-3xl lg:max-w-[62rem] overflow-hidden animate-in fade-in zoom-in-95 flex flex-col h-[95dvh] max-h-[95dvh] md:h-auto md:max-h-[85vh] [@media(max-height:500px)]:h-[92dvh] [@media(max-height:500px)]:max-h-[92dvh]">
         <div className="flex items-center justify-between p-3 md:p-5 border-b border-slate-200/50 shrink-0">
-           <h2 className="text-base md:text-lg font-bold text-[var(--text-main)] truncate">Añadir Recurso Manualmente</h2>
+           <h2 className="text-base md:text-lg font-bold text-[var(--text-main)] truncate">Agregar</h2>
            <div className="flex items-center gap-2 sm:gap-4 shrink-0">
              <span className="hidden sm:inline-block text-[10px] text-[var(--text-muted)] opacity-70 italic font-medium tracking-wide">
                 Autoguardado activado
@@ -684,15 +684,15 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                          <button type="button" onClick={() => { if (newCategoryName.trim()) { addCategory({ name: newCategoryName.trim() }); setNewCategoryName(''); setShowNewCategory(false); } }} className="bg-[var(--primary)] text-white px-3 py-1.5 rounded-lg text-sm font-bold">Añadir</button>
                       </div>
                    )}
-                   <div className="flex flex-wrap gap-2">
+                   <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
                        {categories?.map(c => (
                           <button
                             key={c.id}
                             type="button"
                             onClick={() => setFormData({...formData, category: c.id})}
-                            className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center gap-2", formData.category === c.id ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
+                            className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center justify-center sm:justify-start gap-2 w-full sm:w-auto", formData.category === c.id ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
                           >
-                             {c.name}
+                             <span className="truncate">{c.name}</span>
                              {formData.category === c.id && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                           </button>
                        ))}
@@ -715,7 +715,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                    {playlists.length === 0 ? (
                       <p className="text-xs text-[var(--text-muted)] italic">No tienes listas creadas aún. Presiona "+" para agregar una.</p>
                    ) : (
-                      <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto pr-1">
+                      <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2 pr-1">
                           {playlists.map(pl => {
                              const checked = selectedFolderIds.includes(pl.id);
                              return (
@@ -723,10 +723,10 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                                   key={pl.id}
                                   type="button"
                                   onClick={() => toggleFolder(pl.id)}
-                                  className={cn("px-3 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm border flex items-center gap-2", checked ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
+                                  className={cn("px-3 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm border flex items-center justify-center sm:justify-start gap-2 w-full sm:w-auto", checked ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
                                 >
                                    <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", colorSwatchProps(pl.color).className)} style={colorSwatchProps(pl.color).style} />
-                                   <span className="truncate max-w-[120px]">{pl.name}</span>
+                                   <span className="truncate max-w-[100px] sm:max-w-[120px]">{pl.name}</span>
                                    {checked && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                                 </button>
                              );

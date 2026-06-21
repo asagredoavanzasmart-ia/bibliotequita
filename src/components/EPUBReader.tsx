@@ -153,10 +153,13 @@ export function EPUBReader({ url, getRendition, bottomOffset = 0, controlsVisibl
             />
 
             {/* Panel de Índice (TOC): overlay a pantalla completa por encima de
-                cualquier otro contenido (incluido el reproductor TTS) en móvil,
-                panel lateral en tablet/PC — mismo patrón que el outline del PDF. */}
+                cualquier otro contenido (incluido el reproductor TTS y el
+                header del lector) en móvil, panel lateral en tablet/PC —
+                mismo patrón que el outline del PDF. z-[60] (no z-50) para
+                escapar del stacking context del panel del lector y quedar
+                por encima del header (z-30) y la barra TTS (z-40). */}
             {showToc && (
-              <div className="fixed inset-0 z-50 flex">
+              <div className="fixed inset-0 z-[60] flex">
                 <div className="absolute inset-0 bg-black/30 md:hidden" onClick={() => setShowToc(false)} />
                 <div className="relative z-10 w-full md:w-72 h-full bg-[var(--bg-card)] border-r border-[var(--border-card)] shadow-2xl flex flex-col">
                   <div className="p-4 border-b border-[var(--border-card)] bg-[var(--bg-app)]/50 flex-none flex items-center justify-between">

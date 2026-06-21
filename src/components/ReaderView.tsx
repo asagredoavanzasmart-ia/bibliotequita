@@ -19,7 +19,7 @@
 // =============================================================================
 
 import { useLibrary } from '../hooks/useLibrary';
-import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp, FolderOpen, List } from 'lucide-react';
+import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, Book as BookIcon, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp, FolderOpen, List } from 'lucide-react';
 import { useState, useRef, FormEvent, ChangeEvent, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import type { Rendition } from 'epubjs';
@@ -1632,6 +1632,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     return <div className="h-screen flex items-center justify-center font-bold">Elemento no encontrado</div>;
   }
 
+  // Dashboard para libros que SOLO existen en físico (sin archivo digital).
+  // Usa el mismo "motor" visual que el lector digital: ocupa todo el espacio
+  // disponible (sin tarjeta flotante tipo modal), respeta las variables de
+  // tema (--bg-app/--bg-card/--text-main/--primary) en vez de colores
+  // hardcodeados, y reutiliza la etiqueta "Físico" (texto + icono) que ya usa
+  // BookGrid, en vez de una píldora ad-hoc fuera de la línea gráfica.
+  // Solo se desactiva lo que no aplica sin texto digital: TTS y resaltado.
   const renderPhysicalBookDashboard = () => {
     const progState = {
       text: item.read ? "Leído" : (item.progress || 0) === 0 ? "Sin leer" : (item.progress || 0) <= 25 ? "Consultado" : (item.progress || 0) <= 50 ? "En proceso" : (item.progress || 0) < 100 ? "Revisado" : "Leído",
@@ -1640,12 +1647,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     const pValue = item.read ? 100 : Math.min(100, Math.max(0, item.progress || 0));
 
     return (
-      <div className="w-full h-full flex items-center justify-center p-4 sm:p-8 overflow-y-auto bg-slate-50/50 animate-in fade-in duration-300">
-        <div className="max-w-2xl w-full bg-white rounded-3xl border border-slate-200/60 shadow-xl p-6 sm:p-8 flex flex-col md:flex-row gap-6 md:gap-8 items-stretch">
-          
+      <div className="w-full h-full overflow-y-auto bg-[var(--bg-app)] animate-in fade-in duration-300">
+        <div className="max-w-3xl mx-auto p-4 sm:p-8 flex flex-col md:flex-row gap-6 md:gap-8 items-stretch min-h-full">
+
           {/* Columna Izquierda: Portada */}
-          <div className="w-full md:w-48 shrink-0 flex flex-col items-center gap-3">
-            <div className="relative aspect-[2/3] w-40 md:w-full rounded-2xl overflow-hidden bg-gradient-to-br from-[#00558F] to-slate-800 shadow-lg border border-slate-100 flex flex-col items-center justify-center p-3 text-center">
+          <div className="w-full md:w-52 shrink-0 flex flex-col items-center gap-3">
+            <div className="relative aspect-[2/3] w-40 md:w-full rounded-2xl overflow-hidden bg-gradient-to-br from-[var(--primary)] to-slate-800 shadow-lg border border-[var(--border-card)] flex flex-col items-center justify-center p-3 text-center">
               {item.thumbnailUrl ? (
                 <img src={item.thumbnailUrl} alt={item.title} className="absolute inset-0 w-full h-full object-cover" />
               ) : (
@@ -1654,14 +1661,16 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                   <span className="text-white/60 text-xs font-bold uppercase tracking-wider">Libro Físico</span>
                 </div>
               )}
-              <div className="absolute top-2 left-2 bg-[#00558F] text-white text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full shadow-md">
-                Físico
-              </div>
             </div>
-            
+            {/* Misma etiqueta "Físico" (texto + icono) usada en BookGrid, en vez
+                de una píldora sólida fuera de la línea gráfica. */}
+            <span className="flex items-center gap-1 text-[var(--primary)] uppercase font-bold text-xs">
+              <BookIcon className="w-3.5 h-3.5" /> Físico
+            </span>
+
             {/* Rating */}
-            <div className="flex flex-col items-center gap-1 mt-2">
-              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Tu Calificación</span>
+            <div className="flex flex-col items-center gap-1 mt-1">
+              <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">Tu Calificación</span>
               <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="lg" />
             </div>
           </div>
@@ -1670,59 +1679,60 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           <div className="flex-1 flex flex-col justify-between gap-6">
             <div className="space-y-4">
               <div>
-                <span className="text-[10px] text-[#00558F] font-black uppercase tracking-wider">Título</span>
-                <h1 className="text-xl sm:text-2xl font-black text-slate-800 leading-tight">{item.title}</h1>
+                <span className="text-[10px] text-[var(--primary)] font-black uppercase tracking-wider">Título</span>
+                <h1 className="text-xl sm:text-2xl font-black text-[var(--text-main)] leading-tight">{item.title}</h1>
               </div>
 
               {item.author && (
                 <div>
-                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Autor</span>
-                  <p className="text-sm font-semibold text-slate-700">{item.author}</p>
+                  <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">Autor</span>
+                  <p className="text-sm font-semibold text-[var(--text-main)]">{item.author}</p>
                 </div>
               )}
 
               <div className="grid grid-cols-2 gap-4">
                 {item.year && (
                   <div>
-                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Año</span>
-                    <p className="text-sm font-semibold text-slate-700">{item.year}</p>
+                    <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">Año</span>
+                    <p className="text-sm font-semibold text-[var(--text-main)]">{item.year}</p>
                   </div>
                 )}
                 {item.publisher && (
                   <div>
-                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Editorial</span>
-                    <p className="text-sm font-semibold text-slate-700">{item.publisher}</p>
+                    <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">Editorial</span>
+                    <p className="text-sm font-semibold text-[var(--text-main)]">{item.publisher}</p>
                   </div>
                 )}
                 {item.isbn && (
                   <div>
-                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">ISBN</span>
-                    <p className="text-sm font-mono font-semibold text-slate-700">{item.isbn}</p>
+                    <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">ISBN</span>
+                    <p className="text-sm font-mono font-semibold text-[var(--text-main)]">{item.isbn}</p>
                   </div>
                 )}
                 {item.subject && (
                   <div>
-                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Tema / Materia</span>
-                    <p className="text-sm font-semibold text-slate-700">{item.subject}</p>
+                    <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wider">Tema / Materia</span>
+                    <p className="text-sm font-semibold text-[var(--text-main)]">{item.subject}</p>
                   </div>
                 )}
               </div>
 
-              {/* Progreso */}
+              {/* Progreso: misma barra arrastrable que el resto de la app — se
+                  actualiza arrastrando o tocando directamente sobre la barra. */}
               <div className="space-y-1.5 pt-2">
                 <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider">
-                  <span className="text-slate-400">Progreso de Lectura</span>
+                  <span className="text-[var(--text-muted)]">Progreso de Lectura (arrastra para actualizar)</span>
                   <span className={cn(progState.color.replace('bg-', 'text-'))}>{pValue}% ({progState.text})</span>
                 </div>
                 <div className="flex items-center gap-3">
-                  <DraggableProgress 
-                    value={pValue} 
-                    color={progState.color} 
-                    onChange={(v) => updateItem(item.id, { progress: v, ...(item.read && v < 100 ? { read: false } : {}) })} 
+                  <DraggableProgress
+                    value={pValue}
+                    color={progState.color}
+                    onChange={(v) => updateItem(item.id, { progress: v, ...(item.read && v < 100 ? { read: false } : {}) })}
                   />
-                  <button 
+                  <button
                     onClick={() => updateItem(item.id, { read: !item.read })}
-                    className={cn("text-xs font-bold px-3 py-1 rounded-lg border transition-all", item.read ? "bg-emerald-50 border-emerald-200 text-emerald-600" : "bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300")}
+                    className={cn("text-xs font-bold px-3 py-1 rounded-lg border transition-all shrink-0", item.read ? "bg-emerald-50 border-emerald-200 text-emerald-600" : "bg-[var(--bg-card)] border-[var(--border-card)] text-[var(--text-muted)] hover:border-[var(--primary)]")}
                   >
                     {item.read ? "Leído" : "Marcar Leído"}
                   </button>
@@ -1730,11 +1740,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               </div>
             </div>
 
-            {/* Botones de acción principales */}
-            <div className="grid grid-cols-2 gap-3 pt-4 border-t border-slate-100 shrink-0">
+            {/* Botones de acción principales — una sola línea cada uno, igual
+                que el resto de botones de la toolbar del lector. */}
+            <div className="grid grid-cols-2 gap-3 pt-4 border-t border-[var(--border-card)] shrink-0">
               <button
                 onClick={() => setActiveTab('edit')}
-                className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-slate-200 hover:border-[#00558F] text-slate-700 hover:text-[#00558F] font-bold text-sm transition-all shadow-sm active:scale-95 bg-white"
+                className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-[var(--border-card)] hover:border-[var(--primary)] text-[var(--text-main)] hover:text-[var(--primary)] font-bold text-sm whitespace-nowrap transition-all shadow-sm active:scale-95 bg-[var(--bg-card)]"
               >
                 <Info className="w-4 h-4" />
                 Editar Info
@@ -1742,10 +1753,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               <button
                 onClick={() => setShowNotes(!showNotes)}
                 className={cn(
-                  "flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-sm transition-all shadow-sm active:scale-95 border",
-                  showNotes 
-                    ? "bg-[#00558F] text-white border-[#00558F]" 
-                    : "bg-white border-slate-200 hover:border-[#00558F] text-slate-700 hover:text-[#00558F]"
+                  "flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-sm whitespace-nowrap transition-all shadow-sm active:scale-95 border",
+                  showNotes
+                    ? "bg-[var(--primary)] text-white border-[var(--primary)]"
+                    : "bg-[var(--bg-card)] border-[var(--border-card)] hover:border-[var(--primary)] text-[var(--text-main)] hover:text-[var(--primary)]"
                 )}
               >
                 <MessageSquareQuote className="w-4 h-4" />
@@ -2142,8 +2153,6 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     );
   };
 
-  const [isNotesFocused, setIsNotesFocused] = useState(false);
-
   const handleClearSelection = useCallback(() => {
      setSelectedText('');
      setSelectionRect(null);
@@ -2151,12 +2160,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   }, []);
 
   const renderNotes = () => (
-     <div 
+     <div
         className="w-full h-full relative bg-white flex flex-col pointer-events-auto overflow-hidden text-sm"
-        onFocus={(e) => {
-           if (e.target.tagName.toLowerCase() === 'textarea') setIsNotesFocused(true);
-        }}
-        onBlur={() => setIsNotesFocused(false)}
      >
         <NotesPanel
             documentId={bookId}
@@ -2186,20 +2191,22 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
      </div>
   );
 
-  const readerPaneStyle: React.CSSProperties = showNotes 
-      ? { 
-          [isPortrait ? 'height' : 'width']: (isPortrait && isNotesFocused) ? '100%' : `${splitRatio}%`,
+  const readerPaneStyle: React.CSSProperties = showNotes
+      ? {
+          [isPortrait ? 'height' : 'width']: `${splitRatio}%`,
           [isPortrait ? 'width' : 'height']: '100%'
         }
       : { width: '100%', height: '100%' };
 
+  // El panel de notas SIEMPRE conserva su porción del split, también al escribir.
+  // (Antes, al enfocar el textarea en móvil, pasaba a `position: fixed` a pantalla
+  // completa y tapaba el documento; ahora se mantiene dentro de su contenedor y
+  // el campo de texto queda sobre el teclado de forma natural.)
   const notesPaneStyle: React.CSSProperties = showNotes
-      ? (isPortrait && isNotesFocused 
-          ? { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100 }
-          : { 
-              [isPortrait ? 'height' : 'width']: `${100 - splitRatio}%`,
-              [isPortrait ? 'width' : 'height']: '100%'
-            })
+      ? {
+          [isPortrait ? 'height' : 'width']: `${100 - splitRatio}%`,
+          [isPortrait ? 'width' : 'height']: '100%'
+        }
       : { display: 'none' };
 
   // Actualización automática del progreso al cambiar de página.
@@ -2315,9 +2322,19 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
              {/* Fixed right tools */}
              {activeTab === 'reader' && (
                isPhysicalOnly ? (
+                 // Libro solo físico: mismo motor que el digital, solo se
+                 // desactiva lo que no aplica sin texto digital (TTS, brillo).
+                 // Pantalla completa y Notas se mantienen.
                  <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-                   <button 
-                       onClick={() => setShowNotes(!showNotes)} 
+                  <button
+                      onClick={toggleFullscreen}
+                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[#00558F] text-white border-[#00558F]" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}
+                      title="Pantalla Completa"
+                  >
+                      {isFullscreen ? <Minimize className="w-4 h-4 sm:w-5 sm:h-5" /> : <Maximize className="w-4 h-4 sm:w-5 sm:h-5" />}
+                  </button>
+                   <button
+                       onClick={() => setShowNotes(!showNotes)}
                        className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showNotes ? "bg-[#00558F] text-white border-[#00558F]" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}
                        title="Apuntes y Notas"
                    >

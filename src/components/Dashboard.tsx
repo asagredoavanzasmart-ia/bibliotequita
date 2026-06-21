@@ -12,7 +12,7 @@
 // sidebar (los IDs droppables empiezan con "playlist-").
 // =============================================================================
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Sidebar } from './Sidebar';
 import { Toolbar } from './Toolbar';
 import { BookGrid } from './BookGrid';
@@ -43,6 +43,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
   const [activeStage, setActiveStage] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsedDesktop, setSidebarCollapsedDesktop] = useState(false);
+  const sidebarTouchStartRef = useRef<number | null>(null);
   const [filters, setFilters] = useState({ year: '', author: '', subject: '', read: '', toBuy: '', authorInitial: '', titleInitial: '' });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
@@ -125,12 +126,22 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
           sidebarOpen ? "opacity-100" : "opacity-0 pointer-events-none"
         )} onClick={() => setSidebarOpen(false)} />
       
-      <div className={cn(
-        "fixed lg:relative top-0 left-0 z-30 h-screen transition-all duration-300 shrink-0 shadow-2xl lg:shadow-none",
-        sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
-        sidebarCollapsedDesktop ? "w-[280px] lg:w-16" : "w-[280px] lg:w-72"
-      )}>
-        <Sidebar 
+      <div
+        className={cn(
+          "fixed lg:relative top-0 left-0 z-30 h-screen transition-all duration-300 shrink-0 shadow-2xl lg:shadow-none",
+          sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
+          sidebarCollapsedDesktop ? "w-[280px] lg:w-16" : "w-[280px] lg:w-72"
+        )}
+        onTouchStart={(e) => { sidebarTouchStartRef.current = e.touches[0].clientX; }}
+        onTouchEnd={(e) => {
+          if (sidebarTouchStartRef.current === null) return;
+          const delta = e.changedTouches[0].clientX - sidebarTouchStartRef.current;
+          sidebarTouchStartRef.current = null;
+          // Arrastre hacia la izquierda de al menos 60px cierra el menú en móvil/tablet.
+          if (delta < -60) setSidebarOpen(false);
+        }}
+      >
+        <Sidebar
           activeTab={activeTab}
           setActiveTab={(tab) => { setActiveTab(tab); setSidebarOpen(false); }}
           activePlaylist={activePlaylist}
