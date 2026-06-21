@@ -60,8 +60,8 @@ export default function App() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[var(--bg-app)]">
-        <div className="w-8 h-8 border-2 border-[var(--primary)] border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen bg-[#e4e7fb] flex items-center justify-center">
+        <img src="/splash.jpg" alt="" className="w-full h-full object-cover" />
       </div>
     );
   }

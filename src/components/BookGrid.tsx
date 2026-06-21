@@ -193,9 +193,11 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
         style={style}
         className="group flex flex-row items-stretch bg-[var(--bg-card)] backdrop-blur-xl rounded-xl border border-slate-200/50 overflow-hidden hover:bg-[var(--bg-card-hover)] hover:shadow-md hover:border-[var(--primary)]/50 hover:-translate-y-0.5 transition-all duration-300"
       >
-        {/* Portada angosta que llena todo su espacio (sin margen), bordes rectos */}
+        {/* Portada que llena toda la altura de la fila (items-stretch) y deriva
+            su ancho de esa altura en proporción 2:3, para que no quede
+            espacio vacío debajo cuando la fila crece por el contenido de texto. */}
         <div
-          className="h-28 sm:h-32 w-[70px] sm:w-[88px] bg-[var(--bg-app)] border-r border-slate-200/50 cursor-grab active:cursor-grabbing relative shrink-0 overflow-hidden group/cover"
+          className="aspect-[2/3] h-auto bg-[var(--bg-app)] border-r border-slate-200/50 cursor-grab active:cursor-grabbing relative shrink-0 overflow-hidden group/cover"
           {...attributes}
           {...listeners}
         >
@@ -280,9 +282,9 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
         viewMode === 'grid-compact' ? "min-h-[220px]" : "min-h-[340px] md:min-h-[380px]"
       )}
     >
-      <div 
+      <div
         className={cn("bg-[var(--bg-app)] relative flex-shrink-0 cursor-grab active:cursor-grabbing flex items-center justify-center p-2 md:p-4 backdrop-blur-sm group/cover border-b border-slate-200/50 rounded-t-2xl overflow-hidden",
-           viewMode === 'grid-compact' ? "h-32" : "h-56"
+           viewMode === 'grid-compact' ? "h-[116px]" : "h-56"
         )}
         {...attributes} 
         {...listeners}
@@ -315,22 +317,24 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
            </button>
         )}
 
-        {/* Columna vertical de acciones al costado derecho de la portada */}
+        {/* Columna vertical de acciones al costado derecho de la portada: cada
+            botón es su propio cuadrado con sombra (no una cápsula compartida),
+            para que el contraste de cada ícono no dependa de un fondo único. */}
         <div
-          className="absolute top-2 right-2 z-20 flex flex-col items-center gap-1.5 bg-black/30 backdrop-blur-sm rounded-full p-1.5"
+          className="absolute top-2 right-2 z-20 flex flex-col items-center gap-1"
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <button type="button" onClick={handleToggleFavorite} className="transition-transform hover:scale-110" title={item.favorite ? "Quitar de favoritos" : "Favorito"}>
-            <Star className={cn("w-5 h-5 drop-shadow-md", item.favorite ? "text-yellow-400 fill-yellow-400/30" : "text-white/80 hover:text-yellow-400")} />
+          <button type="button" onClick={handleToggleFavorite} className="w-7 h-7 rounded-md bg-[var(--bg-app)]/90 shadow-md flex items-center justify-center transition-transform hover:scale-110" title={item.favorite ? "Quitar de favoritos" : "Favorito"}>
+            <Star className={cn("w-4 h-4", item.favorite ? "text-yellow-500 fill-yellow-400/40" : "text-slate-500 hover:text-yellow-500")} />
           </button>
-          <button type="button" onClick={handleTogglePinned} className="transition-transform hover:scale-110" title={item.pinned ? "Desfijar" : "Destacar"}>
-            <Pin className={cn("w-5 h-5 drop-shadow-md", item.pinned ? "text-amber-400 fill-amber-400/20" : "text-white/80 hover:text-amber-400")} />
+          <button type="button" onClick={handleTogglePinned} className="w-7 h-7 rounded-md bg-[var(--bg-app)]/90 shadow-md flex items-center justify-center transition-transform hover:scale-110" title={item.pinned ? "Desfijar" : "Destacar"}>
+            <Pin className={cn("w-4 h-4", item.pinned ? "text-amber-500 fill-amber-400/30" : "text-slate-500 hover:text-amber-500")} />
           </button>
-          <button type="button" onClick={handleToggleToRead} className="transition-transform hover:scale-110" title={item.toRead ? "Quitar de Por Leer" : "Por Leer"}>
-            <Hourglass className={cn("w-5 h-5 drop-shadow-md", item.toRead ? "text-sky-400 fill-sky-400/20" : "text-white/80 hover:text-sky-400")} />
+          <button type="button" onClick={handleToggleToRead} className="w-7 h-7 rounded-md bg-[var(--bg-app)]/90 shadow-md flex items-center justify-center transition-transform hover:scale-110" title={item.toRead ? "Quitar de Por Leer" : "Por Leer"}>
+            <Hourglass className={cn("w-4 h-4", item.toRead ? "text-sky-500 fill-sky-400/30" : "text-slate-500 hover:text-sky-500")} />
           </button>
-          <button type="button" onClick={handleToggleRead} className="transition-transform hover:scale-110" title={item.read ? "Marcar como no leído" : "Marcar como leído"}>
-            <CheckCircle2 className={cn("w-5 h-5 drop-shadow-md", item.read ? "text-emerald-400 fill-emerald-400/20" : "text-white/80 hover:text-emerald-400")} />
+          <button type="button" onClick={handleToggleRead} className="w-7 h-7 rounded-md bg-[var(--bg-app)]/90 shadow-md flex items-center justify-center transition-transform hover:scale-110" title={item.read ? "Marcar como no leído" : "Marcar como leído"}>
+            <CheckCircle2 className={cn("w-4 h-4", item.read ? "text-emerald-500 fill-emerald-500/30" : "text-slate-500 hover:text-emerald-500")} />
           </button>
         </div>
       </div>

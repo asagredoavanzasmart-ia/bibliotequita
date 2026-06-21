@@ -13,10 +13,11 @@
 // =============================================================================
 
 import { useState, useRef, useEffect, useCallback, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { Document, Page, Outline, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
-import { ZoomIn, ZoomOut, List, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Sparkles, Loader2 } from 'lucide-react';
+import { ZoomIn, ZoomOut, List, ChevronLeft, ChevronRight, ChevronDown, Sparkles, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { get } from 'idb-keyval';
 
@@ -41,9 +42,6 @@ interface PDFReaderProps {
   hideControls?: boolean;
   onPageChange?: (page: number) => void;
   targetPage?: { page: number, t: number };
-  // Desplaza la barra flotante de zoom/paginación hacia arriba para que no
-  // quede tapada por el reproductor TTS cuando está visible.
-  bottomOffset?: number;
   // Controla la visibilidad de la barra (auto-ocultado por inactividad,
   // controlado desde ReaderView). Por defecto siempre visible.
   controlsVisible?: boolean;
@@ -58,9 +56,16 @@ interface PDFReaderProps {
   // hace el fetch a Gemini y persiste el resultado en el BookItem.
   onGenerateToc?: (firstPagesText: string) => void;
   generatingToc?: boolean;
+  // Oculta la franja integrada propia: se usa cuando el reproductor TTS está
+  // abierto y sus mismos controles se portan (createPortal) a la fila del
+  // widget TTS para fusionarse junto a los puntos de color de notas.
+  hideOwnBar?: boolean;
+  // Nodo DOM (gestionado por ReaderView) donde portar índice/paginación/zoom
+  // cuando hideOwnBar es true. null/undefined → no se porta nada.
+  mergedBarPortalTarget?: HTMLElement | null;
 }
 
-function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPage, bottomOffset = 0, controlsVisible = true, outlineOpen, onToggleOutline, generatedToc, onGenerateToc, generatingToc = false }: PDFReaderProps) {
+function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPage, controlsVisible = true, outlineOpen, onToggleOutline, generatedToc, onGenerateToc, generatingToc = false, hideOwnBar = false, mergedBarPortalTarget = null }: PDFReaderProps) {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
@@ -387,6 +392,93 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
     setTouchStartDist(null);
   };
 
+  // Drag handle de la franja integrada: mismo patrón de threshold (60px) que
+  // el swipe-close del sidebar en Dashboard.tsx, adaptado a eje Y.
+  const barTouchStartYRef = useRef<number | null>(null);
+  const handleBarTouchStart = (e: React.TouchEvent) => {
+    barTouchStartYRef.current = e.touches[0].clientY;
+  };
+  const handleBarTouchMove = (_e: React.TouchEvent) => {
+    // Sin preventDefault: la franja no scrollea, no hay nada que bloquear.
+  };
+  const handleBarTouchEnd = (e: React.TouchEvent) => {
+    if (barTouchStartYRef.current === null) return;
+    const delta = e.changedTouches[0].clientY - barTouchStartYRef.current;
+    barTouchStartYRef.current = null;
+    if (delta > 60) setManuallyHidden(true);
+    else if (delta < -60) setManuallyHidden(false);
+  };
+
+  // Contenido de índice/paginación/zoom — extraído para poder renderizarse
+  // tanto in-place (franja propia) como vía portal (fusionado en el widget
+  // TTS) sin duplicar JSX. `compact` oculta el zoom (usado en móvil
+  // horizontal, donde el zoom vive en la columna lateral vertical).
+  const renderBarControls = (compact: boolean) => (
+    <>
+      <div className="flex items-center">
+         <button
+           onClick={() => setShowOutline(!showOutline)}
+           className={cn(
+             "p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
+             showOutline && "text-[var(--primary)] bg-[var(--primary)]/10"
+           )}
+           title="Índice"
+         >
+            <List className="w-5 h-5" />
+         </button>
+      </div>
+
+      <div className="w-px h-4 bg-[var(--border-card)]" />
+
+      <div className="flex items-center gap-1">
+         <button
+           disabled={pageNumber <= 1}
+           onClick={() => handlePageChange(pageNumber - 1)}
+           className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
+           title="Página Anterior"
+         >
+           <ChevronLeft className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
+         </button>
+
+         <span className="text-sm font-mono font-bold min-w-[3.5rem] text-center px-1 tabular-nums whitespace-nowrap">
+           {pageNumber} <span className="opacity-40 font-normal text-xs">/ {numPages || '--'}</span>
+         </span>
+
+         <button
+           disabled={pageNumber >= (numPages || 1)}
+           onClick={() => handlePageChange(pageNumber + 1)}
+           className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
+           title="Siguiente Página"
+         >
+           <ChevronRight className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
+         </button>
+      </div>
+
+      {!compact && (
+        <>
+          <div className="w-px h-4 bg-[var(--border-card)]" />
+          <div className="flex items-center gap-1">
+             <button
+               onClick={zoomOut}
+               className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+               title="Alejar Zoom"
+             >
+               <ZoomOut className="w-5 h-5" />
+             </button>
+             <span className="text-xs font-mono font-semibold w-9 text-center tabular-nums">{Math.round(scale * 100)}%</span>
+             <button
+               onClick={zoomIn}
+               className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+               title="Acercar Zoom"
+             >
+               <ZoomIn className="w-5 h-5" />
+             </button>
+          </div>
+        </>
+      )}
+    </>
+  );
+
   if (loadError || !pdfSource) {
      return (
         <div className="flex h-full w-full bg-[#f1f5f9] items-center justify-center p-8 text-center text-slate-500">
@@ -476,12 +568,12 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
         </div>
 
         {/* Main Content Area */}
-        <div className="flex-1 flex flex-col items-center h-full relative min-w-0 min-h-0 w-full bg-[var(--bg-app)]" ref={containerRef}>
+        <div className="flex-1 flex flex-col h-full relative min-w-0 min-h-0 w-full bg-[var(--bg-app)]" ref={containerRef}>
 
            {/* PDF Pages Viewer */}
-           <div 
+           <div
               ref={viewerRef}
-              className="flex-1 min-w-0 min-h-0 w-full overflow-auto flex justify-center pb-24 pt-4 md:pt-6 px-2 md:px-4"
+              className="flex-1 min-w-0 min-h-0 w-full overflow-auto flex justify-center pt-4 md:pt-6 px-2 md:px-4"
               onTouchStart={handleTouchStart}
               onTouchMove={handleTouchMove}
               onTouchEnd={handleTouchEnd}
@@ -531,109 +623,46 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
               </div>
            </div>
 
-         {/* Toolbar Static at Bottom */}
-         {!hideControls && !isMobileLandscape && (
+         {/* Franja integrada: en flujo normal del layout (no flotante), igual
+             posición visual (abajo) pero como hermana del visor dentro del
+             mismo contenedor flex-col, sin position: absolute. */}
+         {!hideControls && !isMobileLandscape && !hideOwnBar && (
            <div
              className={cn(
-               "absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none z-30 w-[calc(100%-1.5rem)] sm:w-auto sm:max-w-xl transition-all duration-300",
-               (controlsVisible && !manuallyHidden) ? "opacity-100" : "opacity-0 translate-y-2"
+               "shrink-0 w-full flex flex-col items-center bg-[var(--bg-card)] border-t border-[var(--border-card)] transition-all duration-300 overflow-hidden",
+               (controlsVisible && !manuallyHidden) ? "max-h-12" : "max-h-[14px]"
              )}
-             style={{ bottom: `${16 + bottomOffset}px` }}
            >
-             <div className="flex items-center justify-center gap-1 sm:gap-4 px-2 sm:px-4 py-2.5 sm:py-3 w-full sm:w-auto bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-main)] shadow-2xl rounded-full backdrop-blur-md transition-all min-h-[48px] whitespace-nowrap pointer-events-auto">
+             {/* Manija: tap reabre si está colapsada; arrastrar hacia abajo
+                 colapsa, hacia arriba reabre. */}
+             <div
+               className="w-full flex justify-center py-1.5 cursor-grab touch-none shrink-0"
+               onTouchStart={handleBarTouchStart}
+               onTouchMove={handleBarTouchMove}
+               onTouchEnd={handleBarTouchEnd}
+               onClick={() => manuallyHidden && setManuallyHidden(false)}
+             >
+               <div className="w-10 h-1 rounded-full bg-[var(--text-muted)]/40" />
+             </div>
 
-              {/* En móvil horizontal el índice y el contador de página viven en
-                  la barra del reproductor TTS (versión compacta); aquí solo se
-                  muestran en vertical/desktop/sin TTS abierto. */}
-              {!isMobileLandscape && (
-                <>
-                  <div className="flex items-center">
-                     <button
-                       onClick={() => setShowOutline(!showOutline)}
-                       className={cn(
-                         "p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
-                         showOutline && "text-[var(--primary)] bg-[var(--primary)]/10"
-                       )}
-                       title="Índice"
-                     >
-                        <List className="w-5 h-5" />
-                     </button>
-                  </div>
-
-                  <div className="w-px h-4 bg-[var(--border-card)]" />
-
-                  <div className="flex items-center gap-1">
-                     <button
-                       disabled={pageNumber <= 1}
-                       onClick={() => handlePageChange(pageNumber - 1)}
-                       className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
-                       title="Página Anterior"
-                     >
-                       <ChevronLeft className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
-                     </button>
-
-                     <span className="text-sm font-mono font-bold min-w-[3.5rem] text-center px-1 tabular-nums whitespace-nowrap">
-                       {pageNumber} <span className="opacity-40 font-normal text-xs">/ {numPages || '--'}</span>
-                     </span>
-
-                     <button
-                       disabled={pageNumber >= (numPages || 1)}
-                       onClick={() => handlePageChange(pageNumber + 1)}
-                       className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
-                       title="Siguiente Página"
-                     >
-                       <ChevronRight className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
-                     </button>
-                  </div>
-
-                  <div className="w-px h-4 bg-[var(--border-card)]" />
-                  <div className="flex items-center gap-1">
-                     <button
-                       onClick={zoomOut}
-                       className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
-                       title="Alejar Zoom"
-                     >
-                       <ZoomOut className="w-5 h-5" />
-                     </button>
-                     <span className="text-xs font-mono font-semibold w-9 text-center tabular-nums">{Math.round(scale * 100)}%</span>
-                     <button
-                       onClick={zoomIn}
-                       className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
-                       title="Acercar Zoom"
-                     >
-                       <ZoomIn className="w-5 h-5" />
-                     </button>
-                  </div>
-                </>
-              )}
-
-              <div className="w-px h-4 bg-[var(--border-card)]" />
-
-              <button
-                onClick={() => setManuallyHidden(true)}
-                className="p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
-                title="Ocultar controles"
-              >
-                <ChevronDown className="w-5 h-5" />
-              </button>
+             <div className="flex items-center justify-center gap-1 sm:gap-3 px-2 sm:px-4 pb-1.5 w-full text-[var(--text-main)] whitespace-nowrap overflow-x-auto no-scrollbar">
+               {renderBarControls(false)}
+               <div className="w-px h-4 bg-[var(--border-card)]" />
+               <button
+                 onClick={() => setManuallyHidden(true)}
+                 className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+                 title="Ocultar controles"
+               >
+                 <ChevronDown className="w-4 h-4" />
+               </button>
              </div>
            </div>
          )}
 
-         {/* Asa para volver a mostrar la barra cuando se ocultó manualmente.
-             En móvil horizontal se oculta: ahí los controles del PDF viven en
-             la barra del reproductor TTS y en la columna de zoom lateral, y
-             esta asa flotante quedaba como una "pestaña fantasma" sobrante. */}
-         {!hideControls && manuallyHidden && !isMobileLandscape && (
-           <button
-             onClick={() => setManuallyHidden(false)}
-             className="absolute left-1/2 -translate-x-1/2 z-30 p-2 rounded-full bg-[var(--bg-card)]/70 border border-[var(--border-card)] text-[var(--text-muted)] shadow-md backdrop-blur-md pointer-events-auto transition-all"
-             style={{ bottom: `${8 + bottomOffset}px` }}
-             title="Mostrar controles"
-           >
-             <ChevronUp className="w-4 h-4" />
-           </button>
-         )}
+         {/* Controles fusionados con el reproductor TTS: cuando hideOwnBar
+             está activo, la franja propia no se monta (arriba) y estos mismos
+             controles se portan a la fila del widget TTS en ReaderView. */}
+         {hideOwnBar && mergedBarPortalTarget && createPortal(renderBarControls(isMobileLandscape), mergedBarPortalTarget)}
 
          {/* Móvil horizontal: columna vertical de zoom fija a la derecha, con
              botones grandes y fáciles de tocar sin estorbar el ancho de página. */}

@@ -60,27 +60,27 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
 
   return (
     <>
-      <div className="flex flex-col gap-4 w-full border-b border-slate-200/50 pb-4 relative z-10 shrink-0">
+      <div className="flex flex-col gap-4 w-full border-b border-slate-200/50 pb-2 sm:pb-4 relative z-10 shrink-0">
         <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-          
-          <div className="flex-1 w-full flex items-center gap-2">
+
+          <div className="flex-1 w-full flex items-center gap-2 lg:bg-transparent bg-[var(--sidebar-bg)] -mx-4 -mt-4 px-4 py-3 lg:mx-0 lg:mt-0 lg:px-0 lg:py-0">
              {onOpenSidebar && (
                <button
-                 className="lg:hidden p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-card-hover)] rounded-lg shrink-0 transition-colors -ml-2"
+                 className="lg:hidden p-2.5 text-white/70 hover:bg-white/10 rounded-lg shrink-0 transition-colors -ml-2"
                  onClick={onOpenSidebar}
                >
                  <Menu className="w-7 h-7" />
                </button>
              )}
              <div className="flex items-center w-full max-w-2xl relative group">
-               <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-[var(--primary)] transition-colors" />
+               <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-white/50 lg:text-slate-400 group-focus-within:text-[var(--primary)] transition-colors" />
                <input
                  type="text"
                  value={searchQuery}
                  onChange={(e) => setSearchQuery(e.target.value)}
                  placeholder="Buscar títulos, autores, materias o etiquetas..."
                  list="search-suggestions"
-                 className="w-full pl-12 pr-4 py-3 border-2 border-transparent bg-[var(--bg-card)]/80 backdrop-blur-md rounded-2xl text-base focus:outline-none focus:border-[var(--primary)] focus:bg-[var(--bg-card-hover)] text-[var(--text-main)] shadow-sm hover:bg-[var(--bg-card-hover)] transition-all font-medium placeholder-slate-400"
+                 className="w-full pl-12 pr-4 py-3 border-2 border-transparent bg-white/10 lg:bg-[var(--bg-card)]/80 backdrop-blur-md rounded-2xl text-base focus:outline-none focus:border-[var(--primary)] focus:bg-white/15 lg:focus:bg-[var(--bg-card-hover)] text-white lg:text-[var(--text-main)] shadow-sm hover:bg-white/15 lg:hover:bg-[var(--bg-card-hover)] transition-all font-medium placeholder-white/50 lg:placeholder-slate-400"
                />
                <datalist id="search-suggestions">
                  {suggestions.map((s, i) => <option key={i} value={s as string} />)}
@@ -92,7 +92,7 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
                <button
                  onClick={toggleAppFullscreen}
                  title="Pantalla completa"
-                 className={cn("p-2.5 rounded-lg transition-colors", isAppFullscreen ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "text-[var(--text-muted)] hover:bg-[var(--bg-card-hover)]")}
+                 className={cn("p-2.5 rounded-lg transition-colors", isAppFullscreen ? "bg-white/15 text-white" : "text-white/70 hover:bg-white/10")}
                >
                  {isAppFullscreen ? <Minimize className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
                </button>

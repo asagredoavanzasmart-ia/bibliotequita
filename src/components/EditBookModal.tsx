@@ -377,10 +377,10 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     // =====================================================================
     <div className="bg-[var(--bg-app)] w-full min-h-full flex flex-col">
       <div className="flex-1 px-4 sm:px-6 md:px-8 py-6">
-         <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-12 [@media(max-height:500px)]:grid-cols-12 gap-6 [@media(max-height:500px)]:gap-4">
+         <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-12 [@media(max-height:500px)_and_(orientation:landscape)]:grid-cols-12 gap-6 [@media(max-height:500px)_and_(orientation:landscape)]:gap-4">
 
             {/* ---------- Col 1: Portada + archivo + posesión ---------- */}
-            <div className="md:col-span-4 [@media(max-height:500px)]:col-span-4 flex flex-col gap-4">
+            <div className="md:col-span-4 [@media(max-height:500px)_and_(orientation:landscape)]:col-span-4 flex flex-col gap-4">
                {/* Portada con overlay hover */}
                <div className="relative group aspect-[3/4] bg-[var(--bg-card)] rounded-2xl border-2 border-dashed border-slate-200 overflow-hidden shadow-sm transition-all hover:border-[var(--primary)]/50">
                   {coverUrl ? (
@@ -430,7 +430,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   <button
                      type="button"
                      onClick={() => cameraInputRef.current?.click()}
-                     className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/30"
+                     className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200"
                   >
                      <Camera className="w-3.5 h-3.5" /> Tomar foto
                   </button>
@@ -510,7 +510,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                            type="button"
                            onClick={() => pdfInputRef.current?.click()}
                            className={cn('px-3 py-2.5 flex items-center justify-center gap-1.5 rounded-xl text-xs font-bold border transition-colors',
-                              isAnalyzing ? 'bg-slate-100 text-slate-400 border-slate-200 opacity-70' : 'bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30 hover:bg-[var(--primary)]/20')}
+                              isAnalyzing ? 'bg-slate-100 text-slate-400 border-slate-200 opacity-70' : 'bg-[var(--bg-card)] text-slate-500 border-slate-200 hover:border-slate-300')}
                         >
                            <UploadCloud className={cn('w-4 h-4', isAnalyzing && 'animate-pulse')} /> PDF
                         </button>
@@ -539,7 +539,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                         <button
                            type="button"
                            onClick={() => epubInputRef.current?.click()}
-                           className="px-3 py-2.5 flex items-center justify-center gap-1.5 rounded-xl text-xs font-bold border transition-colors bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30 hover:bg-[var(--primary)]/20"
+                           className="px-3 py-2.5 flex items-center justify-center gap-1.5 rounded-xl text-xs font-bold border transition-colors bg-[var(--bg-card)] text-slate-500 border-slate-200 hover:border-slate-300"
                         >
                            <UploadCloud className="w-4 h-4" /> EPUB
                         </button>
@@ -600,7 +600,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
             </div>
 
             {/* ---------- Col 2: Metadatos principales ---------- */}
-            <div className="md:col-span-5 [@media(max-height:500px)]:col-span-5 flex flex-col gap-4">
+            <div className="md:col-span-5 [@media(max-height:500px)_and_(orientation:landscape)]:col-span-5 flex flex-col gap-4">
                <div>
                   <label className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1 block">Título</label>
                   <input
@@ -831,7 +831,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
             </div>
 
             {/* ---------- Col 3: Listas + Etapas ---------- */}
-            <div className="md:col-span-3 [@media(max-height:500px)]:col-span-3 flex flex-col gap-4">
+            <div className="md:col-span-3 [@media(max-height:500px)_and_(orientation:landscape)]:col-span-3 flex flex-col gap-4">
                {/* Listas / Playlists */}
                <div className="bg-[var(--bg-card)] border border-slate-200 rounded-2xl p-4">
                   <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-3 flex items-center justify-between">
@@ -957,7 +957,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     </div>
   ) : (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-      <div className="bg-[var(--bg-app)] border border-[var(--border-card)] shadow-2xl rounded-2xl w-full max-w-5xl max-h-[90dvh] [@media(max-height:500px)]:max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
+      <div className="bg-[var(--bg-app)] border border-[var(--border-card)] shadow-2xl rounded-2xl w-full max-w-5xl max-h-[90dvh] [@media(max-height:500px)_and_(orientation:landscape)]:max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
         
         {/* Header */}
         <div className="flex items-center justify-between p-4 md:p-6 border-b border-slate-200/50 bg-[var(--bg-card)] shrink-0">
@@ -979,10 +979,10 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 md:px-6 pt-2 pb-6 scrollbar-thin">
-           <div className="grid grid-cols-1 md:grid-cols-3 [@media(max-height:500px)]:grid-cols-3 gap-6 md:gap-8 [@media(max-height:500px)]:gap-4 mt-0">
+           <div className="grid grid-cols-1 md:grid-cols-3 [@media(max-height:500px)_and_(orientation:landscape)]:grid-cols-3 gap-6 md:gap-8 [@media(max-height:500px)_and_(orientation:landscape)]:gap-4 mt-0">
 
               {/* Column 1: Cover & Digital File */}
-              <div className="md:col-span-1 [@media(max-height:500px)]:col-span-1 flex flex-col gap-6">
+              <div className="md:col-span-1 [@media(max-height:500px)_and_(orientation:landscape)]:col-span-1 flex flex-col gap-6">
                  <div className="flex flex-col gap-2">
                     <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block">Portada</label>
                     <div className="aspect-[3/4] bg-[var(--bg-app)] rounded-2xl border-2 border-dashed border-slate-200/50 flex flex-col items-center justify-center cursor-pointer relative overflow-hidden group shadow-sm transition-all hover:border-[var(--primary)]/50" onClick={() => coverInputRef.current?.click()}>
@@ -1085,7 +1085,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
               </div>
 
               {/* Column 2: Metadata & Options */}
-              <div className="md:col-span-2 [@media(max-height:500px)]:col-span-2 grid grid-cols-1 md:grid-cols-2 [@media(max-height:500px)]:grid-cols-2 gap-8 [@media(max-height:500px)]:gap-4">
+              <div className="md:col-span-2 [@media(max-height:500px)_and_(orientation:landscape)]:col-span-2 grid grid-cols-1 md:grid-cols-2 [@media(max-height:500px)_and_(orientation:landscape)]:grid-cols-2 gap-8 [@media(max-height:500px)_and_(orientation:landscape)]:gap-4">
                   <div className="space-y-6">
                  <div>
                    <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1 block">Título</label>

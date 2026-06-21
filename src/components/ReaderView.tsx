@@ -19,7 +19,7 @@
 // =============================================================================
 
 import { useLibrary } from '../hooks/useLibrary';
-import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, Book as BookIcon, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp, FolderOpen, List } from 'lucide-react';
+import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, Book as BookIcon, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp, FolderOpen } from 'lucide-react';
 import { useState, useRef, FormEvent, ChangeEvent, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import type { Rendition } from 'epubjs';
@@ -100,11 +100,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // El panel de configuración (modelo/voz/origen de lectura) queda colapsado
   // por defecto para que la barra inferior del reproductor sea compacta.
   const [showTtsSettings, setShowTtsSettings] = useState(false);
-  // Altura real de la barra del reproductor TTS, medida con ResizeObserver,
-  // para desplazar hacia arriba los controles de página/zoom del PDF y que
-  // no queden tapados por el reproductor.
   const ttsWidgetRef = useRef<HTMLDivElement>(null);
-  const [ttsWidgetHeight, setTtsWidgetHeight] = useState(0);
+  // Slot DOM dentro de la fila de controles del widget TTS donde PDFReader/
+  // EPUBReader portan (createPortal) sus controles de índice/página/zoom
+  // cuando el TTS está abierto, fusionándolos junto a los puntos de color.
+  const [mergedBarSlotEl, setMergedBarSlotEl] = useState<HTMLDivElement | null>(null);
   const [ttsStatus, setTtsStatus] = useState<'idle' | 'loading' | 'playing' | 'paused' | 'error'>('idle');
   const [ttsErrorMessage, setTtsErrorMessage] = useState('');
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
@@ -1515,26 +1515,6 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     };
   }, [bookId]);
 
-  // Mide la altura real de la barra del reproductor TTS para que los
-  // controles de página/zoom del PDF se desplacen hacia arriba y no queden
-  // tapados por ella (la altura varía según si el panel de configuración
-  // está abierto o hay un mensaje de error visible).
-  useEffect(() => {
-    const el = ttsWidgetRef.current;
-    if (!showTtsWidget || !el) {
-      setTtsWidgetHeight(0);
-      return;
-    }
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setTtsWidgetHeight(entry.contentRect.height);
-      }
-    });
-    observer.observe(el);
-    setTtsWidgetHeight(el.getBoundingClientRect().height);
-    return () => observer.disconnect();
-  }, [showTtsWidget, showTtsSettings, ttsStatus]);
-
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1595,7 +1575,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     // lo que borraría la toolbar de citas en cada mouseup).
     if (item?.type === 'epub') return;
 
-    const handleMouseUp = () => {
+    const captureAndCollapse = () => {
       const selection = window.getSelection();
       if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
         const text = selection.toString().trim();
@@ -1604,19 +1584,43 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           const rect = range.getBoundingClientRect();
           setSelectedText(text);
           setSelectionRect({ top: rect.top, left: rect.left, width: rect.width, bottom: rect.bottom });
-          return;
+          return true;
         }
       }
       if (selectionRect) {
          setSelectionRect(null);
       }
+      return false;
+    };
+
+    const handleMouseUp = () => { captureAndCollapse(); };
+
+    // En Android/Chrome, la barra contextual nativa ("Buscar en Google",
+    // Compartir, Copiar) la dispara el sistema en cuanto la selección deja de
+    // estar colapsada — no es un evento cancelable, así que touchend+timeout
+    // siempre llega tarde. selectionchange refleja el estado en tiempo real
+    // (incluso mientras se arrastran los handles); tras un debounce de
+    // "asentamiento" capturamos texto/rect propios y colapsamos la selección
+    // nativa para que Android oculte su barra y solo quede la de la app.
+    let collapseTimer: number | null = null;
+    const handleSelectionChange = () => {
+      const selection = window.getSelection();
+      if (collapseTimer) window.clearTimeout(collapseTimer);
+      if (!selection || selection.isCollapsed) return;
+      collapseTimer = window.setTimeout(() => {
+        const didCapture = captureAndCollapse();
+        if (didCapture) {
+          window.getSelection()?.removeAllRanges();
+        }
+      }, 250);
     };
 
     document.addEventListener('mouseup', handleMouseUp);
-    document.addEventListener('touchend', () => setTimeout(handleMouseUp, 100));
+    document.addEventListener('selectionchange', handleSelectionChange);
     return () => {
        document.removeEventListener('mouseup', handleMouseUp);
-       document.removeEventListener('touchend', handleMouseUp);
+       document.removeEventListener('selectionchange', handleSelectionChange);
+       if (collapseTimer) window.clearTimeout(collapseTimer);
     };
   }, [selectionRect, item?.type]);
 
@@ -1670,12 +1674,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         onClick={handleScreenClick}
      >
         <div className="flex-1 overflow-hidden pointer-events-auto">
-          {activeType === 'pdf' && <PDFReader url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} bottomOffset={showTtsWidget ? ttsWidgetHeight : 0} controlsVisible={pageControlsVisible} outlineOpen={pdfOutlineOpen} onToggleOutline={() => setPdfOutlineOpen(v => !v)} generatedToc={item.generatedToc} onGenerateToc={handleGenerateToc} generatingToc={generatingToc} />}
+          {activeType === 'pdf' && <PDFReader url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} controlsVisible={pageControlsVisible} outlineOpen={pdfOutlineOpen} onToggleOutline={() => setPdfOutlineOpen(v => !v)} generatedToc={item.generatedToc} onGenerateToc={handleGenerateToc} generatingToc={generatingToc} hideOwnBar={showTtsWidget} mergedBarPortalTarget={showTtsWidget ? mergedBarSlotEl : null} />}
           {activeType === 'epub' && (
             <EPUBReader
               url={activeSource}
-              bottomOffset={showTtsWidget ? ttsWidgetHeight : 0}
               controlsVisible={pageControlsVisible}
+              hideOwnBar={showTtsWidget}
+              mergedBarPortalTarget={showTtsWidget ? mergedBarSlotEl : null}
               getRendition={(rendition) => {
                 epubRenditionRef.current = rendition;
                 rendition.on('selected', (_cfiRange: string, contents: any) => {
@@ -1905,24 +1910,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                        estrecho permite scroll horizontal y los botones no se encogen. */}
                    <div className="flex items-center justify-start sm:justify-center gap-1 sm:gap-2 overflow-x-auto no-scrollbar px-1 py-0.5 shrink-0 [&>button]:shrink-0">
 
-                      {/* Móvil horizontal + PDF: índice y contador de página
-                          compactos, integrados aquí en vez de en la toolbar
-                          propia del PDF (que se oculta en este modo). */}
-                      {isMobileLandscape && activeType === 'pdf' && (
-                        <>
-                          <button
-                            onClick={() => setPdfOutlineOpen(v => !v)}
-                            className={cn("p-2 border rounded-full transition-all active:scale-95 shadow-sm", pdfOutlineOpen ? "bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30" : "bg-[var(--bg-app)] hover:bg-slate-200/50 border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)]")}
-                            title="Índice"
-                          >
-                             <List className="w-4 h-4" />
-                          </button>
-                          <span className="text-[11px] font-mono font-bold px-1.5 tabular-nums whitespace-nowrap text-[var(--text-muted)]">
-                             {currentPage}<span className="opacity-50">/{totalPages || '--'}</span>
-                          </span>
-                          <span className="w-px h-4 bg-[var(--border-card)] mx-0.5" />
-                        </>
+                      {/* Slot donde PDFReader/EPUBReader portan (createPortal) sus
+                          controles de índice/página/zoom cuando el TTS está abierto,
+                          fusionándolos en esta misma fila junto a los puntos de color. */}
+                      {(activeType === 'pdf' || activeType === 'epub') && (
+                        <div ref={setMergedBarSlotEl} className="flex items-center gap-1" />
                       )}
+                      <span className="w-px h-4 bg-[var(--border-card)] mx-0.5" />
 
                       {/* Mostrar/ocultar configuración */}
                       <button
@@ -2215,15 +2209,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
              {activeTab === 'reader' && (
                isPhysicalOnly ? (
                  // Libro solo físico: mismo motor que el digital, solo se
-                 // desactiva lo que no aplica sin texto digital (TTS, brillo).
-                 // Marcadores, Pantalla completa y Notas se mantienen.
+                 // desactiva lo que no aplica sin texto digital (TTS, brillo
+                 // y Marcadores, ya que sin archivo no hay páginas reales que
+                 // marcar). Pantalla completa y Notas se mantienen.
                  <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-                  <BookmarksMenu
-                     documentId={bookId}
-                     currentPage={currentPage}
-                     isEpub={false}
-                     onNavigate={() => {}}
-                  />
                   <button
                       onClick={toggleFullscreen}
                       className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[#00558F] text-white border-[#00558F]" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}

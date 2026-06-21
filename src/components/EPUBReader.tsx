@@ -1,20 +1,25 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { ReactReader } from 'react-reader';
 import type { Rendition } from 'epubjs';
 import type { NavItem } from 'epubjs';
 import { get } from 'idb-keyval';
-import { List, ZoomIn, ZoomOut, ChevronLeft, ChevronDown, ChevronUp } from 'lucide-react';
+import { List, ZoomIn, ZoomOut, ChevronLeft, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface EPUBReaderProps {
   url: string;
   getRendition?: (rendition: Rendition) => void;
-  // Desplaza la barra flotante de zoom/índice hacia arriba para que no quede
-  // tapada por el reproductor TTS cuando está visible.
-  bottomOffset?: number;
   // Controla la visibilidad de la barra (auto-ocultado por inactividad,
   // controlado desde ReaderView). Por defecto siempre visible.
   controlsVisible?: boolean;
+  // Oculta la franja integrada propia: se usa cuando el reproductor TTS está
+  // abierto y sus mismos controles se portan (createPortal) a la fila del
+  // widget TTS para fusionarse junto a los puntos de color de notas.
+  hideOwnBar?: boolean;
+  // Nodo DOM (gestionado por ReaderView) donde portar índice/zoom cuando
+  // hideOwnBar es true. null/undefined → no se porta nada.
+  mergedBarPortalTarget?: HTMLElement | null;
 }
 
 const FONT_SIZES = [80, 90, 100, 110, 125, 150, 175, 200];
@@ -33,7 +38,7 @@ const MOBILE_DEFAULT_FONT_SIZE_INDEX = 4; // 125%
 // Como el EPUB no maneja "páginas" (las citas tampoco las usan), esto es
 // válido en todos los tamaños de pantalla y con o sin el panel de notas abierto.
 
-export function EPUBReader({ url, getRendition, bottomOffset = 0, controlsVisible = true }: EPUBReaderProps) {
+export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnBar = false, mergedBarPortalTarget = null }: EPUBReaderProps) {
   const [location, setLocation] = useState<string | number>(0);
   const [actualUrl, setActualUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<boolean>(false);
@@ -42,6 +47,23 @@ export function EPUBReader({ url, getRendition, bottomOffset = 0, controlsVisibl
   const [fontSizeIndex, setFontSizeIndex] = useState(DEFAULT_FONT_SIZE_INDEX);
   const [manuallyHidden, setManuallyHidden] = useState(false);
   const renditionRef = useRef<Rendition | null>(null);
+
+  // Drag handle de la franja integrada: mismo patrón de threshold (60px) que
+  // el swipe-close del sidebar en Dashboard.tsx, adaptado a eje Y.
+  const barTouchStartYRef = useRef<number | null>(null);
+  const handleBarTouchStart = (e: React.TouchEvent) => {
+    barTouchStartYRef.current = e.touches[0].clientY;
+  };
+  const handleBarTouchMove = (_e: React.TouchEvent) => {
+    // Sin preventDefault: la franja no scrollea, no hay nada que bloquear.
+  };
+  const handleBarTouchEnd = (e: React.TouchEvent) => {
+    if (barTouchStartYRef.current === null) return;
+    const delta = e.changedTouches[0].clientY - barTouchStartYRef.current;
+    barTouchStartYRef.current = null;
+    if (delta > 60) setManuallyHidden(true);
+    else if (delta < -60) setManuallyHidden(false);
+  };
 
   const handleGetRendition = useCallback((rendition: Rendition) => {
     renditionRef.current = rendition;
@@ -108,6 +130,46 @@ export function EPUBReader({ url, getRendition, bottomOffset = 0, controlsVisibl
     };
   }, [url]);
 
+  // Contenido de índice/zoom de fuente — extraído para poder renderizarse
+  // tanto in-place (franja propia) como vía portal (fusionado en el widget
+  // TTS) sin duplicar JSX.
+  const renderBarControls = () => (
+    <>
+      <button
+        onClick={() => setShowToc(v => !v)}
+        className={cn(
+          "p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
+          showToc && "text-[var(--primary)] bg-[var(--primary)]/10"
+        )}
+        title="Índice"
+      >
+        <List className="w-5 h-5" />
+      </button>
+
+      <div className="w-px h-4 bg-[var(--border-card)]" />
+
+      <div className="flex items-center gap-1">
+        <button
+          disabled={fontSizeIndex <= 0}
+          onClick={() => applyFontSize(fontSizeIndex - 1)}
+          className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
+          title="Reducir texto"
+        >
+          <ZoomOut className="w-5 h-5" />
+        </button>
+        <span className="text-xs font-mono font-semibold w-9 text-center tabular-nums">{FONT_SIZES[fontSizeIndex]}%</span>
+        <button
+          disabled={fontSizeIndex >= FONT_SIZES.length - 1}
+          onClick={() => applyFontSize(fontSizeIndex + 1)}
+          className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
+          title="Aumentar texto"
+        >
+          <ZoomIn className="w-5 h-5" />
+        </button>
+      </div>
+    </>
+  );
+
   const renderTocItems = (items: NavItem[], depth = 0) => (
     <ul className={cn(depth > 0 && "ml-3 border-l border-slate-200 pl-2")}>
       {items.map((navItem) => (
@@ -127,7 +189,7 @@ export function EPUBReader({ url, getRendition, bottomOffset = 0, controlsVisibl
 
   return (
     <div className="h-full relative bg-[#f8fafc] flex justify-center">
-      <div className="w-full h-full max-w-5xl shadow-xl bg-white border-x border-slate-200 relative">
+      <div className="w-full h-full max-w-5xl shadow-xl bg-white border-x border-slate-200 relative flex flex-col">
          {loadError || !actualUrl ? (
             loadError && (
                <div className="w-full max-w-[600px] h-[400px] mx-auto mt-20 bg-slate-50 border-2 border-dashed border-slate-300 rounded-lg flex flex-col items-center justify-center p-8 text-center text-slate-500 shadow-sm">
@@ -138,112 +200,87 @@ export function EPUBReader({ url, getRendition, bottomOffset = 0, controlsVisibl
             )
          ) : (
            <>
-            <ReactReader
-              url={actualUrl}
-              location={location}
-              locationChanged={(epubcfi: string) => setLocation(epubcfi)}
-              getRendition={handleGetRendition}
-              epubInitOptions={{
-                 openAs: 'epub'
-              }}
-              epubOptions={{
-                flow: 'scrolled-doc',
-                manager: 'continuous',
-              }}
-            />
+            <div className="flex-1 min-h-0 relative">
+              <ReactReader
+                url={actualUrl}
+                location={location}
+                locationChanged={(epubcfi: string) => setLocation(epubcfi)}
+                getRendition={handleGetRendition}
+                epubInitOptions={{
+                   openAs: 'epub'
+                }}
+                epubOptions={{
+                  flow: 'scrolled-doc',
+                  manager: 'continuous',
+                }}
+              />
 
-            {/* Panel de Índice (TOC): overlay a pantalla completa por encima de
-                cualquier otro contenido (incluido el reproductor TTS y el
-                header del lector) en móvil, panel lateral en tablet/PC —
-                mismo patrón que el outline del PDF. z-[60] (no z-50) para
-                escapar del stacking context del panel del lector y quedar
-                por encima del header (z-30) y la barra TTS (z-40). */}
-            {showToc && (
-              <div className="fixed inset-0 z-[60] flex">
-                <div className="absolute inset-0 bg-black/30 md:hidden" onClick={() => setShowToc(false)} />
-                <div className="relative z-10 w-full md:w-72 h-full bg-[var(--bg-card)] border-r border-[var(--border-card)] shadow-2xl flex flex-col">
-                  <div className="p-4 border-b border-[var(--border-card)] bg-[var(--bg-app)]/50 flex-none flex items-center justify-between">
-                    <h3 className="font-bold text-[var(--text-main)] text-sm flex items-center gap-2">
-                      <List className="w-4 h-4" /> Índice
-                    </h3>
-                    <button onClick={() => setShowToc(false)} className="text-[var(--text-muted)] hover:text-[var(--primary)] p-2 transition-colors">
-                      <ChevronLeft className="w-5 h-5" />
-                    </button>
-                  </div>
-                  <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
-                    {toc.length > 0 ? renderTocItems(toc) : (
-                      <p className="text-sm text-slate-400 text-center mt-4">Este libro no tiene índice.</p>
-                    )}
+              {/* Panel de Índice (TOC): overlay a pantalla completa por encima de
+                  cualquier otro contenido (incluido el reproductor TTS y el
+                  header del lector) en móvil, panel lateral en tablet/PC —
+                  mismo patrón que el outline del PDF. z-[60] (no z-50) para
+                  escapar del stacking context del panel del lector y quedar
+                  por encima del header (z-30) y la barra TTS (z-40). */}
+              {showToc && (
+                <div className="fixed inset-0 z-[60] flex">
+                  <div className="absolute inset-0 bg-black/30 md:hidden" onClick={() => setShowToc(false)} />
+                  <div className="relative z-10 w-full md:w-72 h-full bg-[var(--bg-card)] border-r border-[var(--border-card)] shadow-2xl flex flex-col">
+                    <div className="p-4 border-b border-[var(--border-card)] bg-[var(--bg-app)]/50 flex-none flex items-center justify-between">
+                      <h3 className="font-bold text-[var(--text-main)] text-sm flex items-center gap-2">
+                        <List className="w-4 h-4" /> Índice
+                      </h3>
+                      <button onClick={() => setShowToc(false)} className="text-[var(--text-muted)] hover:text-[var(--primary)] p-2 transition-colors">
+                        <ChevronLeft className="w-5 h-5" />
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
+                      {toc.length > 0 ? renderTocItems(toc) : (
+                        <p className="text-sm text-slate-400 text-center mt-4">Este libro no tiene índice.</p>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
-
-            {/* Barra flotante: índice + zoom — mismo estilo que la barra del PDF */}
-            <div
-              className={cn(
-                "absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none z-30 w-[calc(100%-1.5rem)] sm:w-auto sm:max-w-xl transition-all duration-300",
-                (controlsVisible && !manuallyHidden) ? "opacity-100" : "opacity-0 translate-y-2"
               )}
-              style={{ bottom: `${16 + bottomOffset}px` }}
-            >
-              <div className="flex items-center justify-center gap-2 px-3 sm:px-4 py-2.5 sm:py-3 w-full sm:w-auto bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-main)] shadow-2xl rounded-full backdrop-blur-md min-h-[48px] whitespace-nowrap pointer-events-auto">
-                <button
-                  onClick={() => setShowToc(v => !v)}
-                  className={cn(
-                    "p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
-                    showToc && "text-[var(--primary)] bg-[var(--primary)]/10"
-                  )}
-                  title="Índice"
-                >
-                  <List className="w-5 h-5" />
-                </button>
-
-                <div className="w-px h-4 bg-[var(--border-card)]" />
-
-                <div className="flex items-center gap-1">
-                  <button
-                    disabled={fontSizeIndex <= 0}
-                    onClick={() => applyFontSize(fontSizeIndex - 1)}
-                    className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
-                    title="Reducir texto"
-                  >
-                    <ZoomOut className="w-5 h-5" />
-                  </button>
-                  <span className="text-xs font-mono font-semibold w-9 text-center tabular-nums">{FONT_SIZES[fontSizeIndex]}%</span>
-                  <button
-                    disabled={fontSizeIndex >= FONT_SIZES.length - 1}
-                    onClick={() => applyFontSize(fontSizeIndex + 1)}
-                    className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 disabled:opacity-30 disabled:pointer-events-none transition-all"
-                    title="Aumentar texto"
-                  >
-                    <ZoomIn className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="w-px h-4 bg-[var(--border-card)]" />
-
-                <button
-                  onClick={() => setManuallyHidden(true)}
-                  className="p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
-                  title="Ocultar controles"
-                >
-                  <ChevronDown className="w-5 h-5" />
-                </button>
-              </div>
             </div>
 
-            {/* Asa para volver a mostrar la barra cuando se ocultó manualmente */}
-            {manuallyHidden && (
-              <button
-                onClick={() => setManuallyHidden(false)}
-                className="absolute left-1/2 -translate-x-1/2 z-30 p-2 rounded-full bg-[var(--bg-card)]/70 border border-[var(--border-card)] text-[var(--text-muted)] shadow-md backdrop-blur-md pointer-events-auto transition-all"
-                style={{ bottom: `${8 + bottomOffset}px` }}
-                title="Mostrar controles"
-              >
-                <ChevronUp className="w-4 h-4" />
-              </button>
+            {/* Franja integrada: en flujo normal del layout (no flotante),
+                igual posición visual (abajo) pero como hermana del visor
+                dentro del mismo contenedor flex-col, sin position: absolute. */}
+            {!hideOwnBar && (
+              <div className={cn(
+                "shrink-0 w-full flex flex-col items-center bg-[var(--bg-card)] border-t border-[var(--border-card)] transition-all duration-300 overflow-hidden",
+                (controlsVisible && !manuallyHidden) ? "max-h-12" : "max-h-[14px]"
+              )}>
+                {/* Manija: tap reabre si está colapsada; arrastrar hacia abajo
+                    colapsa, hacia arriba reabre. */}
+                <div
+                  className="w-full flex justify-center py-1.5 cursor-grab touch-none shrink-0"
+                  onTouchStart={handleBarTouchStart}
+                  onTouchMove={handleBarTouchMove}
+                  onTouchEnd={handleBarTouchEnd}
+                  onClick={() => manuallyHidden && setManuallyHidden(false)}
+                >
+                  <div className="w-10 h-1 rounded-full bg-[var(--text-muted)]/40" />
+                </div>
+
+                <div className="flex items-center justify-center gap-2 px-3 sm:px-4 pb-1.5 w-full text-[var(--text-main)] whitespace-nowrap overflow-x-auto no-scrollbar">
+                  {renderBarControls()}
+                  <div className="w-px h-4 bg-[var(--border-card)]" />
+                  <button
+                    onClick={() => setManuallyHidden(true)}
+                    className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+                    title="Ocultar controles"
+                  >
+                    <ChevronDown className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
             )}
+
+            {/* Controles fusionados con el reproductor TTS: cuando hideOwnBar
+                está activo, la franja propia no se monta (arriba) y estos
+                mismos controles se portan a la fila del widget TTS. */}
+            {hideOwnBar && mergedBarPortalTarget && createPortal(renderBarControls(), mergedBarPortalTarget)}
            </>
          )}
       </div>

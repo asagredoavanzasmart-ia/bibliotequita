@@ -44,6 +44,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsedDesktop, setSidebarCollapsedDesktop] = useState(false);
   const sidebarTouchStartRef = useRef<number | null>(null);
+  const mainTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const [filters, setFilters] = useState({ year: '', author: '', subject: '', read: '', toBuy: '', authorInitial: '', titleInitial: '' });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
@@ -161,12 +162,28 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
         />
       </div>
 
-      <main className="flex-1 flex flex-col h-full overflow-hidden w-full relative">
+      <main
+        className="flex-1 flex flex-col h-full overflow-hidden w-full relative"
+        onTouchStart={(e) => { mainTouchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }}
+        onTouchEnd={(e) => {
+          if (!mainTouchStartRef.current || sidebarOpen) return;
+          const { x, y } = mainTouchStartRef.current;
+          mainTouchStartRef.current = null;
+          const deltaX = e.changedTouches[0].clientX - x;
+          const deltaY = e.changedTouches[0].clientY - y;
+          // Solo dispara con gesto predominantemente horizontal, para no
+          // robar el swipe vertical de scroll de la grilla.
+          if (deltaX > 60 && Math.abs(deltaX) > Math.abs(deltaY) * 1.5) setSidebarOpen(true);
+        }}
+      >
         {activeTab !== 'trash' && activeTab !== 'analytics' && (
           <button
              onClick={() => !demoQuota || demoQuota.current < demoQuota.max ? setShowManualAdd(true) : null}
              disabled={!!demoQuota && demoQuota.current >= demoQuota.max}
-             className="lg:hidden fixed bottom-6 right-6 w-[56px] h-[56px] bg-[var(--primary)] text-white rounded-full shadow-lg shadow-[var(--primary)]/30 flex items-center justify-center z-[70] transition-transform active:scale-95 border-2 border-white/20 disabled:opacity-40 disabled:cursor-not-allowed"
+             className={cn(
+               "lg:hidden fixed right-6 w-[56px] h-[56px] bg-[var(--primary)] text-white rounded-full shadow-lg shadow-[var(--primary)]/30 flex items-center justify-center z-[70] transition-all active:scale-95 border-2 border-white/20 disabled:opacity-40 disabled:cursor-not-allowed",
+               selectedItems.length > 0 ? "bottom-24" : "bottom-6"
+             )}
           >
              <Plus className="w-7 h-7" />
           </button>
@@ -208,7 +225,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
             </div>
           )}
 
-          <div className="flex-1 mt-4 overflow-y-auto no-scrollbar pr-2 pb-24 lg:pb-20">
+          <div className="flex-1 mt-2 overflow-y-auto no-scrollbar pr-2 pb-24 lg:pb-20">
             {activeTab === 'analytics' ? (
                 <AnalyticsDashboard />
             ) : activeTab === 'trash' ? (
