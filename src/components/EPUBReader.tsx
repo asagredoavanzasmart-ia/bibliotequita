@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { ReactReader } from 'react-reader';
+import { ReactReader, ReactReaderStyle } from 'react-reader';
 import type { Rendition, Location as EpubLocation } from 'epubjs';
 import type { NavItem } from 'epubjs';
 import { get } from 'idb-keyval';
@@ -35,10 +35,15 @@ type EpubViewMode = 'paginated' | 'scroll';
 // tampoco corresponde a "página" en flow scrolled-doc. Se ocultan por
 // completo: la navegación de modo Páginas vive en el overlay de gestos propio
 // (ver renderPageGestureOverlay) y en modo Scroll no hay equivalente útil.
+// Importante: hay que partir del objeto de estilos default completo
+// (ReactReaderStyle) y solo pisar arrow/arrowHover — reemplazar el objeto
+// entero deja sin estilos container/readerArea/reader (los que dan tamaño y
+// posición al visor) y el EPUB deja de renderizarse por completo.
 const HIDDEN_ARROW_STYLE = { display: 'none' } as const;
 const READER_STYLES_NO_ARROWS = {
-  arrow: HIDDEN_ARROW_STYLE,
-  arrowHover: HIDDEN_ARROW_STYLE,
+  ...ReactReaderStyle,
+  arrow: { ...ReactReaderStyle.arrow, ...HIDDEN_ARROW_STYLE },
+  arrowHover: { ...ReactReaderStyle.arrowHover, ...HIDDEN_ARROW_STYLE },
 };
 
 // El layout "paginado" de epubjs reparte el texto en columnas cuyo ancho se
@@ -60,7 +65,7 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
   const [manuallyHidden, setManuallyHidden] = useState(false);
   const [viewMode, setViewMode] = useState<EpubViewMode>(() => {
     const saved = typeof window !== 'undefined' ? window.localStorage.getItem(VIEW_MODE_STORAGE_KEY) : null;
-    return saved === 'scroll' ? 'scroll' : 'paginated';
+    return saved === 'paginated' ? 'paginated' : 'scroll';
   });
   // Progreso mostrado en la franja: página N/M en modo Páginas, % en modo Scroll.
   const [pageProgress, setPageProgress] = useState<{ page: number; total: number } | null>(null);
@@ -414,7 +419,7 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
                   location={location}
                   locationChanged={(epubcfi: string) => setLocation(epubcfi)}
                   getRendition={handleGetRendition}
-                  readerStyles={READER_STYLES_NO_ARROWS as any}
+                  readerStyles={READER_STYLES_NO_ARROWS}
                   epubInitOptions={{
                      openAs: 'epub'
                   }}
