@@ -1695,12 +1695,19 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const renderPhysicalBookDashboard = () => {
     return (
       <div
-        className="w-full h-full flex items-center justify-center bg-[#e2e8f0] animate-in fade-in duration-300"
+        className="w-full h-full flex flex-col items-center justify-start gap-6 overflow-y-auto bg-[#e2e8f0] animate-in fade-in duration-300 py-8 px-4"
         onClick={handleScreenClick}
       >
+        {item?.thumbnailUrl && (
+          <img
+            src={item.thumbnailUrl}
+            alt={item.title}
+            className="max-w-full max-h-[60vh] w-auto h-auto object-contain shadow-lg rounded-md"
+          />
+        )}
         <button
           onClick={(e) => { e.stopPropagation(); setActiveTab('edit'); }}
-          className="flex flex-col items-center gap-3 px-8 py-6 rounded-2xl border border-dashed border-[var(--border-card)] hover:border-[var(--primary)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:text-[var(--primary)] transition-all shadow-sm active:scale-95"
+          className="flex flex-col items-center gap-3 px-8 py-6 rounded-2xl border border-dashed border-[var(--border-card)] hover:border-[var(--primary)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:text-[var(--primary)] transition-all shadow-sm active:scale-95 shrink-0"
         >
           <BookIcon className="w-10 h-10" />
           <span className="font-bold text-sm">Subir versión digital</span>

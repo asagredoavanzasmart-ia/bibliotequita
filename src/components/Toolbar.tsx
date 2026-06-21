@@ -99,7 +99,7 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
              </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-3 w-full md:w-auto shrink-0">
+          <div className="hidden sm:flex flex-wrap items-center justify-end gap-3 w-full md:w-auto shrink-0">
             
             {activeTab !== 'trash' && activeTab !== 'analytics' && (
               <button 
@@ -165,9 +165,9 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
                  <Settings className="w-5 h-5" />
               </button>
 
-              {/* Avatar + logout */}
+              {/* Avatar + logout (en móvil ya están en el Sidebar, evita una fila vacía extra en el header) */}
               {user && (
-                <div className="flex items-center gap-2 pl-1">
+                <div className="hidden sm:flex items-center gap-2 pl-1">
                   {user.photo ? (
                     <img src={user.photo} alt={user.name} className="w-8 h-8 rounded-full border-2 border-[var(--primary)]/30 object-cover" title={user.name} />
                   ) : (
