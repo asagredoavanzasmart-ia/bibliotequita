@@ -254,6 +254,29 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       .join(' \n');
   }, []);
 
+  // rendition.next()/prev() de epubjs son asíncronos; esperar un timeout fijo
+  // antes de leer el contenido nuevo es poco fiable (en secciones grandes o
+  // dispositivos lentos el render todavía no terminó, y se lee/lleva texto
+  // desincronizado de lo que el usuario ve en pantalla). El evento
+  // 'relocated' confirma cuándo el cambio de sección ya se aplicó.
+  const waitForEpubRelocated = useCallback((timeoutMs = 2000): Promise<void> => {
+    return new Promise((resolve) => {
+      const rendition = epubRenditionRef.current as any;
+      if (!rendition) { resolve(); return; }
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        rendition.off?.('relocated', onRelocated);
+        clearTimeout(timer);
+        resolve();
+      };
+      const onRelocated = () => finish();
+      const timer = setTimeout(finish, timeoutMs);
+      rendition.on?.('relocated', onRelocated);
+    });
+  }, []);
+
   // Función para extraer texto del DOM de la página activa del PDF, TXT o EPUB
   const getActivePageText = useCallback(() => {
     if (item?.type === 'pdf') {
@@ -436,12 +459,17 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
 
     if (item?.type === 'epub') {
-      const snippet = await getEpubVisibleTextFromLocation();
-      return findPhraseIndexForSnippet(phraseList, snippet);
+      // phraseList para EPUB ya se construye a partir de getEpubVisibleText()
+      // (todo el texto actualmente visible en los iframes de epub.js), así que
+      // la frase 0 de esa lista YA ES la primera frase en pantalla — no hace
+      // falta (ni conviene) re-buscarla por fuzzy-matching de snippet: ese
+      // matching fallaba con textos largos/repetidos y arrancaba la lectura
+      // en un punto que no coincidía con lo que el usuario veía en pantalla.
+      return 0;
     }
 
     return 0;
-  }, [item?.type, currentPage, getFirstVisibleTextSnippet, findPhraseIndexForSnippet, getEpubVisibleTextFromLocation]);
+  }, [item?.type, currentPage, getFirstVisibleTextSnippet, findPhraseIndexForSnippet]);
 
   // Para EPUB: navega la rendition al inicio del capítulo actual usando la
   // tabla de contenidos (TOC) del libro. Devuelve true si pudo navegar.
@@ -1112,21 +1140,32 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     return '';
   }, [item?.type, item?.source, getEpubVisibleText]);
 
-  // Cambio de página desde el widget TTS con auto-lectura
-  const handleTtsPrevPage = useCallback(() => {
+  // Cambio de página desde el widget TTS con auto-lectura. Orden estricto
+  // para EPUB: primero cambiar de sección y esperar a que epubjs confirme el
+  // cambio (evento 'relocated'), y solo DESPUÉS extraer el texto y empezar a
+  // leer — si se lee antes de tiempo, el texto extraído no es el que quedó
+  // visible en pantalla.
+  const handleTtsPrevPage = useCallback(async () => {
+    handleTtsStop();
     if (item?.type === 'epub') {
-      handleTtsStop();
       epubRenditionRef.current?.prev();
-    } else {
-      const page = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
-      if (page <= 1) return;
-      const newPage = page - 1;
-      handleTtsStop();
-      setTargetPage({ page: newPage, t: Date.now() });
-      setCurrentPage(newPage);
+      await waitForEpubRelocated();
+      const text = getEpubVisibleText();
+      if (text) {
+        const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
+        setPhrases(phraseList);
+        setTtsTextSource('page');
+        playPhrase(0, phraseList, true);
+      }
+      return;
     }
+    const page = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
+    if (page <= 1) return;
+    const newPage = page - 1;
+    setTargetPage({ page: newPage, t: Date.now() });
+    setCurrentPage(newPage);
     setTimeout(async () => {
-      const text = await getPageTextWithOcrFallback(typeof currentPage === 'number' ? currentPage - 1 : 0);
+      const text = await getPageTextWithOcrFallback(newPage);
       if (text) {
         const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
         setPhrases(phraseList);
@@ -1134,22 +1173,29 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         playPhrase(0, phraseList, true);
       }
     }, 800);
-  }, [currentPage, item?.type, handleTtsStop, playPhrase, getPageTextWithOcrFallback]);
+  }, [currentPage, item?.type, handleTtsStop, playPhrase, getPageTextWithOcrFallback, getEpubVisibleText, waitForEpubRelocated]);
 
-  const handleTtsNextPage = useCallback(() => {
+  const handleTtsNextPage = useCallback(async () => {
+    handleTtsStop();
     if (item?.type === 'epub') {
-      handleTtsStop();
       epubRenditionRef.current?.next();
-    } else {
-      const page = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
-      if (page >= totalPages) return;
-      const newPage = page + 1;
-      handleTtsStop();
-      setTargetPage({ page: newPage, t: Date.now() });
-      setCurrentPage(newPage);
+      await waitForEpubRelocated();
+      const text = getEpubVisibleText();
+      if (text) {
+        const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
+        setPhrases(phraseList);
+        setTtsTextSource('page');
+        playPhrase(0, phraseList, true);
+      }
+      return;
     }
+    const page = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
+    if (page >= totalPages) return;
+    const newPage = page + 1;
+    setTargetPage({ page: newPage, t: Date.now() });
+    setCurrentPage(newPage);
     setTimeout(async () => {
-      const text = await getPageTextWithOcrFallback(typeof currentPage === 'number' ? currentPage + 1 : 0);
+      const text = await getPageTextWithOcrFallback(newPage);
       if (text) {
         const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
         setPhrases(phraseList);
@@ -1157,7 +1203,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         playPhrase(0, phraseList, true);
       }
     }, 800);
-  }, [currentPage, totalPages, item?.type, handleTtsStop, playPhrase, getPageTextWithOcrFallback]);
+  }, [currentPage, totalPages, item?.type, handleTtsStop, playPhrase, getPageTextWithOcrFallback, getEpubVisibleText, waitForEpubRelocated]);
 
   // Play / Pausa general
   const handleTtsPlayPause = async () => {
@@ -1681,6 +1727,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               controlsVisible={pageControlsVisible}
               hideOwnBar={showTtsWidget}
               mergedBarPortalTarget={showTtsWidget ? mergedBarSlotEl : null}
+              onContentTap={() => { if (isFullscreen) setShowControls(prev => !prev); }}
               getRendition={(rendition) => {
                 epubRenditionRef.current = rendition;
                 rendition.on('selected', (_cfiRange: string, contents: any) => {

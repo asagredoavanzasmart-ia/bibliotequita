@@ -20,6 +20,12 @@ interface EPUBReaderProps {
   // Nodo DOM (gestionado por ReaderView) donde portar índice/zoom cuando
   // hideOwnBar es true. null/undefined → no se porta nada.
   mergedBarPortalTarget?: HTMLElement | null;
+  // Tap simple (sin selección activa) dentro del contenido del EPUB. El
+  // contenido vive en un <iframe> propio de epub.js que no burbujea eventos
+  // al DOM padre de React, así que ReaderView no puede detectar el tap por
+  // su propio onClick — este callback es la única forma de avisarle (p. ej.
+  // para alternar el header/controles en fullscreen).
+  onContentTap?: () => void;
 }
 
 const FONT_SIZES = [80, 90, 100, 110, 125, 150, 175, 200];
@@ -55,7 +61,7 @@ const READER_STYLES_NO_ARROWS = {
 // ResizeObserver más abajo) — en modo Scroll esto no hace falta porque el
 // contenido siempre ocupa el 100% del ancho disponible sin columnas fijas.
 
-export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnBar = false, mergedBarPortalTarget = null }: EPUBReaderProps) {
+export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnBar = false, mergedBarPortalTarget = null, onContentTap }: EPUBReaderProps) {
   const [location, setLocation] = useState<string | number>(0);
   const [actualUrl, setActualUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<boolean>(false);
@@ -118,7 +124,6 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
   const dragWidthRef = useRef(0);
 
   const handlePageGestureStart = useCallback((e: TouchEvent) => {
-    if (viewMode !== 'paginated') return;
     // No interceptar el gesto si el usuario está seleccionando texto: epubjs
     // emite 'selected'/'click' en el iframe interno y la toolbar de citas
     // depende de que esos eventos lleguen sin que este gesto los tape.
@@ -127,16 +132,16 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     if (sel && !sel.isCollapsed) return;
     dragStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
     dragWidthRef.current = containerRef.current?.clientWidth || window.innerWidth;
-  }, [viewMode]);
+  }, []);
 
   const handlePageGestureMove = useCallback((e: TouchEvent) => {
-    if (!dragStartRef.current) return;
+    if (!dragStartRef.current || viewMode !== 'paginated') return;
     const dx = e.touches[0].clientX - dragStartRef.current.x;
     const dy = e.touches[0].clientY - dragStartRef.current.y;
     // Gesto predominantemente vertical: es scroll/lectura normal, no swipe de página.
     if (Math.abs(dy) > Math.abs(dx) * 1.5 && Math.abs(dx) < 15) return;
     setDragOffset(dx);
-  }, []);
+  }, [viewMode]);
 
   const handlePageGestureEnd = useCallback((e: TouchEvent) => {
     if (!dragStartRef.current) return;
@@ -145,8 +150,17 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     const dx = e.changedTouches[0].clientX - start.x;
     const dy = e.changedTouches[0].clientY - start.y;
     const width = dragWidthRef.current || window.innerWidth;
+    const isTap = Math.abs(dx) < 10 && Math.abs(dy) < 10;
 
-    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
+    // Modo Scroll: no hay paginación por gesto, solo nos interesa detectar el
+    // tap simple para avisar a ReaderView (mostrar/ocultar controles en
+    // fullscreen) — un swipe aquí es scroll normal, no se intercepta.
+    if (viewMode !== 'paginated') {
+      if (isTap) onContentTap?.();
+      return;
+    }
+
+    if (isTap) {
       // Tap, no swipe: tercio izq/der pasa de página, tercio central alterna
       // la visibilidad de la franja (mismo rol que el tap-to-toggle de PDF).
       setDragOffset(0);
@@ -159,6 +173,7 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
       } else {
         setManuallyHidden(v => !v);
       }
+      onContentTap?.();
       return;
     }
 
@@ -174,7 +189,7 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
       setDragOffset(0);
       window.setTimeout(() => setDragAnimating(false), 220);
     }
-  }, []);
+  }, [viewMode, onContentTap]);
 
   // Ref estable que el listener del iframe consulta en cada evento, para
   // siempre invocar la versión más reciente de los handlers sin tener que
@@ -200,6 +215,14 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     const initialIndex = isMobile ? MOBILE_DEFAULT_FONT_SIZE_INDEX : DEFAULT_FONT_SIZE_INDEX;
     setFontSizeIndex(initialIndex);
     rendition.themes.fontSize(`${FONT_SIZES[initialIndex]}%`);
+    // Muchos EPUBs traen su propio padding/margin grande en el body (definido
+    // por el editor del libro); sin esto el texto queda con márgenes laterales
+    // excesivos sin importar el ancho real del visor. Se fuerza un padding fijo
+    // y reducido, consistente en todos los libros.
+    rendition.themes.default({
+      body: { padding: '0 4px !important', margin: '0 !important' },
+      'p, div, section, article': { 'max-width': '100% !important' },
+    });
     rendition.book.loaded.navigation.then((nav) => setToc(nav.toc));
 
     // book.locations.generate() necesita recorrer todo el libro una vez; se
@@ -324,7 +347,7 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
         <List className="w-5 h-5" />
       </button>
 
-      <div className="w-px h-4 bg-[var(--border-card)]" />
+      <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
 
       <button
         onClick={() => setViewModePersisted(viewMode === 'paginated' ? 'scroll' : 'paginated')}
@@ -334,14 +357,14 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
         {viewMode === 'paginated' ? <BookOpen className="w-5 h-5" /> : <AlignJustify className="w-5 h-5" />}
       </button>
 
-      <div className="w-px h-4 bg-[var(--border-card)]" />
+      <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
 
       {viewMode === 'paginated' && pageProgress && (
         <>
           <span className="text-xs font-mono font-semibold tabular-nums text-[var(--text-muted)] px-1" title="Página actual">
             {pageProgress.page} / {pageProgress.total}
           </span>
-          <div className="w-px h-4 bg-[var(--border-card)]" />
+          <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
         </>
       )}
       {viewMode === 'scroll' && percentProgress !== null && (
@@ -349,9 +372,14 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
           <span className="text-xs font-mono font-semibold tabular-nums text-[var(--text-muted)] px-1" title="Progreso de lectura">
             {percentProgress}%
           </span>
-          <div className="w-px h-4 bg-[var(--border-card)]" />
+          <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
         </>
       )}
+
+      {/* Fuerza el salto a una 2da línea en pantallas angostas (flex-wrap del
+          contenedor padre): el grupo de zoom queda siempre en su propia fila
+          en vez de comprimirse junto al resto con scroll horizontal. */}
+      <div className="w-full h-0 sm:hidden" />
 
       <div className="flex items-center gap-1">
         <button
@@ -465,7 +493,7 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
             {!hideOwnBar && (
               <div className={cn(
                 "shrink-0 w-full flex flex-col items-center bg-[var(--bg-card)] border-t border-[var(--border-card)] transition-all duration-300 overflow-hidden",
-                (controlsVisible && !manuallyHidden) ? "max-h-12" : "max-h-[14px]"
+                (controlsVisible && !manuallyHidden) ? "max-h-24 sm:max-h-12" : "max-h-[14px]"
               )}>
                 {/* Manija: tap reabre si está colapsada; arrastrar hacia abajo
                     colapsa, hacia arriba reabre. */}
@@ -479,9 +507,12 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
                   <div className="w-10 h-1 rounded-full bg-[var(--text-muted)]/40" />
                 </div>
 
-                <div className="flex items-center justify-center gap-2 px-3 sm:px-4 pb-1.5 w-full text-[var(--text-main)] whitespace-nowrap overflow-x-auto no-scrollbar">
+                {/* En pantallas angostas (vertical) los controles se parten en
+                    2 líneas (flex-wrap) en vez de forzar scroll horizontal —
+                    en pantallas anchas (sm:) siguen en una sola fila. */}
+                <div className="flex items-center justify-center flex-wrap sm:flex-nowrap gap-2 px-3 sm:px-4 pb-1.5 w-full text-[var(--text-main)] sm:whitespace-nowrap sm:overflow-x-auto no-scrollbar">
                   {renderBarControls()}
-                  <div className="w-px h-4 bg-[var(--border-card)]" />
+                  <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
                   <button
                     onClick={() => setManuallyHidden(true)}
                     className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
