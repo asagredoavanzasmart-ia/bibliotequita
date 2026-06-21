@@ -1644,9 +1644,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // digital — no se crea una "ventana"/tarjeta de detalle aparte.
   const renderPhysicalBookDashboard = () => {
     return (
-      <div className="w-full h-full flex items-center justify-center bg-[#e2e8f0] animate-in fade-in duration-300">
+      <div
+        className="w-full h-full flex items-center justify-center bg-[#e2e8f0] animate-in fade-in duration-300"
+        onClick={handleScreenClick}
+      >
         <button
-          onClick={() => setActiveTab('edit')}
+          onClick={(e) => { e.stopPropagation(); setActiveTab('edit'); }}
           className="flex flex-col items-center gap-3 px-8 py-6 rounded-2xl border border-dashed border-[var(--border-card)] hover:border-[var(--primary)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:text-[var(--primary)] transition-all shadow-sm active:scale-95"
         >
           <BookIcon className="w-10 h-10" />
@@ -2113,7 +2116,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     >
       
       {/* Header */}
-      {(!isFullscreen || showControls) && (
+      {/* Libro solo físico: no hay texto que tape el header, así que se
+          mantiene siempre visible (no depende del auto-ocultado táctil que
+          usa el lector digital en pantalla completa). */}
+      {(isPhysicalOnly || !isFullscreen || showControls) && (
         <header className="bg-white border-b border-slate-200 px-2 sm:px-4 h-14 flex flex-row items-center justify-between shrink-0 shadow-sm z-30 gap-2 w-full animate-in slide-in-from-top-4">
             <div className="flex items-center gap-2 sm:gap-4 shrink-0">
             <button
