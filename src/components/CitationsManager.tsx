@@ -1184,26 +1184,26 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
       )}
       
       {/* Upper Navigation Bar */}
-      <header className="bg-white border-b border-slate-200 px-4 h-16 flex flex-row items-center justify-between shrink-0 shadow-sm z-30">
-         <div className="flex items-center gap-3">
-            <button 
+      <header className="bg-white border-b border-slate-200 px-4 py-3 md:h-16 md:py-0 flex flex-col md:flex-row md:items-center justify-between gap-2.5 md:gap-0 shrink-0 shadow-sm z-30">
+         <div className="flex items-center gap-3 min-w-0">
+            <button
               onClick={showSummaryView ? () => { setShowSummaryView(false); setSummaryError(''); } : onClose}
-              className="p-2 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
+              className="p-2 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
               title={showSummaryView ? "Volver a las citas" : "Volver al lector"}
             >
                {showSummaryView ? <ChevronLeft className="w-5 h-5" /> : <X className="w-5 h-5" />}
             </button>
-            <div>
-               <h2 className="text-base font-extrabold text-slate-800 tracking-tight leading-none">
+            <div className="min-w-0">
+               <h2 className="text-base font-extrabold text-slate-800 tracking-tight leading-none truncate">
                  {showSummaryView ? "Resumen Inteligente" : "Administración de Citas"}
                </h2>
-               <p className="text-[11px] text-slate-500 mt-1">
+               <p className="text-[11px] text-slate-500 mt-1 truncate md:whitespace-normal">
                  {showSummaryView ? "Potenciado por Gemini 3.5 Flash" : "Organiza, reordena, exporta y configura tus notas y marcadores"}
                </p>
             </div>
          </div>
 
-         <div className="flex items-center gap-2">
+         <div className="flex items-center gap-2 shrink-0">
             <button 
               onClick={() => setShowSummaryView(prev => !prev)}
               className={cn(
