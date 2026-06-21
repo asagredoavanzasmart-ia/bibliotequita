@@ -195,14 +195,14 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
       >
         {/* Portada angosta que llena todo su espacio (sin margen), bordes rectos */}
         <div
-          className="h-28 sm:h-32 w-16 sm:w-20 bg-[var(--bg-app)] border-r border-slate-200/50 cursor-grab active:cursor-grabbing relative shrink-0 overflow-hidden group/cover"
+          className="h-28 sm:h-32 w-[70px] sm:w-[88px] bg-[var(--bg-app)] border-r border-slate-200/50 cursor-grab active:cursor-grabbing relative shrink-0 overflow-hidden group/cover"
           {...attributes}
           {...listeners}
         >
           {item.thumbnailUrl ? (
-            <img src={item.thumbnailUrl} alt={item.title} className="w-full h-full object-cover" draggable={false} />
+            <img src={item.thumbnailUrl} alt={item.title} className="absolute inset-0 w-full h-full object-cover" draggable={false} />
           ) : (
-            <div className="w-full h-full bg-gradient-to-br from-[#00558F] to-slate-800 flex flex-col items-center justify-center p-1 relative overflow-hidden before:absolute before:left-[3px] before:top-0 before:bottom-0 before:w-[2px] before:bg-black/20">
+            <div className="absolute inset-0 w-full h-full bg-gradient-to-br from-[#00558F] to-slate-800 flex flex-col items-center justify-center p-1 overflow-hidden before:absolute before:left-[3px] before:top-0 before:bottom-0 before:w-[2px] before:bg-black/20">
                <h4 className="text-center text-white/90 font-bold text-[8px] line-clamp-4 leading-tight drop-shadow-md px-0.5 relative z-10">{item.title}</h4>
             </div>
           )}
