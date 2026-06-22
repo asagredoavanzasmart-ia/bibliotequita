@@ -22,23 +22,52 @@ export interface UploadResult {
   mimeType: string;
 }
 
+// `onProgress` (0-100) usa XMLHttpRequest en vez de fetch porque fetch no
+// expone el progreso de SUBIDA (solo de descarga) en ningún navegador — es
+// la única forma de mostrar una barra real para archivos grandes (videos,
+// audios de varios MB) que pueden tardar bastante en subir.
 export async function uploadFile(
   file: File | Blob,
   fallbackName = "upload.bin",
+  onProgress?: (percent: number) => void,
 ): Promise<UploadResult> {
   const form = new FormData();
   const name = (file instanceof File ? file.name : null) || fallbackName;
   form.append("file", file, name);
 
-  const res = await fetch("/api/upload", { method: "POST", credentials: "include", body: form });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    const msg = data.error || res.statusText;
-    const err: any = new Error(msg);
-    err.code = data.code ?? null;
-    throw err;
+  if (!onProgress) {
+    const res = await fetch("/api/upload", { method: "POST", credentials: "include", body: form });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const msg = data.error || res.statusText;
+      const err: any = new Error(msg);
+      err.code = data.code ?? null;
+      throw err;
+    }
+    return res.json();
   }
-  return res.json();
+
+  return new Promise<UploadResult>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/upload");
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      let data: any = {};
+      try { data = JSON.parse(xhr.responseText || "{}"); } catch { /* respuesta no-JSON */ }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data);
+      } else {
+        const err: any = new Error(data.error || xhr.statusText || "Error al subir el archivo");
+        err.code = data.code ?? null;
+        reject(err);
+      }
+    };
+    xhr.onerror = () => reject(new Error("Error de red al subir el archivo"));
+    xhr.send(form);
+  });
 }
 
 // Token interno para DELETE — se obtiene del servidor al primer uso y se cachea.

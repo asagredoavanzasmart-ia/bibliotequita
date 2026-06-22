@@ -145,7 +145,9 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
         {/* Badges de estado, siempre visibles */}
         {item.favorite && <Star className="absolute top-1.5 left-1.5 w-4 h-4 text-yellow-400 fill-yellow-400/50 drop-shadow z-10" />}
         {item.pinned && <Pin className="absolute top-1.5 left-7 w-4 h-4 text-amber-400 fill-amber-400/40 drop-shadow z-10" />}
-        {item.read && <CheckCircle2 className="absolute top-1.5 right-1.5 w-4 h-4 text-emerald-400 drop-shadow z-10" />}
+        {/* En móvil (vista "covers" a 2 columnas) la portada es angosta y este
+            badge quedaba cortado por el borde redondeado de la tarjeta. */}
+        {item.read && <CheckCircle2 className="absolute top-1.5 right-1.5 w-4 h-4 text-emerald-400 drop-shadow z-10 hidden sm:block" />}
 
         {/* Overlay hover: título + acciones (seleccionar / editar / eliminar) */}
         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col justify-end p-2 z-20">
@@ -333,7 +335,10 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
           <button type="button" onClick={handleToggleToRead} className="w-7 h-7 rounded-md bg-[var(--bg-app)]/90 shadow-md flex items-center justify-center transition-transform hover:scale-110" title={item.toRead ? "Quitar de Por Leer" : "Por Leer"}>
             <Hourglass className={cn("w-4 h-4", item.toRead ? "text-sky-500 fill-sky-400/30" : "text-slate-500 hover:text-sky-500")} />
           </button>
-          <button type="button" onClick={handleToggleRead} className="w-7 h-7 rounded-md bg-[var(--bg-app)]/90 shadow-md flex items-center justify-center transition-transform hover:scale-110" title={item.read ? "Marcar como no leído" : "Marcar como leído"}>
+          {/* En la vista compacta (2 columnas) en móvil la portada es muy baja
+              y el 4º botón quedaba cortado; se oculta el check ahí (el estado
+              "leído" sigue marcándose desde la barra de progreso/otras vistas). */}
+          <button type="button" onClick={handleToggleRead} className={cn("w-7 h-7 rounded-md bg-[var(--bg-app)]/90 shadow-md items-center justify-center transition-transform hover:scale-110", viewMode === 'grid-compact' ? "hidden sm:flex" : "flex")} title={item.read ? "Marcar como no leído" : "Marcar como leído"}>
             <CheckCircle2 className={cn("w-4 h-4", item.read ? "text-emerald-500 fill-emerald-500/30" : "text-slate-500 hover:text-emerald-500")} />
           </button>
         </div>
@@ -365,7 +370,7 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
                <span className={cn("text-[12px] font-bold w-[72px] shrink-0 text-right whitespace-nowrap", progState.color.replace('bg-', 'text-'))}>{progState.text}</span>
             </div>
           )}
-          <div className="flex items-end justify-between mt-2">
+          <div className={cn("flex items-end justify-between", cardSettings.showProgress ? "mt-1" : "mt-2")}>
             {cardSettings.showRating ? (
               <div onPointerDown={(e) => e.stopPropagation()}>
                 <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" />

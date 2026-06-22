@@ -8,10 +8,11 @@
 // =============================================================================
 
 import { useState, useRef } from 'react';
-import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, ChevronLeft, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download } from 'lucide-react';
+import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, ChevronLeft, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, ExternalLink as ExternalLinkIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { uploadFile } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
+import { useWakeLock } from '../hooks/useWakeLock';
 import { ResourceItem, ResourceKind, ResourceType } from '../types';
 import { PDFReader } from './PDFReader';
 import { EPUBReader } from './EPUBReader';
@@ -105,6 +106,10 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
   const { resources, addResource, updateResource, deleteResource } = useResources(bookId);
   const [activeKind, setActiveKind] = useState<ResourceKind>('video');
   const [uploading, setUploading] = useState(false);
+  // Porcentaje real de subida (0-100). Los recursos multimedia pueden pesar
+  // >10MB y tardar bastante; sin esto el usuario no tenía forma de saber si
+  // seguía subiendo o se había quedado pegado.
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [openTextResource, setOpenTextResource] = useState<ResourceItem | null>(null);
   const [notesResourceId, setNotesResourceId] = useState<string | null>(null);
@@ -112,6 +117,13 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
   const [renameValue, setRenameValue] = useState('');
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [linkValue, setLinkValue] = useState('');
+
+  // Nº de medios (video/audio) reproduciéndose ahora mismo. Mientras haya
+  // alguno, mantenemos la pantalla encendida para que el móvil no se bloquee.
+  const [playingMediaCount, setPlayingMediaCount] = useState(0);
+  useWakeLock(playingMediaCount > 0);
+  const onMediaPlay = () => setPlayingMediaCount(c => c + 1);
+  const onMediaPause = () => setPlayingMediaCount(c => Math.max(0, c - 1));
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const current = resources.filter((r) => r.kind === activeKind);
@@ -121,9 +133,10 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
+    setUploadProgress(0);
     setUploadError(null);
     try {
-      const { url, mimeType } = await uploadFile(file);
+      const { url, mimeType } = await uploadFile(file, undefined, setUploadProgress);
       const fileType = activeKind === 'text' ? fileTypeFromName(file.name) : undefined;
       // Portada best-effort para PDF/EPUB (no bloquea la subida si falla).
       const thumbnailUrl = fileType === 'pdf' || fileType === 'epub'
@@ -142,6 +155,7 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
       setUploadError(err?.message || 'No se pudo subir el archivo. Verifica tu conexión e inténtalo de nuevo.');
     } finally {
       setUploading(false);
+      setUploadProgress(0);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -237,6 +251,24 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
           <input ref={fileInputRef} type="file" accept={activeMeta.accept} className="hidden" onChange={handleUpload} />
         </div>
 
+        {/* Barra de progreso real de subida: los videos/audios pueden pesar
+            >10MB y tardar — sin esto el usuario no sabía si seguía subiendo
+            o se había quedado pegado. */}
+        {uploading && (
+          <div className="mb-4">
+            <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 mb-1">
+              <span>Subiendo archivo…</span>
+              <span>{uploadProgress}%</span>
+            </div>
+            <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+              <div
+                className="h-full bg-[var(--primary)] rounded-full transition-all duration-200"
+                style={{ width: `${Math.max(2, uploadProgress)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         {uploadError && (
           <div className="flex items-start justify-between gap-2 mb-4 px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-700">
             <span>{uploadError}</span>
@@ -273,19 +305,33 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
                 {/* Vista/reproductor embebido por tipo */}
                 {r.kind === 'video' && (
                   getVideoEmbedUrl(r.source) ? (
-                    <iframe
-                      src={getVideoEmbedUrl(r.source)!}
-                      className="w-full aspect-video bg-black"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                    />
+                    <div className="relative">
+                      <iframe
+                        src={getVideoEmbedUrl(r.source)!}
+                        className="w-full aspect-video bg-black"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen
+                      />
+                      {/* YouTube/Vimeo a veces rechazan el embed dentro del WebView de la
+                          app (Error 153 y similares: restricción del proveedor, no un bug
+                          de la app). Como el iframe no avisa de forma fiable cuando falla,
+                          se ofrece siempre este botón que abre el video en el navegador o
+                          la app de YouTube real del dispositivo, donde sí funciona. */}
+                      <button
+                        type="button"
+                        onClick={() => window.open(r.source, '_blank', 'noopener,noreferrer')}
+                        className="absolute bottom-2 right-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-black/70 text-white hover:bg-black/85 transition-colors backdrop-blur-sm"
+                      >
+                        <ExternalLinkIcon className="w-3.5 h-3.5" /> Abrir en YouTube/navegador
+                      </button>
+                    </div>
                   ) : (
-                    <video controls className="w-full max-h-72 bg-black" src={r.source} />
+                    <video controls className="w-full max-h-72 bg-black" src={r.source} onPlay={onMediaPlay} onPause={onMediaPause} onEnded={onMediaPause} />
                   )
                 )}
                 {r.kind === 'audio' && (
                   <div className="p-3">
-                    <audio controls className="w-full" src={r.source} />
+                    <audio controls className="w-full" src={r.source} onPlay={onMediaPlay} onPause={onMediaPause} onEnded={onMediaPause} />
                   </div>
                 )}
                 {r.kind === 'image' && (

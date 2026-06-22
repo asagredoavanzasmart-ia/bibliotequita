@@ -36,6 +36,7 @@ import { BookmarksMenu } from './BookmarksMenu';
 import { AuditorPanel } from './AuditorPanel';
 import { ResourcesPanel } from './ResourcesPanel';
 import { useReadingTimeTracker } from '../hooks/useReadingTime';
+import { useWakeLock } from '../hooks/useWakeLock';
 
 interface ReaderViewProps {
   bookId: string;
@@ -106,6 +107,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // cuando el TTS está abierto, fusionándolos junto a los puntos de color.
   const [mergedBarSlotEl, setMergedBarSlotEl] = useState<HTMLDivElement | null>(null);
   const [ttsStatus, setTtsStatus] = useState<'idle' | 'loading' | 'playing' | 'paused' | 'error'>('idle');
+  // Mantener la pantalla encendida mientras se genera o reproduce audio.
+  useWakeLock(ttsStatus === 'playing' || ttsStatus === 'loading');
   const [ttsErrorMessage, setTtsErrorMessage] = useState('');
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
   const [ttsTextSource, setTtsTextSource] = useState<'selection' | 'page'>('page');
@@ -188,6 +191,26 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const [selectedVoice, setSelectedVoice] = useState('6Gr4AVmTax1pMJO0lHRK');
   const [selectedModel, setSelectedModel] = useState('gemini-2.0-flash');
 
+  // Al abrir el lector, si el usuario tiene voces marcadas como favoritas,
+  // arrancar con la primera favorita (y su proveedor correspondiente) en vez de
+  // la voz por defecto. Solo se aplica una vez al montar para no pisar la
+  // elección manual del usuario durante la sesión.
+  const appliedFavoriteVoiceRef = useRef(false);
+  useEffect(() => {
+    if (appliedFavoriteVoiceRef.current) return;
+    if (!favoriteVoices || favoriteVoices.length === 0) return;
+    const favId = favoriteVoices[0];
+    const provider: 'elevenlabs' | 'google' | 'google-standard' | null =
+      ELEVENLABS_VOICES.some(v => v.id === favId) ? 'elevenlabs' :
+      GOOGLE_VOICES.some(v => v.id === favId) ? 'google' :
+      GOOGLE_STANDARD_VOICES.some(v => v.id === favId) ? 'google-standard' : null;
+    if (provider) {
+      appliedFavoriteVoiceRef.current = true;
+      setSelectedProvider(provider);
+      setSelectedVoice(favId);
+    }
+  }, [favoriteVoices, ELEVENLABS_VOICES, GOOGLE_VOICES, GOOGLE_STANDARD_VOICES]);
+
   // Frases extraídas para navegación paso a paso
   const [phrases, setPhrases] = useState<string[]>([]);
   const [currentPhraseIndex, setCurrentPhraseIndex] = useState(-1);
@@ -236,6 +259,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   // Ref estable a playPhrase para usarla desde onended sin capturar closures stale
   const playPhraseRef = useRef<((index: number, phraseList: string[]) => Promise<void>) | null>(null);
+  // Ref estable a "avanzar página y seguir leyendo" para encadenar al terminar
+  // la página actual sin que la lectura se detenga (lectura continua).
+  const handleTtsNextPageRef = useRef<(() => void | Promise<void>) | null>(null);
+  // true mientras hay una sesión de lectura activa: distingue "se acabó la
+  // página" (debe avanzar a la siguiente) de "el usuario detuvo" (no avanza).
+  const ttsActiveRef = useRef(false);
 
   // Timeout del reintento de resaltado EPUB (ver highlightPhraseInEpub más abajo)
   const epubHighlightRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -841,6 +870,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       preloadedAudioRef.current.audio.src = '';
       preloadedAudioRef.current = null;
     }
+    ttsActiveRef.current = false;
     setTtsStatus('idle');
     setCurrentPhraseIndex(-1);
     highlightCurrentPhrase('');
@@ -872,6 +902,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       clearTimeout(ttsStepTimeoutRef.current);
       ttsStepTimeoutRef.current = null;
     }
+
+    // Marca la sesión de lectura como activa: permite que onended encadene a la
+    // siguiente página al terminar la actual (lectura continua).
+    ttsActiveRef.current = true;
 
     setTtsStatus('loading');
     setCurrentPhraseIndex(index);
@@ -948,6 +982,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         if (nextIndex < phraseList.length) {
           // Usar el ref estable — evita capturar el closure stale de playPhrase
           playPhraseRef.current?.(nextIndex, phraseList);
+        } else if (ttsTextSource === 'page' && ttsActiveRef.current) {
+          // Fin de la página actual: en lugar de detenerse, avanzar a la
+          // siguiente página y seguir leyendo desde su primera frase. La
+          // lectura continúa sin interrupción hasta el final del documento
+          // o hasta que el usuario detenga manualmente. handleTtsNextPage ya
+          // comprueba si es la última página (y entonces no hace nada → la
+          // reproducción simplemente termina).
+          handleTtsNextPageRef.current?.();
         } else {
           handleTtsStop();
         }
@@ -1205,6 +1247,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }, 800);
   }, [currentPage, totalPages, item?.type, handleTtsStop, playPhrase, getPageTextWithOcrFallback, getEpubVisibleText, waitForEpubRelocated]);
 
+  // Ref estable para encadenar el avance de página desde onended sin closures stale.
+  handleTtsNextPageRef.current = handleTtsNextPage;
+
   // Play / Pausa general
   const handleTtsPlayPause = async () => {
     if (ttsStatus === 'playing' && currentAudio) {
@@ -1414,6 +1459,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Índice del PDF controlado desde la barra TTS compacta en móvil horizontal.
   const [pdfOutlineOpen, setPdfOutlineOpen] = useState(false);
 
+  // En móvil horizontal los botones de reproducción se agrandan ~30% para que
+  // sean más fáciles de tocar (padding e ícono mayores). En el resto, tamaño normal.
+  const ttsBtnPad = isMobileLandscape ? "p-2.5" : "p-2";
+  const ttsBtnIcon = isMobileLandscape ? "w-5 h-5" : "w-4 h-4";
+
   // Generación de índice con IA cuando el PDF no trae outline nativo (se
   // persiste en el propio item para no tener que regenerarlo cada vez).
   const [generatingToc, setGeneratingToc] = useState(false);
@@ -1621,7 +1671,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     // lo que borraría la toolbar de citas en cada mouseup).
     if (item?.type === 'epub') return;
 
-    const captureAndCollapse = () => {
+    const captureSelection = () => {
       const selection = window.getSelection();
       if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
         const text = selection.toString().trim();
@@ -1639,34 +1689,31 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       return false;
     };
 
-    const handleMouseUp = () => { captureAndCollapse(); };
+    // Capturamos texto y posición SIN colapsar la selección: la selección
+    // azul nativa se mantiene visible mientras el usuario elige color/parlante.
+    // (Antes se llamaba a removeAllRanges() tras 250ms para ocultar la barra
+    //  nativa de Chrome, pero eso hacía parpadear/desaparecer la selección.)
+    const handleMouseUp = () => { captureSelection(); };
 
-    // En Android/Chrome, la barra contextual nativa ("Buscar en Google",
-    // Compartir, Copiar) la dispara el sistema en cuanto la selección deja de
-    // estar colapsada — no es un evento cancelable, así que touchend+timeout
-    // siempre llega tarde. selectionchange refleja el estado en tiempo real
-    // (incluso mientras se arrastran los handles); tras un debounce de
-    // "asentamiento" capturamos texto/rect propios y colapsamos la selección
-    // nativa para que Android oculte su barra y solo quede la de la app.
-    let collapseTimer: number | null = null;
+    // selectionchange refleja el estado en tiempo real, incluso mientras se
+    // arrastran los handles de selección en móvil. Solo actualizamos texto/rect
+    // (para reposicionar la toolbar de la app) y limpiamos cuando se colapsa.
     const handleSelectionChange = () => {
       const selection = window.getSelection();
-      if (collapseTimer) window.clearTimeout(collapseTimer);
-      if (!selection || selection.isCollapsed) return;
-      collapseTimer = window.setTimeout(() => {
-        const didCapture = captureAndCollapse();
-        if (didCapture) {
-          window.getSelection()?.removeAllRanges();
-        }
-      }, 250);
+      if (!selection || selection.isCollapsed) {
+        if (selectionRect) setSelectionRect(null);
+        return;
+      }
+      captureSelection();
     };
 
     document.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('touchend', handleMouseUp);
     document.addEventListener('selectionchange', handleSelectionChange);
     return () => {
        document.removeEventListener('mouseup', handleMouseUp);
+       document.removeEventListener('touchend', handleMouseUp);
        document.removeEventListener('selectionchange', handleSelectionChange);
-       if (collapseTimer) window.clearTimeout(collapseTimer);
     };
   }, [selectionRect, item?.type]);
 
@@ -1959,56 +2006,61 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                       </div>
                    )}
 
-                   {/* Fila de controles: [config] [pág◀] [◀◀frase] [stop] [▶play] [frase▶▶] [▶pág] [cerrar].
-                       shrink-0: siempre visible, nunca empujada fuera de pantalla. En móvil
-                       estrecho permite scroll horizontal y los botones no se encogen. */}
+                   {/* Fila de controles de reproducción: [config] [pág◀] [◀◀frase] [stop]
+                       [▶play] [frase▶▶] [▶pág] [cerrar]. shrink-0: siempre visible. En
+                       móvil vertical NO lleva la paginación/zoom del lector (eso va en su
+                       propia fila apilada debajo de los colores, no en este mismo scroll
+                       lateral — antes todo iba en una sola fila con overflow-x-auto y
+                       quedaba "escondido" a un slide de distancia). */}
                    <div className="flex items-center justify-start sm:justify-center gap-1 sm:gap-2 overflow-x-auto no-scrollbar px-1 py-0.5 shrink-0 [&>button]:shrink-0">
 
-                      {/* Slot donde PDFReader/EPUBReader portan (createPortal) sus
-                          controles de índice/página/zoom cuando el TTS está abierto,
-                          fusionándolos en esta misma fila junto a los puntos de color. */}
-                      {(activeType === 'pdf' || activeType === 'epub') && (
-                        <div ref={setMergedBarSlotEl} className="flex items-center gap-1" />
+                      {/* En horizontal (tablet/desktop) el slot de paginación/zoom
+                          fusionado sigue viviendo en esta misma fila, junto a los
+                          controles de TTS, porque ahí sí hay espacio horizontal de sobra. */}
+                      {!isPortrait && (activeType === 'pdf' || activeType === 'epub') && (
+                        <>
+                          <div ref={setMergedBarSlotEl} className="flex items-center gap-1" />
+                          <span className="w-px h-4 bg-[var(--border-card)] mx-0.5" />
+                        </>
                       )}
-                      <span className="w-px h-4 bg-[var(--border-card)] mx-0.5" />
 
                       {/* Mostrar/ocultar configuración */}
                       <button
                         onClick={() => setShowTtsSettings(v => !v)}
-                        className={cn("p-2 border rounded-full transition-all active:scale-95 shadow-sm", showTtsSettings ? "bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30" : "bg-[var(--bg-app)] hover:bg-slate-200/50 border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)]")}
+                        className={cn(ttsBtnPad, "border rounded-full transition-all active:scale-95 shadow-sm", showTtsSettings ? "bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30" : "bg-[var(--bg-app)] hover:bg-slate-200/50 border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)]")}
                         title="Configuración de voz"
                       >
-                         <Settings className="w-4 h-4" />
+                         <Settings className={ttsBtnIcon} />
                       </button>
 
                       {/* Página anterior — triángulo+línea izquierda */}
                       <button
                         disabled={item?.type !== 'epub' && (typeof currentPage === 'number' ? currentPage <= 1 : parseInt(String(currentPage)) <= 1)}
                         onClick={handleTtsPrevPage}
-                        className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
+                        className={cn(ttsBtnPad, "bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm")}
                         title="Página Anterior"
                       >
-                         <SkipBack className="w-4 h-4 fill-current" />
+                         <SkipBack className={cn(ttsBtnIcon, "fill-current")} />
                       </button>
 
                       {/* Retroceder frase — flechas dobles */}
                       <button
                         disabled={currentPhraseIndex <= 0 || ttsStatus === 'loading' || ttsStatus === 'idle'}
                         onClick={handleTtsPrevious}
-                        className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
+                        className={cn(ttsBtnPad, "bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm")}
                         title="Frase Anterior"
                       >
-                         <Rewind className="w-4 h-4 fill-current" />
+                         <Rewind className={cn(ttsBtnIcon, "fill-current")} />
                       </button>
 
                       {/* Stop */}
                       <button
                         disabled={ttsStatus === 'idle' || ttsStatus === 'loading'}
                         onClick={handleTtsStop}
-                        className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-red-500 disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
+                        className={cn(ttsBtnPad, "bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-red-500 disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm")}
                         title="Detener"
                       >
-                         <Square className="w-4 h-4 fill-current" />
+                         <Square className={cn(ttsBtnIcon, "fill-current")} />
                       </button>
 
                       {/* Play / Pause. En móvil horizontal usa el mismo tamaño que el
@@ -2018,7 +2070,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                         onClick={handleTtsPlayPause}
                         className={cn(
                           "rounded-full text-white shadow-lg transition-all active:scale-95 duration-200 flex items-center justify-center",
-                          isMobileLandscape ? "p-2" : "p-3.5",
+                          isMobileLandscape ? "p-2.5" : "p-3.5",
                           ttsStatus === 'playing'
                             ? "bg-[var(--primary)] hover:bg-[var(--primary-hover)] ring-4 ring-[var(--primary)]/15"
                             : "bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
@@ -2026,11 +2078,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                         title={ttsStatus === 'playing' ? "Pausar" : "Reproducir"}
                       >
                          {ttsStatus === 'loading' ? (
-                            <Loader2 className="w-5 h-5 animate-spin" />
+                            <Loader2 className={cn(isMobileLandscape ? "w-6 h-6" : "w-5 h-5", "animate-spin")} />
                          ) : ttsStatus === 'playing' ? (
-                            <Pause className="w-5 h-5 fill-current" />
+                            <Pause className={cn(isMobileLandscape ? "w-6 h-6" : "w-5 h-5", "fill-current")} />
                          ) : (
-                            <Play className="w-5 h-5 fill-current ml-0.5" />
+                            <Play className={cn(isMobileLandscape ? "w-6 h-6" : "w-5 h-5", "fill-current ml-0.5")} />
                          )}
                       </button>
 
@@ -2038,32 +2090,41 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                       <button
                         disabled={currentPhraseIndex >= phrases.length - 1 || ttsStatus === 'loading' || ttsStatus === 'idle'}
                         onClick={handleTtsNext}
-                        className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
+                        className={cn(ttsBtnPad, "bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm")}
                         title="Frase Siguiente"
                       >
-                         <FastForward className="w-4 h-4 fill-current" />
+                         <FastForward className={cn(ttsBtnIcon, "fill-current")} />
                       </button>
 
                       {/* Página siguiente — triángulo+línea derecha */}
                       <button
                         disabled={item?.type !== 'epub' && (typeof currentPage === 'number' ? currentPage >= totalPages : parseInt(String(currentPage)) >= totalPages)}
                         onClick={handleTtsNextPage}
-                        className="p-2 bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm"
+                        className={cn(ttsBtnPad, "bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm")}
                         title="Página Siguiente"
                       >
-                         <SkipForward className="w-4 h-4 fill-current" />
+                         <SkipForward className={cn(ttsBtnIcon, "fill-current")} />
                       </button>
 
                       {/* Cerrar reproductor */}
                       <button
                         onClick={handleTtsClose}
-                        className="p-2 bg-[var(--bg-app)] hover:bg-red-50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-red-500 rounded-full transition-all active:scale-95 shadow-sm"
+                        className={cn(ttsBtnPad, "bg-[var(--bg-app)] hover:bg-red-50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-red-500 rounded-full transition-all active:scale-95 shadow-sm")}
                         title="Cerrar Lector de Voz"
                       >
-                         <X className="w-4 h-4" />
+                         <X className={ttsBtnIcon} />
                       </button>
 
                    </div>
+
+                   {/* Móvil vertical: paginación/zoom del lector en su PROPIA fila,
+                       apilada debajo (reproductor → colores → paginación/zoom), en vez
+                       de compartir el scroll lateral de los controles de reproducción. */}
+                   {isPortrait && (activeType === 'pdf' || activeType === 'epub') && (
+                      <div className="flex items-center justify-center gap-1 overflow-x-auto no-scrollbar px-1 py-0.5 mt-1 shrink-0 [&>button]:shrink-0 border-t border-[var(--border-card)] pt-2">
+                         <div ref={setMergedBarSlotEl} className="flex items-center gap-1" />
+                      </div>
+                   )}
 
                 </div>
              </div>
@@ -2146,13 +2207,18 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         }
       : { display: 'none' };
 
-  // Actualización automática del progreso al cambiar de página.
+  // Autoguardado de la posición de lectura al cambiar de página.
+  // Se guarda SIEMPRE que cambie la página (no solo cuando cambia el % redondeado):
+  // en libros largos dos páginas seguidas pueden dar el mismo porcentaje y, si solo
+  // se comparara el progreso, el marcador no se guardaría y al reabrir se perdería
+  // la página. Comparamos también bookmarkPage para evitar escrituras redundantes.
   useEffect(() => {
     if (!item || !totalPages) return;
     const pageNum = Number(currentPage);
     if (!Number.isFinite(pageNum) || pageNum < 1) return;
     const calculatedProgress = Math.min(100, Math.max(0, Math.round((pageNum / totalPages) * 100)));
-    if (calculatedProgress !== item.progress) {
+    const pageChanged = String(item.bookmarkPage ?? '') !== String(currentPage);
+    if (calculatedProgress !== item.progress || pageChanged) {
       updateItem(item.id, { progress: calculatedProgress, bookmarkPage: currentPage });
     }
   }, [currentPage, totalPages, item, updateItem]);
@@ -2181,7 +2247,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                   if (isFullscreen) setIsFullscreen(false);
                   else onClose();
                 }}
-                className="flex items-center text-slate-500 hover:text-[#00558F] transition-colors shrink-0 bg-slate-100/50 hover:bg-slate-100 p-2 rounded-lg"
+                className="flex items-center text-slate-500 hover:text-[var(--primary)] transition-colors shrink-0 bg-slate-100/50 hover:bg-slate-100 p-2 rounded-lg"
                 title="Volver"
             >
                 <ChevronLeft className="w-5 h-5" />
@@ -2201,7 +2267,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                     onClick={() => setActiveFormat(f)}
                     className={cn(
                       "px-2 py-1 rounded-md text-[10px] font-bold uppercase transition-all",
-                      activeType === f ? "bg-white text-[#00558F] shadow-sm" : "text-slate-500 hover:text-slate-700"
+                      activeType === f ? "bg-white text-[var(--primary)] shadow-sm" : "text-slate-500 hover:text-slate-700"
                     )}
                     title={`Ver versión ${f.toUpperCase()}`}
                   >
@@ -2217,7 +2283,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                  <div className="flex bg-slate-100 p-1 rounded-lg shrink-0 gap-1 items-center">
                      <button 
                          onClick={() => setActiveTab('reader')}
-                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'reader' ? "bg-white text-[#00558F] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
+                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'reader' ? "bg-white text-[var(--primary)] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
                          title="Lectura"
                      >
                          <BookOpen className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -2228,21 +2294,21 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                              setActiveTab(opening ? 'citations' : 'reader');
                              if (opening) setShowNotes(false);
                          }}
-                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'citations' ? "bg-white text-[#00558F] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
+                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'citations' ? "bg-white text-[var(--primary)] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
                          title="Administrar citas"
                      >
                          <ClipboardList className="w-4 h-4 sm:w-5 sm:h-5" />
                      </button>
                      <button
                          onClick={() => setActiveTab(activeTab === 'edit' ? 'reader' : 'edit')}
-                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'edit' ? "bg-white text-[#00558F] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
+                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'edit' ? "bg-white text-[var(--primary)] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
                          title="Información y Metadatos"
                      >
                          <Info className="w-4 h-4 sm:w-5 sm:h-5" />
                      </button>
                      <button
                          onClick={() => setActiveTab(activeTab === 'resources' ? 'reader' : 'resources')}
-                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'resources' ? "bg-white text-[#00558F] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
+                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'resources' ? "bg-white text-[var(--primary)] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
                          title="Recursos (videos, audios, textos, imágenes)"
                      >
                          <FolderOpen className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -2250,7 +2316,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                      {item.type === 'pdf' && item.source?.startsWith('/api/files/') && itemCategoryName.toLowerCase() === 'estudio' && (
                        <button
                          onClick={() => setActiveTab(activeTab === 'auditor' ? 'reader' : 'auditor')}
-                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'auditor' ? "bg-white text-[#00558F] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
+                         className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'auditor' ? "bg-white text-[var(--primary)] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
                          title="Auditoría Científica"
                        >
                          <FlaskConical className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -2269,14 +2335,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                  <div className="flex items-center gap-1 sm:gap-2 shrink-0">
                   <button
                       onClick={toggleFullscreen}
-                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[#00558F] text-white border-[#00558F]" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}
+                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                       title="Pantalla Completa"
                   >
                       {isFullscreen ? <Minimize className="w-4 h-4 sm:w-5 sm:h-5" /> : <Maximize className="w-4 h-4 sm:w-5 sm:h-5" />}
                   </button>
                    <button
                        onClick={() => setShowNotes(!showNotes)}
-                       className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showNotes ? "bg-[#00558F] text-white border-[#00558F]" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}
+                       className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showNotes ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                        title="Apuntes y Notas"
                    >
                        <MessageSquareQuote className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -2287,7 +2353,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                   {/* Lector de Voz (TTS ElevenLabs) */}
                   <button 
                       onClick={() => setShowTtsWidget(!showTtsWidget)} 
-                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showTtsWidget ? "bg-slate-100 text-[#00558F] border-slate-200" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}
+                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showTtsWidget ? "bg-slate-100 text-[var(--primary)] border-slate-200" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                       title="Lector de Voz (TTS)"
                   >
                       <Volume2 className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -2296,7 +2362,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                   <div className="relative">
                      <button 
                          onClick={() => setShowBrightnessPopup(!showBrightnessPopup)} 
-                         className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showBrightnessPopup ? "bg-slate-100 text-[#00558F] border-slate-200" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}
+                         className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showBrightnessPopup ? "bg-slate-100 text-[var(--primary)] border-slate-200" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                          title="Brillo"
                      >
                          <Sun className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -2309,7 +2375,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                 min="20" max="100" 
                                 value={brightness} 
                                 onChange={(e) => setBrightness(Number(e.target.value))} 
-                                className="w-24 sm:w-32 accent-[#00558F]" 
+                                className="w-24 sm:w-32 accent-[var(--primary)]" 
                              />
                          </div>
                      )}
@@ -2333,14 +2399,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
                   <button
                       onClick={toggleFullscreen}
-                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[#00558F] text-white border-[#00558F]" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}
+                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                       title="Pantalla Completa"
                   >
                       {isFullscreen ? <Minimize className="w-4 h-4 sm:w-5 sm:h-5" /> : <Maximize className="w-4 h-4 sm:w-5 sm:h-5" />}
                   </button>
                   <button 
                       onClick={() => setShowNotes(!showNotes)} 
-                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showNotes ? "bg-[#00558F] text-white border-[#00558F]" : "bg-white text-slate-600 hover:text-[#00558F] border-slate-200 hover:border-[#A0CFEB]")}
+                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showNotes ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                       title="Apuntes y Notas"
                   >
                       <MessageSquareQuote className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -2417,7 +2483,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                      <div 
                          onMouseDown={() => setIsDragging(true)}
                          onTouchStart={() => setIsDragging(true)}
-                         className={cn("z-20 hover:bg-[#00558F] transition-colors flex items-center justify-center shadow-lg active:bg-[#00558F] shrink-0", isPortrait ? "h-6 w-full cursor-row-resize bg-slate-200" : "w-6 h-full cursor-col-resize bg-slate-200")}
+                         className={cn("z-20 hover:bg-[var(--primary)] transition-colors flex items-center justify-center shadow-lg active:bg-[var(--primary)] shrink-0", isPortrait ? "h-6 w-full cursor-row-resize bg-slate-200" : "w-6 h-full cursor-col-resize bg-slate-200")}
                      >
                          <div className={cn("bg-slate-400 rounded-full", isPortrait ? "w-8 h-1" : "h-8 w-1")} />
                      </div>
@@ -2433,7 +2499,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                      <div 
                          onMouseDown={() => setIsDragging(true)}
                          onTouchStart={() => setIsDragging(true)}
-                         className={cn("z-20 hover:bg-[#00558F] transition-colors flex items-center justify-center shadow-lg active:bg-[#00558F] shrink-0", isPortrait ? "h-6 w-full cursor-row-resize bg-slate-200" : "w-6 h-full cursor-col-resize bg-slate-200")}
+                         className={cn("z-20 hover:bg-[var(--primary)] transition-colors flex items-center justify-center shadow-lg active:bg-[var(--primary)] shrink-0", isPortrait ? "h-6 w-full cursor-row-resize bg-slate-200" : "w-6 h-full cursor-col-resize bg-slate-200")}
                      >
                          <div className={cn("bg-slate-400 rounded-full", isPortrait ? "w-8 h-1" : "h-8 w-1")} />
                      </div>

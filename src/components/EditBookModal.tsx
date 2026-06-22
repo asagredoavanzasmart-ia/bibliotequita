@@ -516,7 +516,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                                  </a>
                               )}
                               <button type="button" onClick={() => handleSlotRemove('pdf')} title="Eliminar PDF"
-                                 className="p-1 rounded-md text-emerald-600 hover:bg-red-100 hover:text-red-600 transition-colors">
+                                 className="p-1 rounded-md text-rose-500 hover:bg-rose-100 hover:text-rose-700 transition-colors">
                                  <Trash2 className="w-3.5 h-3.5" />
                               </button>
                            </span>
@@ -551,7 +551,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                                  </a>
                               )}
                               <button type="button" onClick={() => handleSlotRemove('epub')} title="Eliminar EPUB"
-                                 className="p-1 rounded-md text-emerald-600 hover:bg-red-100 hover:text-red-600 transition-colors">
+                                 className="p-1 rounded-md text-rose-500 hover:bg-rose-100 hover:text-rose-700 transition-colors">
                                  <Trash2 className="w-3.5 h-3.5" />
                               </button>
                            </span>
@@ -569,55 +569,61 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   </div>
                </div>
 
-               {/* Enlace externo */}
-               <div className="flex flex-col gap-2">
-                  <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".txt" className="hidden" />
-                  <div className="relative">
-                     {type === 'externa' ? (
-                        <>
-                           <input
-                              type="text"
-                              value={digitalSource}
-                              onChange={e => {
-                                 setDigitalSource(e.target.value);
-                                 if (e.target.value) { setType('externa'); setOwnedDigital(true); }
-                              }}
-                              className="w-full text-xs pl-8 pr-20 py-2 bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
-                              placeholder="…o pegar enlace externo"
-                           />
-                           <LinkIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-muted)]" />
-                           {digitalSource && (
+               {/* Enlace externo / TXT. Los formatos PDF y EPUB ya tienen su
+                   propio slot independiente arriba — este bloque solo debe
+                   aparecer para 'externa' o 'txt' (si fuera pdf/epub legacy,
+                   mostraría una segunda confirmación redundante con el slot). */}
+               {type !== 'pdf' && type !== 'epub' && (
+                  <div className="flex flex-col gap-2">
+                     <input type="file" ref={fileInputRef} onChange={handleDigitalUpload} accept=".txt" className="hidden" />
+                     <div className="relative">
+                        {type === 'externa' ? (
+                           <>
+                              <input
+                                 type="text"
+                                 value={digitalSource}
+                                 onChange={e => {
+                                    setDigitalSource(e.target.value);
+                                    if (e.target.value) { setType('externa'); setOwnedDigital(true); }
+                                 }}
+                                 className="w-full text-xs pl-8 pr-20 py-2 bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
+                                 placeholder="…o pegar enlace externo"
+                              />
+                              <LinkIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-muted)]" />
+                              {digitalSource && (
+                                 <button
+                                    type="button"
+                                    onClick={handleAnalyzeLink}
+                                    disabled={isAnalyzing}
+                                    className="absolute right-1 top-1 bottom-1 px-2 text-[10px] font-bold bg-[var(--primary)]/10 text-[var(--primary)] rounded hover:bg-[var(--primary)]/20"
+                                 >
+                                    {isAnalyzing ? '…' : 'Analizar'}
+                                 </button>
+                              )}
+                           </>
+                        ) : (
+                           <div className="flex items-center justify-between p-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-600 font-medium shadow-sm transition-all animate-in fade-in">
+                              <span className="flex items-center gap-1 truncate">
+                                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                 Archivo {type.toUpperCase()} cargado
+                              </span>
                               <button
                                  type="button"
-                                 onClick={handleAnalyzeLink}
-                                 disabled={isAnalyzing}
-                                 className="absolute right-1 top-1 bottom-1 px-2 text-[10px] font-bold bg-[var(--primary)]/10 text-[var(--primary)] rounded hover:bg-[var(--primary)]/20"
+                                 onClick={() => {
+                                    setDigitalSource('');
+                                    setType('externa');
+                                    setOwnedDigital(false);
+                                 }}
+                                 title="Eliminar"
+                                 className="p-1 rounded-md text-rose-500 hover:bg-rose-100 hover:text-rose-700 transition-colors ml-2 shrink-0"
                               >
-                                 {isAnalyzing ? '…' : 'Analizar'}
+                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
-                           )}
-                        </>
-                     ) : (
-                        <div className="flex items-center justify-between p-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-600 font-medium shadow-sm transition-all animate-in fade-in">
-                           <span className="flex items-center gap-1 truncate">
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                              Archivo {type.toUpperCase()} cargado
-                           </span>
-                           <button 
-                              type="button" 
-                              onClick={() => {
-                                 setDigitalSource('');
-                                 setType('externa');
-                                 setOwnedDigital(false);
-                              }}
-                              className="text-rose-500 hover:text-rose-700 font-bold ml-2 shrink-0 transition-colors"
-                           >
-                              Eliminar
-                           </button>
-                        </div>
-                     )}
+                           </div>
+                        )}
+                     </div>
                   </div>
-               </div>
+               )}
             </div>
 
             {/* ---------- Col 2: Metadatos principales ---------- */}

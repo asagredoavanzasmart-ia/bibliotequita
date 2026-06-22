@@ -282,16 +282,17 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
     }
   };
 
-  // Carga la lista de recursos de texto del libro y, para cada uno, sus citas
-  // (documentId = `${documentId}::res::<id>`). No aplica si `documentId` ya
-  // es de un recurso (evita anidar "recursos de recursos").
+  // Carga la lista de recursos del libro (de CUALQUIER tipo: texto, video,
+  // audio, imagen — todos pueden tener notas vía NotesPanel en ResourcesPanel)
+  // y, para cada uno, sus citas (documentId = `${documentId}::res::<id>`).
+  // No aplica si `documentId` ya es de un recurso (evita anidar "recursos de recursos").
   const loadResourceCitations = async () => {
     if (!isBookDocument) { setTextResources([]); setResourceCitations({}); return; }
     try {
       const res = await fetch(`/api/books/${documentId}/resources`, { credentials: 'include' });
       const d = await res.json();
-      const texts = (d.resources ?? []).filter((r: any) => r.kind === 'text');
-      const mapped = texts.map((r: any) => ({ id: r.id, title: r.title, docId: `${documentId}::res::${r.id}` }));
+      const allResources = (d.resources ?? []);
+      const mapped = allResources.map((r: any) => ({ id: r.id, title: r.title, docId: `${documentId}::res::${r.id}` }));
       setTextResources(mapped);
 
       const entries = await Promise.all(mapped.map(async (r: { id: string; title: string; docId: string }) => {
@@ -354,15 +355,37 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
     setNotes(sorted);
   };
 
-  const savePalette = (updatedPalette: ColorDefinition[]) => {
+  // Al escribir el nombre de un color se llama una vez por tecla. Sin debounce,
+  // cada pulsación dispara su propio PUT y, si dos llegan al servidor fuera de
+  // orden (la del penúltimo carácter responde después que la del último), el
+  // nombre final visible queda con una versión vieja aunque en pantalla se
+  // viera el texto completo un instante. Se debounce 400ms y solo se envía la
+  // versión más reciente de la paleta.
+  const savePaletteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPaletteRef = useRef<ColorDefinition[] | null>(null);
+  const flushPalette = (palette: ColorDefinition[]) => {
+    pendingPaletteRef.current = null;
     fetch(`/api/documents/${documentId}/settings`, {
       method: 'PUT',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ colorPalette: updatedPalette }),
+      body: JSON.stringify({ colorPalette: palette }),
     }).catch(err => console.error('No se pudo guardar la paleta de colores:', err));
-    setActivePalette(updatedPalette);
   };
+  const savePalette = (updatedPalette: ColorDefinition[]) => {
+    setActivePalette(updatedPalette);
+    pendingPaletteRef.current = updatedPalette;
+    if (savePaletteTimeoutRef.current) clearTimeout(savePaletteTimeoutRef.current);
+    savePaletteTimeoutRef.current = setTimeout(() => flushPalette(updatedPalette), 400);
+  };
+
+  // Si el usuario navega fuera (cambia de pestaña/cierra el panel) antes de
+  // que venza el debounce, el guardado pendiente se envía de inmediato en vez
+  // de perderse — evita que un cambio reciente quede sin persistir.
+  useEffect(() => () => {
+    if (savePaletteTimeoutRef.current) clearTimeout(savePaletteTimeoutRef.current);
+    if (pendingPaletteRef.current) flushPalette(pendingPaletteRef.current);
+  }, []);
 
   // Drag and drop logic
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);

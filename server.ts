@@ -1950,11 +1950,21 @@ ${text}
       res.json({ content, isQuestion: !!parsed.isQuestion });
     } catch (error: any) {
       console.error("Error processing voice note with Gemini:", error);
-      const status = String(error?.status || "");
-      if (status.includes("PERMISSION_DENIED") || status.includes("403") || status.includes("400")) {
-        return res.status(503).json({
+      const msg = String(error?.message || error || "");
+      // Mismo patrón que /api/analyze-pdf, /api/analyze-field y /api/generate-toc:
+      // solo 403/PERMISSION_DENIED indica key bloqueada. Un 400/INVALID_ARGUMENT
+      // significa que Gemini rechazó el AUDIO (vacío, muy corto, formato no
+      // soportado), no que la API esté bloqueada — no debe reportarse igual.
+      if (msg.includes("PERMISSION_DENIED") || msg.includes("API_KEY_SERVICE_BLOCKED") || msg.includes("API key not valid") || msg.includes("403")) {
+        return res.status(502).json({
           error: "La API de Gemini está bloqueada o la GEMINI_API_KEY no es válida en este servidor.",
           code: "GEMINI_API_BLOCKED",
+        });
+      }
+      if (msg.includes("INVALID_ARGUMENT") || msg.includes("400")) {
+        return res.status(400).json({
+          error: "No se pudo procesar el audio grabado (puede ser muy corto o el formato no es compatible). Intenta grabar de nuevo.",
+          code: "VOICE_NOTE_INVALID_AUDIO",
         });
       }
       res.status(500).json({ error: "Fallo al procesar la nota de voz." });

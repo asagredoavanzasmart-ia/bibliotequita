@@ -6,6 +6,14 @@ html, body, #root {
   background-color: var(--bg-app);
 }
 
+/* En Android/WebView con notch (viewport-fit=cover), el área bajo la barra de
+   estado queda fuera del flujo normal y se ve el blanco nativo de la Activity
+   por detrás si nada la cubre. Empujamos todo el contenido ese espacio hacia
+   abajo para que el fondo de la propia app (gris/azul, no blanco) lo cubra. */
+html, body {
+  padding-top: env(safe-area-inset-top);
+}
+
 @theme {
   --color-brand-blue: #00558F;
   --color-brand-light: #A0CFEB;
@@ -188,12 +196,24 @@ html, body, #root {
 .textLayer span::selection,
 .react-pdf__Page__textContent span::selection {
   color: transparent !important;
-  background: rgba(0, 85, 143, 0.35) !important;
+  background: rgba(56, 132, 222, 0.5) !important;
 }
 .textLayer span::-moz-selection,
 .react-pdf__Page__textContent span::-moz-selection {
   color: transparent !important;
-  background: rgba(0, 85, 143, 0.35) !important;
+  background: rgba(56, 132, 222, 0.5) !important;
+}
+/* La capa de texto del PDF se posiciona sobre el canvas; cada glifo es un span
+   transparente. pdf.js v5 además inserta un div .endOfContent que puede captar
+   la selección. Aseguramos que TODO lo seleccionable dentro de la capa muestre
+   el mismo resalte azul, sin importar el elemento concreto que se seleccione. */
+.textLayer ::selection,
+.react-pdf__Page__textContent ::selection {
+  background: rgba(56, 132, 222, 0.5) !important;
+}
+.textLayer ::-moz-selection,
+.react-pdf__Page__textContent ::-moz-selection {
+  background: rgba(56, 132, 222, 0.5) !important;
 }
 .textLayer,
 .react-pdf__Page__textContent {
