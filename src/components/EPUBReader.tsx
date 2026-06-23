@@ -122,26 +122,44 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
   const [dragAnimating, setDragAnimating] = useState(false);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const dragWidthRef = useRef(0);
-  // El cambio de página real (next()/prev()) se dispara 220ms después de
-  // soltar, para que la animación de "deslizar fuera" termine antes de pedirle
-  // a epubjs la siguiente sección. Si el usuario empezaba un NUEVO gesto antes
-  // de que pasaran esos 220ms, el timeout viejo podía disparar next()/prev() Y
-  // setDragOffset(0) a mitad del nuevo gesto, pisándolo — por eso "hay que
-  // arrastrar varias veces para que pase la página". Ahora, si llega un gesto
-  // nuevo con un cambio de página aún pendiente, ese cambio se ejecuta de
-  // inmediato (no se pierde el turno) en vez de dispararse más tarde.
-  const pendingPageChangeRef = useRef<{ action: 'next' | 'prev'; timeout: number } | null>(null);
+  // ANTES: al confirmar el swipe se animaba el offset hacia afuera y solo
+  // 220ms DESPUÉS (a ciegas, sin importar si epubjs ya había terminado) se
+  // llamaba a next()/prev() y se quitaba el offset. Si epubjs tardaba más de
+  // 220ms en renderizar la sección nueva (página con imágenes, sección
+  // pesada), el usuario veía la pantalla en blanco más tiempo del esperado y
+  // lo interpretaba como que el gesto "no funcionó" — de ahí "hay que hacer
+  // varios slides", "la hoja queda vibrando", "no carga".
+  //
+  // AHORA: next()/prev() se llama de inmediato (en paralelo con la animación
+  // de salida, no después), y el offset solo se quita cuando epubjs confirma
+  // vía el evento "relocated" que el contenido nuevo ya está listo — con un
+  // timeout de seguridad por si ese evento no llegara. Así el offset nunca
+  // queda "esperando a ciegas": refleja el tiempo real de carga.
+  const pageChangeInFlightRef = useRef(false);
+  const safetyTimeoutRef = useRef<number | null>(null);
 
-  const flushPendingPageChange = useCallback(() => {
-    const pending = pendingPageChangeRef.current;
-    if (!pending) return;
-    clearTimeout(pending.timeout);
-    pendingPageChangeRef.current = null;
-    if (pending.action === 'next') renditionRef.current?.next();
-    else renditionRef.current?.prev();
+  const resolvePageChange = useCallback(() => {
+    if (!pageChangeInFlightRef.current) return;
+    pageChangeInFlightRef.current = false;
+    if (safetyTimeoutRef.current) {
+      clearTimeout(safetyTimeoutRef.current);
+      safetyTimeoutRef.current = null;
+    }
     setDragOffset(0);
     setDragAnimating(false);
   }, []);
+  // Ref estable para invocar resolvePageChange desde el listener de
+  // "relocated" (registrado una vez en handleGetRendition) sin tener que
+  // re-registrar el listener cada vez que resolvePageChange cambiara.
+  const resolvePageChangeRef = useRef(resolvePageChange);
+  useEffect(() => { resolvePageChangeRef.current = resolvePageChange; }, [resolvePageChange]);
+
+  const flushPendingPageChange = useCallback(() => {
+    // Si había un gesto en curso cuando empieza uno nuevo, se resuelve de
+    // inmediato el anterior (sin esperar a "relocated") para no perder el
+    // turno ni dejar offsets/estado a medio camino.
+    resolvePageChange();
+  }, [resolvePageChange]);
 
   const handlePageGestureStart = useCallback((e: TouchEvent) => {
     // No interceptar el gesto si el usuario está seleccionando texto: epubjs
@@ -200,19 +218,23 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
 
     const threshold = width * 0.3;
     setDragAnimating(true);
-    if (dx <= -threshold) {
-      setDragOffset(-width);
-      const timeout = window.setTimeout(() => { pendingPageChangeRef.current = null; renditionRef.current?.next(); setDragOffset(0); setDragAnimating(false); }, 220);
-      pendingPageChangeRef.current = { action: 'next', timeout };
-    } else if (dx >= threshold) {
-      setDragOffset(width);
-      const timeout = window.setTimeout(() => { pendingPageChangeRef.current = null; renditionRef.current?.prev(); setDragOffset(0); setDragAnimating(false); }, 220);
-      pendingPageChangeRef.current = { action: 'prev', timeout };
+    if (dx <= -threshold || dx >= threshold) {
+      setDragOffset(dx <= -threshold ? -width : width);
+      pageChangeInFlightRef.current = true;
+      // next()/prev() se piden YA, en paralelo con la animación de salida —
+      // el offset se quita cuando "relocated" confirme que el contenido
+      // nuevo está listo (resolvePageChange), no tras un tiempo fijo a ciegas.
+      if (dx <= -threshold) renditionRef.current?.next();
+      else renditionRef.current?.prev();
+      // Salvaguarda: si por lo que sea epubjs nunca emite "relocated" (libro
+      // con error, última/primera página sin destino), no se deja la
+      // pantalla en blanco indefinidamente.
+      safetyTimeoutRef.current = window.setTimeout(resolvePageChange, 1200);
     } else {
       setDragOffset(0);
       window.setTimeout(() => setDragAnimating(false), 220);
     }
-  }, [viewMode, onContentTap]);
+  }, [viewMode, onContentTap, resolvePageChange]);
 
   // Ref estable que el listener del iframe consulta en cada evento, para
   // siempre invocar la versión más reciente de los handlers sin tener que
@@ -230,11 +252,10 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     };
   }, [handlePageGestureStart, handlePageGestureMove, handlePageGestureEnd]);
 
-  // Si el componente se desmonta con un cambio de página pendiente (el
-  // usuario cerró el lector durante los 220ms de la animación), se cancela el
-  // timeout para no llamar a renditionRef tras desmontar.
+  // Si el componente se desmonta con un cambio de página en vuelo, se cancela
+  // el timeout de seguridad para no tocar estado tras desmontar.
   useEffect(() => () => {
-    if (pendingPageChangeRef.current) clearTimeout(pendingPageChangeRef.current.timeout);
+    if (safetyTimeoutRef.current) clearTimeout(safetyTimeoutRef.current);
   }, []);
 
   const handleGetRendition = useCallback((rendition: Rendition) => {
@@ -281,6 +302,11 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
       if (locationsReadyRef.current && loc?.start?.cfi) {
         setPercentProgress(Math.round(rendition.book.locations.percentageFromCfi(loc.start.cfi) * 100));
       }
+      // El contenido de la nueva sección/página ya está listo: si había un
+      // cambio de página en vuelo por gesto de swipe, se resuelve ahora (en
+      // vez de esperar un tiempo fijo a ciegas que podía dejar la pantalla en
+      // blanco más tiempo del necesario, o menos del real).
+      resolvePageChangeRef.current();
     });
 
     // El contenido de cada sección se renderiza en un <iframe> propio (otro
@@ -379,9 +405,12 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
           "p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
           showToc && "text-[var(--primary)] bg-[var(--primary)]/10"
         )}
-        title="Índice"
+        title={showToc ? "Cerrar índice" : "Índice"}
       >
-        <List className="w-5 h-5" />
+        {/* Con el índice abierto, el ícono cambia a una flecha "‹" para
+            indicar que volver a tocarlo lo cierra (en vez de mantener el
+            mismo ícono de lista, que no comunicaba esa acción). */}
+        {showToc ? <ChevronLeft className="w-5 h-5" /> : <List className="w-5 h-5" />}
       </button>
 
       <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
@@ -508,8 +537,13 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
               {showToc && (
                 <div className="fixed inset-0 z-[60] flex">
                   <div className="absolute inset-0 bg-black/30 md:hidden" onClick={() => setShowToc(false)} />
-                  <div className="relative z-10 w-full md:w-72 h-full bg-[var(--bg-card)] border-r border-[var(--border-card)] shadow-2xl flex flex-col">
-                    <div className="p-4 border-b border-[var(--border-card)] bg-[var(--bg-app)]/50 flex-none flex items-center justify-between">
+                  {/* bg-white sólido (no bg-card, que es semitransparente por
+                      diseño en tarjetas normales): este panel se superpone al
+                      texto del documento y debe ser completamente opaco — antes
+                      se veía "transparente", con el texto de fondo calándose
+                      a través de la lista de capítulos. */}
+                  <div className="relative z-10 w-full md:w-72 h-full bg-white dark:bg-slate-900 border-r border-[var(--border-card)] shadow-2xl flex flex-col">
+                    <div className="p-4 border-b border-[var(--border-card)] bg-slate-50 dark:bg-slate-800 flex-none flex items-center justify-between">
                       <h3 className="font-bold text-[var(--text-main)] text-sm flex items-center gap-2">
                         <List className="w-4 h-4" /> Índice
                       </h3>

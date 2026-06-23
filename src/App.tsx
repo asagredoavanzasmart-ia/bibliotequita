@@ -10,11 +10,12 @@
 // Verifica sesión activa via /api/me al arrancar.
 // =============================================================================
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { LibraryProvider } from './hooks/useLibrary';
 import { Dashboard } from './components/Dashboard';
 import { ReaderView } from './components/ReaderView';
 import { LoginScreen } from './components/LoginScreen';
+import { useBackClose } from './hooks/useBackClose';
 
 interface AuthUser {
   id: string;
@@ -39,6 +40,12 @@ export default function App() {
 
   // Leer parámetro de error en la URL (ej: ?error=unauthorized)
   const urlError = new URLSearchParams(window.location.search).get("error");
+
+  // El botón/gesto "Atrás" del dispositivo (Android) cierra el lector y
+  // vuelve a la biblioteca, en vez de salir de la app — la app no tocaba el
+  // historial del navegador, así que "Atrás" no tenía nada que deshacer.
+  const closeReader = useCallback(() => setActiveBookId(null), []);
+  useBackClose(activeBookId !== null, closeReader);
 
   useEffect(() => {
     // Aplicar tema guardado para que LoginScreen tenga el estilo correcto de inmediato
@@ -91,7 +98,7 @@ export default function App() {
   return (
     <LibraryProvider>
       {activeBookId ? (
-        <ReaderView bookId={activeBookId} onClose={() => setActiveBookId(null)} />
+        <ReaderView bookId={activeBookId} onClose={closeReader} />
       ) : (
         <Dashboard onOpenBook={setActiveBookId} user={user} />
       )}

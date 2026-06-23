@@ -4,6 +4,13 @@
 html, body, #root {
   min-height: 100dvh;
   background-color: var(--bg-app);
+  /* La app no tiene scroll horizontal intencional en ninguna pantalla. Sin
+     esto, un swipe horizontal accidental sobre la grilla de biblioteca (o
+     cualquier otra vista) dispara el "rubber-band"/overscroll horizontal
+     nativo del navegador/WebView, que en Android puede quedar mal resuelto:
+     el documento queda corrido — contenido cortado a la izquierda y un hueco
+     a la derecha que no se revierte solo. */
+  overscroll-behavior-x: none;
 }
 
 @theme {

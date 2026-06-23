@@ -26,6 +26,7 @@ import { SettingsModal } from './SettingsModal';
 import { AddManualModal } from './AddManualModal';
 import { AdminPanel } from './AdminPanel';
 import { TrashPanel } from './TrashPanel';
+import { useBackClose } from '../hooks/useBackClose';
 
 interface DemoQuota {
   max: number;
@@ -68,6 +69,17 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
   }, []);
 
   useEffect(() => { refreshQuota(); }, [refreshQuota]);
+
+  // El botón/gesto "Atrás" del dispositivo cierra estas capas (de adentro
+  // hacia afuera si hay varias abiertas) en vez de salir de la app.
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+  const closeManualAdd = useCallback(() => { setShowManualAdd(false); refreshQuota(); }, [refreshQuota]);
+  const closeMobileProfile = useCallback(() => setShowMobileProfile(false), []);
+  const closeAdminPanel = useCallback(() => setShowAdminPanel(false), []);
+  useBackClose(sidebarOpen, closeSidebar);
+  useBackClose(showManualAdd, closeManualAdd);
+  useBackClose(showMobileProfile, closeMobileProfile);
+  useBackClose(showAdminPanel, closeAdminPanel);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),

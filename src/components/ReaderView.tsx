@@ -166,6 +166,39 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // primera voz (Catalina), con el resto recortado fuera de la pantalla.
   const [voiceDropdownPos, setVoiceDropdownPos] = useState<{ left: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
 
+  const computeVoiceDropdownPos = useCallback(() => {
+    if (!voiceButtonRef.current) return;
+    const rect = voiceButtonRef.current.getBoundingClientRect();
+    const spaceAbove = rect.top - 8;
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const left = rect.right - 256;
+    if (spaceAbove >= 120 || spaceAbove >= spaceBelow) {
+      setVoiceDropdownPos({ left, bottom: window.innerHeight - rect.top + 4, maxHeight: Math.min(280, Math.max(120, spaceAbove)) });
+    } else {
+      setVoiceDropdownPos({ left, top: rect.bottom + 4, maxHeight: Math.min(280, Math.max(120, spaceBelow)) });
+    }
+  }, []);
+
+  // El botón "Voz" suele abrirse justo después del widget TTS, que todavía
+  // se está deslizando hacia arriba (animate-in slide-in-from-bottom-2,
+  // 300ms). Si el usuario toca "Voz" durante esa animación, el rect medido en
+  // el click queda obsoleto (posición intermedia, no final) y el desplegable
+  // se planta mal — pareciendo que "no se abrió" hasta otra interacción que
+  // fuerce un recálculo correcto. Mientras el desplegable está abierto, se
+  // re-mide la posición en cada frame durante ~350ms (cubre la animación) para
+  // que se autocorrija sin que el usuario tenga que volver a tocar nada.
+  useEffect(() => {
+    if (!showVoiceDropdown) return;
+    let frame: number;
+    const deadline = performance.now() + 350;
+    const tick = () => {
+      computeVoiceDropdownPos();
+      if (performance.now() < deadline) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [showVoiceDropdown, computeVoiceDropdownPos]);
+
   const toggleFavoriteVoice = useCallback((voiceId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setFavoriteVoices(prev => {
@@ -719,7 +752,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
             span.style.borderRadius = '3px';
             if (persistent) span.dataset.citationHighlight = 'true';
             if (!highlightedAny) {
-              span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              // 'nearest' (no 'center'): si la frase ya está visible o casi,
+              // no la fuerza al centro exacto del viewport — solo desplaza lo
+              // mínimo necesario para que quede dentro de la vista. Con
+              // 'center' cada Play producía un salto grande aunque el texto
+              // ya estuviera a la vista.
+              span.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
               highlightedAny = true;
             }
           }
@@ -844,12 +882,23 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               const markRect = mark.getBoundingClientRect();
               const iframeRect = iframeEl.getBoundingClientRect();
               const containerRect = scrollContainer.getBoundingClientRect();
-              const markCenter = iframeRect.top + markRect.top + markRect.height / 2;
-              const containerCenter = containerRect.top + containerRect.height / 2;
-              const delta = markCenter - containerCenter;
-              scrollContainer.scrollBy({ top: delta, behavior: 'smooth' });
+              const markTop = iframeRect.top + markRect.top;
+              const markBottom = markTop + markRect.height;
+              // Igual que 'nearest' en scrollIntoView: si la frase ya está
+              // dentro del área visible del contenedor, no se mueve nada. Solo
+              // si queda por encima o por debajo se desplaza lo justo para que
+              // su borde más cercano quede al ras del viewport — nunca se
+              // fuerza al centro (eso producía un salto grande en cada Play
+              // aunque el texto ya estuviera a la vista).
+              let delta = 0;
+              if (markTop < containerRect.top) {
+                delta = markTop - containerRect.top;
+              } else if (markBottom > containerRect.bottom) {
+                delta = markBottom - containerRect.bottom;
+              }
+              if (delta !== 0) scrollContainer.scrollBy({ top: delta, behavior: 'smooth' });
             } else {
-              mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              mark.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             }
             highlightedAny = true;
           }
@@ -1914,7 +1963,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
              // controles de reproducción son shrink-0 y SIEMPRE quedan visibles,
              // sin depender de hacer scroll para aparecer (eso era lo que las
              // "ocultaba" en móvil cuando el widget no entraba completo en pantalla).
-             <div ref={ttsWidgetRef} onClick={(e) => e.stopPropagation()} className="absolute bottom-0 left-0 right-0 z-40 bg-[var(--bg-card)] border-t border-[var(--border-card)] shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-2 duration-300 flex flex-col overflow-hidden" style={{ paddingBottom: 'env(safe-area-inset-bottom)', maxHeight: '85dvh' }}>
+             // shrink-0 (no absolute): el widget pasa a ocupar su propio
+             // espacio en el flujo del flex-col, en vez de flotar encima del
+             // documento. Así el contenedor del lector (flex-1, arriba) se
+             // reduce automáticamente para dejarle sitio — antes, al ser
+             // absolute, el EPUB/PDF se renderizaba a la altura completa sin
+             // saber del widget y este quedaba tapando la parte de abajo.
+             <div ref={ttsWidgetRef} onClick={(e) => e.stopPropagation()} className="shrink-0 w-full z-40 bg-[var(--bg-card)] border-t border-[var(--border-card)] shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-2 duration-300 flex flex-col overflow-hidden" style={{ paddingBottom: 'env(safe-area-inset-bottom)', maxHeight: '85dvh' }}>
                 <div className="max-w-xl mx-auto px-3 pt-2 pb-2 sm:px-4 w-full flex flex-col min-h-0 overflow-hidden">
 
                    {/* Panel de configuración colapsable (modelo/voz/origen).
@@ -1980,20 +2035,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                     <button
                                        ref={voiceButtonRef}
                                        onClick={() => {
-                                          if (!showVoiceDropdown && voiceButtonRef.current) {
-                                             const rect = voiceButtonRef.current.getBoundingClientRect();
-                                             const spaceAbove = rect.top - 8;
-                                             const spaceBelow = window.innerHeight - rect.bottom - 8;
-                                             const left = rect.right - 256;
-                                             // Preferimos crecer hacia arriba (caso habitual), pero solo si hay
-                                             // espacio real para mostrar al menos un puñado de voces; si no,
-                                             // se ancla hacia abajo desde el botón.
-                                             if (spaceAbove >= 120 || spaceAbove >= spaceBelow) {
-                                                setVoiceDropdownPos({ left, bottom: window.innerHeight - rect.top + 4, maxHeight: Math.min(280, Math.max(120, spaceAbove)) });
-                                             } else {
-                                                setVoiceDropdownPos({ left, top: rect.bottom + 4, maxHeight: Math.min(280, Math.max(120, spaceBelow)) });
-                                             }
-                                          }
+                                          if (!showVoiceDropdown) computeVoiceDropdownPos();
                                           setShowVoiceDropdown(v => !v);
                                        }}
                                        className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 font-bold text-slate-800 dark:text-slate-100 cursor-pointer transition-colors shadow-sm max-w-[170px] truncate"
