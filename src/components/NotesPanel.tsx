@@ -1,34 +1,24 @@
 // =============================================================================
 // NotesPanel.tsx — Panel de notas/citas dentro del lector
 // -----------------------------------------------------------------------------
-// Cada documento tiene su propio listado de notas, persistido en Supabase vía
-// /api/documents/:docId/notes. La paleta de colores activa también es
-// por-documento, vía /api/documents/:docId/settings.
+// Componente de PRESENTACIÓN: el estado real (notes/activePalette) y su
+// persistencia viven en el hook useDocumentNotes, instanciado en ReaderView
+// (mismo ciclo de vida que el lector, no el de este panel). Por eso una cita
+// creada durante el TTS se guarda aunque este panel esté cerrado/desmontado.
 //
 // Tipos de "Note":
 //   - 'note'     → texto libre escrito por el usuario o cita capturada al
-//                  resaltar texto del PDF (selectedCitation desde ReaderView).
+//                  resaltar texto del PDF / marcada durante la lectura por voz.
 //   - 'bookmark' → marcador rápido a la página actual.
-//
-// IMPORTANTE: el componente <CitationsManager> usa los MISMOS endpoints y
-// estructura → cualquier cambio aquí debe replicarse allá.
 // =============================================================================
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Trash2, Edit2, Send, Tag, Mic, Square, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { cn } from '../lib/utils';
+import type { Note } from '../hooks/useDocumentNotes';
 
-export interface Note {
-  id: string;
-  documentId: string;
-  quote?: string;
-  content: string;                  // Markdown. Las citas vienen prefijadas con "> "
-  pageReference?: number | string;
-  timestamp: number;
-  color?: string;                   // 'rose-400' | 'sky-400' | 'emerald-400' | 'amber-400' | ...
-  type?: 'note' | 'bookmark';
-}
+export type { Note };
 
 // Extrae un número de página real de `pageReference`. En EPUB, `pageReference`
 // puede ser un CFI (p.ej. "epubcfi(/6/14!/4/2/16,/1:0,/1:117)") en vez de un
@@ -45,27 +35,26 @@ const parsePageNum = (ref: any): number => {
 
 interface NotesPanelProps {
   documentId: string;
+  notes: Note[];
+  addNote: (content: string, page?: number | string) => void;
+  addBookmark: (page?: number | string) => void;
+  editNote: (id: string, patch: Partial<Pick<Note, 'content' | 'pageReference' | 'color'>>) => void;
+  deleteNote: (id: string) => void;
   onNavigateToPage?: (page: number | string) => void;
   onNavigateToCitation?: (note: Note) => void;
   // Re-pinta el resaltado de una cita con su nuevo color SIN desplazar la vista
   // (a diferencia de onNavigateToCitation, que sí centra). Se usa al recolorear.
   onRecolorCitation?: (note: Note) => void;
-  selectedText?: string;
-  selectedCitation?: { text: string, color: string, timestamp: number, page?: number | string };
-  clearSelection?: () => void;
   currentPage?: number | string;
 }
 
-export function NotesPanel({ documentId, onNavigateToPage, onNavigateToCitation, onRecolorCitation, selectedText, selectedCitation, clearSelection, currentPage }: NotesPanelProps) {
-  const [notes, setNotes] = useState<Note[]>([]);
+export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, deleteNote, onNavigateToPage, onNavigateToCitation, onRecolorCitation, currentPage }: NotesPanelProps) {
   const [editorContent, setEditorContent] = useState('');
   const [showSavedFeedback, setShowSavedFeedback] = useState(false);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
   const [editPage, setEditPage] = useState<string | number>('');
-  const [activePalette, setActivePalette] = useState<{ id: string, color: string, bgClass: string, borderClass: string, textClass: string, name: string, hex: string }[]>([]);
   const notesEndRef = useRef<HTMLDivElement>(null);
-  const lastCitationTimestampRef = useRef<number | null>(null);
 
   // Móvil/tablet: ocultamos el título "Anotaciones" para ganar espacio vertical
   // y dejar más sitio a las notas cuando el teclado está abierto.
@@ -84,90 +73,13 @@ export function NotesPanel({ documentId, onNavigateToPage, onNavigateToCitation,
   const audioChunksRef = useRef<Blob[]>([]);
   const audioStreamRef = useRef<MediaStream | null>(null);
 
-  // Load color palette
-  useEffect(() => {
-    fetch(`/api/documents/${documentId}/settings`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(d => {
-        if (d.settings?.colorPalette) {
-          setActivePalette(d.settings.colorPalette);
-        } else {
-          setActivePalette([
-            { id: 'rose-400', color: 'rose-400', bgClass: 'bg-rose-50/50', borderClass: 'border-rose-400', textClass: 'text-rose-600', name: 'Rojo', hex: '#fb7185' },
-            { id: 'sky-400', color: 'sky-400', bgClass: 'bg-sky-50/50', borderClass: 'border-sky-400', textClass: 'text-sky-600', name: 'Azul', hex: '#38bdf8' },
-            { id: 'emerald-400', color: 'emerald-400', bgClass: 'bg-emerald-50/50', borderClass: 'border-emerald-400', textClass: 'text-emerald-600', name: 'Verde', hex: '#34d399' },
-            { id: 'amber-400', color: 'amber-400', bgClass: 'bg-amber-50/50', borderClass: 'border-amber-400', textClass: 'text-amber-600', name: 'Amarillo', hex: '#fbbf24' }
-          ]);
-        }
-      })
-      .catch(() => {});
-  }, [documentId]);
-
-  // Load notes
-  useEffect(() => {
-    fetch(`/api/documents/${documentId}/notes`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(d => setNotes(Array.isArray(d.notes) ? d.notes : []))
-      .catch(() => console.error("Error loading notes"));
-  }, [documentId]);
-
-  // Save notes
-  const saveNotes = (newNotes: Note[] | ((prev: Note[]) => Note[])) => {
-    setNotes(prev => {
-      const updated = typeof newNotes === 'function' ? newNotes(prev) : newNotes;
-      const sorted = [...updated].sort((a, b) => {
-        const pageA = parsePageNum(a.pageReference);
-        const pageB = parsePageNum(b.pageReference);
-
-        const hasPageA = pageA > 0;
-        const hasPageB = pageB > 0;
-
-        if (hasPageA && hasPageB) {
-          if (pageA !== pageB) return pageA - pageB;
-        } else if (hasPageA) {
-          return -1;
-        } else if (hasPageB) {
-          return 1;
-        }
-        return a.timestamp - b.timestamp;
-      });
-      fetch(`/api/documents/${documentId}/notes`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ notes: sorted }),
-      }).catch(err => console.error('No se pudieron guardar las notas:', err));
-      return sorted;
-    });
+  // Feedback visual "Guardado" tras cualquier mutación. notes/activePalette y
+  // su persistencia ya viven en useDocumentNotes (ver ReaderView); aquí solo
+  // se decide cuándo mostrar el indicador.
+  const flashSavedFeedback = () => {
     setShowSavedFeedback(true);
     setTimeout(() => setShowSavedFeedback(false), 2000);
   };
-
-  useEffect(() => {
-    if (selectedCitation && lastCitationTimestampRef.current !== selectedCitation.timestamp) {
-      lastCitationTimestampRef.current = selectedCitation.timestamp;
-      const newNote: Note = {
-        id: crypto.randomUUID(),
-        documentId,
-        content: `> ${selectedCitation.text}`,
-        pageReference: selectedCitation.page,
-        timestamp: selectedCitation.timestamp,
-        color: selectedCitation.color,
-        type: 'note'
-      };
-      // No crear la misma cita más de una vez: se considera duplicada si ya
-      // existe una nota (no marcador) con el mismo contenido y la misma página.
-      // (Cubre tanto el re-montaje de StrictMode con el mismo timestamp como la
-      // selección repetida del mismo fragmento en momentos distintos.)
-      const isDuplicate = (list: Note[]) => list.some(n =>
-        n.type !== 'bookmark' &&
-        n.content.trim() === newNote.content.trim() &&
-        String(n.pageReference ?? '') === String(newNote.pageReference ?? '')
-      );
-      saveNotes(prev => isDuplicate(prev) ? prev : [...prev, newNote]);
-      if (clearSelection) clearSelection();
-    }
-  }, [selectedCitation, documentId, clearSelection]);
 
   // Scroll to bottom when notes array changes
   useEffect(() => {
@@ -176,16 +88,9 @@ export function NotesPanel({ documentId, onNavigateToPage, onNavigateToCitation,
 
   const handleSaveNote = () => {
     if (!editorContent.trim()) return;
-    const newNote: Note = {
-      id: crypto.randomUUID(),
-      documentId,
-      content: editorContent,
-      pageReference: currentPage,
-      timestamp: Date.now(),
-      type: 'note'
-    };
-    saveNotes([...notes, newNote]);
+    addNote(editorContent, currentPage);
     setEditorContent('');
+    flashSavedFeedback();
   };
 
   // Envía el audio grabado al servidor: lo transcribe, lo ordena y, si es una
@@ -216,15 +121,8 @@ export function NotesPanel({ documentId, onNavigateToPage, onNavigateToCitation,
       const content: string = (data?.content || '').trim();
       if (!content) throw new Error('La transcripción quedó vacía.');
 
-      const newNote: Note = {
-        id: crypto.randomUUID(),
-        documentId,
-        content,
-        pageReference: currentPage,
-        timestamp: Date.now(),
-        type: 'note',
-      };
-      saveNotes([...notes, newNote]);
+      addNote(content, currentPage);
+      flashSavedFeedback();
     } catch (err: any) {
       setAudioError(err?.message || 'Error al procesar el audio.');
     } finally {
@@ -275,25 +173,14 @@ export function NotesPanel({ documentId, onNavigateToPage, onNavigateToCitation,
   }, []);
 
   const handleAddBookmark = () => {
-     const newBookmark: Note = {
-        id: crypto.randomUUID(),
-        documentId,
-        content: 'Nuevo Marcador',
-        pageReference: currentPage,
-        timestamp: Date.now(),
-        type: 'bookmark',
-        color: 'sky-400'
-     };
-     saveNotes([...notes, newBookmark]);
+     addBookmark(currentPage);
+     flashSavedFeedback();
   };
 
   const saveEdit = (id: string) => {
-    saveNotes(notes.map(n => n.id === id ? { ...n, content: editContent, pageReference: editPage || undefined } : n));
+    editNote(id, { content: editContent, pageReference: editPage || undefined });
     setEditingNoteId(null);
-  };
-
-  const deleteNote = (id: string) => {
-    saveNotes(notes.filter(n => n.id !== id));
+    flashSavedFeedback();
   };
 
   return (
@@ -438,7 +325,7 @@ export function NotesPanel({ documentId, onNavigateToPage, onNavigateToCitation,
                                  <button
                                    key={colorId}
                                    onClick={() => {
-                                     saveNotes(notes.map(n => n.id === note.id ? { ...n, color: colorId } : n));
+                                     editNote(note.id, { color: colorId });
                                      // Re-pinta el resaltado en el documento con el nuevo color.
                                      if (onRecolorCitation) {
                                        const quote = note.quote || (note.content.startsWith('>') ? note.content.replace(/^>\s*/, '') : undefined);

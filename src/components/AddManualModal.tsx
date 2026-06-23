@@ -618,8 +618,41 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                        )}
                    </div>
                 </div>
+
+                {/* Formato: junto a la portada (no al final de la columna de
+                    metadatos), donde antes quedaba cortado en desktop al
+                    100% de zoom porque esa columna no tiene scroll propio. */}
+                <div className="pt-3 border-t border-slate-200/50 w-full">
+                   <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-2 text-center">Formato</label>
+                   <div className="flex flex-wrap justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setFormData({...formData, ownedPhysical: !formData.ownedPhysical})}
+                        className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center gap-2", formData.ownedPhysical ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
+                      >
+                         Físico
+                         {formData.ownedPhysical && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({...formData, ownedDigital: !formData.ownedDigital})}
+                        className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center gap-2", formData.ownedDigital ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
+                      >
+                         Digital
+                         {formData.ownedDigital && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({...formData, toBuy: !formData.toBuy})}
+                        className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center gap-2", formData.toBuy ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
+                      >
+                         Wishlist
+                         {formData.toBuy && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                      </button>
+                   </div>
+                </div>
              </div>
-             
+
              <div className="md:col-span-2 [@media(max-height:500px)_and_(orientation:landscape)]:col-span-2 space-y-4 md:h-full md:overflow-y-auto md:pr-2 [@media(max-height:500px)_and_(orientation:landscape)]:h-full [@media(max-height:500px)_and_(orientation:landscape)]:overflow-y-auto settings-scrollbar">
                 <div>
                    <label className="text-[11px] font-semibold text-[var(--text-muted)] flex items-center justify-between mb-1">
@@ -791,35 +824,6 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                    </div>
                 </div>
 
-                <div className="pt-3 border-t border-slate-200/50">
-                   <label className="text-[11px] font-semibold text-[var(--text-muted)] block mb-2">Formato</label>
-                   <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setFormData({...formData, ownedPhysical: !formData.ownedPhysical})}
-                        className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center gap-2", formData.ownedPhysical ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
-                      >
-                         Físico
-                         {formData.ownedPhysical && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setFormData({...formData, ownedDigital: !formData.ownedDigital})}
-                        className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center gap-2", formData.ownedDigital ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
-                      >
-                         Digital
-                         {formData.ownedDigital && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setFormData({...formData, toBuy: !formData.toBuy})}
-                        className={cn("px-3 py-1.5 rounded-lg text-sm font-medium transition-all shadow-sm border flex items-center gap-2", formData.toBuy ? "bg-[var(--primary)]/10 text-[var(--text-main)] border-[var(--primary)]/40" : "bg-[var(--bg-card)] text-[var(--text-muted)] border-slate-200/50 hover:border-[var(--primary)]/50")}
-                      >
-                         Wishlist
-                         {formData.toBuy && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
-                      </button>
-                   </div>
-                </div>
              </div>
           </div>
           

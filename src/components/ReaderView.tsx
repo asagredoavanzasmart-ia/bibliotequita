@@ -37,11 +37,22 @@ import { AuditorPanel } from './AuditorPanel';
 import { ResourcesPanel } from './ResourcesPanel';
 import { useReadingTimeTracker } from '../hooks/useReadingTime';
 import { useWakeLock } from '../hooks/useWakeLock';
+import { useDocumentNotes } from '../hooks/useDocumentNotes';
 
 interface ReaderViewProps {
   bookId: string;
   onClose: () => void;
 }
+
+// Abreviaturas comunes en español académico/literario que terminan en punto
+// pero NO marcan fin de oración. Usadas por splitIntoPhrases (segmentador de
+// oraciones del lector de voz) para no cortar en medio de "Dr.", "p.ej.", etc.
+const SENTENCE_ABBREVIATIONS = new Set([
+  'sr', 'sra', 'srta', 'dr', 'dra', 'prof', 'profa', 'ud', 'uds', 'vd', 'vds',
+  'etc', 'vs', 'ej', 'núm', 'num', 'av', 'avda', 'art', 'pág', 'pag', 'cap',
+  'vol', 'fig', 'ed', 'eds', 'excmo', 'excma', 'ilmo', 'ilma', 'gob', 'depto',
+  'cía', 'ca', 'sa', 'ltda',
+]);
 
 // Convierte un color hex (#rgb o #rrggbb) a rgba(r,g,b,alpha). Si el color ya
 // viene en otro formato (rgb/rgba/nombre), lo devuelve tal cual.
@@ -71,13 +82,29 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Registra tiempo de lectura diario mientras este libro está abierto.
   useReadingTimeTracker(!!item);
 
+  // Fuente única de verdad de notas/citas y paleta de colores del libro: vive
+  // aquí (mismo ciclo de vida que el lector) para que crear una cita NO
+  // dependa de que el panel de Anotaciones esté montado — antes, las citas
+  // creadas durante la lectura por voz (TTS) con el panel cerrado se perdían
+  // porque la persistencia ocurría en un efecto dentro de NotesPanel.
+  const {
+    notes: documentNotes,
+    activePalette,
+    savePalette,
+    saveNotes: saveDocumentNotes,
+    addCitation,
+    addNote: addDocumentNote,
+    addBookmark: addDocumentBookmark,
+    editNote: editDocumentNote,
+    deleteNote: deleteDocumentNote,
+  } = useDocumentNotes(bookId);
+
   const [activeTab, setActiveTab ] = useState<'reader' | 'edit' | 'citations' | 'auditor' | 'resources'>('reader');
   
   const [showFolderManager, setShowFolderManager ] = useState(false);
   const [showNotes, setShowNotes ] = useState(false);
 
   const [selectedText, setSelectedText ] = useState('');
-  const [selectedCitation, setSelectedCitation ] = useState<{text: string; color: string; timestamp: number; page?: number | string}>();
   const [selectionRect, setSelectionRect ] = useState<{ top: number, left: number, width: number, bottom: number } | null>(null);
 
   // Referencia a la Rendition de epubjs — necesaria para acceder al contenido
@@ -130,7 +157,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // limitar su alto en móvil — sin el portal, las voces que sobresalían del
   // recuadro del widget quedaban recortadas/invisibles ("no cargan todas").
   const voiceButtonRef = useRef<HTMLButtonElement>(null);
-  const [voiceDropdownPos, setVoiceDropdownPos] = useState<{ left: number; bottom: number } | null>(null);
+  // anchorBottom=true ancla el panel por abajo (crece hacia arriba, caso normal:
+  // el botón de voz está cerca del borde inferior, p.ej. en el widget TTS). Si no
+  // hay espacio suficiente arriba (botón muy alto en la pantalla, común en el
+  // widget TTS compacto de móvil), se ancla por arriba en su lugar y la lista se
+  // limita con maxHeight al espacio real disponible — antes, al anclar siempre
+  // por abajo, el panel podía salirse del viewport por arriba y solo se veía la
+  // primera voz (Catalina), con el resto recortado fuera de la pantalla.
+  const [voiceDropdownPos, setVoiceDropdownPos] = useState<{ left: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
 
   const toggleFavoriteVoice = useCallback((voiceId: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -329,14 +363,80 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     return '';
   }, [item?.type, currentPage, getEpubVisibleText]);
 
-  // Divide el texto en frases de punto a punto de forma simple y robusta
+  // Divide el texto en unidades de lectura SIEMPRE de punto a punto (seguido
+  // o aparte — ambos son el mismo carácter ".", la diferencia es de formato
+  // de párrafo, no de criterio de corte). Es la única regla: no se corta en
+  // "?"/"!"/"…"/";" — quedan dentro de la misma frase hasta el próximo punto.
+  // Así "Frase Siguiente"/"Frase Anterior" avanzan siempre la misma distancia
+  // conceptual, sin que el criterio cambie según el tipo de oración.
+  //
+  // El criterio anterior (`text.split('.')` ingenuo) cortaba también en
+  // abreviaturas ("Dr.", "p.ej.", "Av."), iniciales ("J.R.R.") y números
+  // decimales ("3.14") — de ahí que el TTS "seleccionara frases casi
+  // aleatorias". Aquí se recorre el texto carácter a carácter y solo se corta
+  // en un punto cuando el contexto inmediato descarta esos falsos positivos.
   const splitIntoPhrases = useCallback((text: string): string[] => {
     if (!text) return [];
-    return text
-      .split('.')
-      .map(p => p.trim())
-      .filter(p => p.length > 0)
-      .map(p => p + '.');
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    if (!normalized) return [];
+
+    const sentences: string[] = [];
+    let start = 0;
+
+    for (let i = 0; i < normalized.length; i++) {
+      if (normalized[i] !== '.') continue;
+
+      // Punto decimal: dígito antes y después ("3.14") → no es fin de frase.
+      if (/\d/.test(normalized[i - 1] ?? '') && /\d/.test(normalized[i + 1] ?? '')) continue;
+      // Elipsis "...": esperar al último punto de la racha.
+      if (normalized[i + 1] === '.') continue;
+      // Iniciales tipo "J.R.R.": letra mayúscula sola precedida de espacio,
+      // inicio de texto, u otro punto (la inicial anterior de la racha).
+      const prevChar = normalized[i - 1] ?? '';
+      const beforePrev = normalized[i - 2] ?? '';
+      const isInitial = /[A-ZÁÉÍÓÚÑ]/.test(prevChar) && (beforePrev === '' || beforePrev === ' ' || beforePrev === '.');
+      if (isInitial) continue;
+      // Abreviatura conocida: la "palabra" que termina justo en este punto.
+      const wordMatch = normalized.slice(0, i).match(/([a-záéíóúñ]+)$/i);
+      if (wordMatch && SENTENCE_ABBREVIATIONS.has(wordMatch[1].toLowerCase())) continue;
+      // Punto seguido de letra minúscula sin espacio: abreviatura no
+      // catalogada o puntuación interna (p.ej. "p.ej" suelto) → no cortar.
+      if (/[a-záéíóúñ]/.test(normalized[i + 1] ?? '')) continue;
+
+      // Las comillas/paréntesis de cierre inmediatamente después del punto
+      // ("...comillas.") pertenecen a la frase que termina, no a la siguiente.
+      let end = i + 1;
+      while (end < normalized.length && /["'”’)\]]/.test(normalized[end])) end++;
+      const sentence = normalized.slice(start, end).trim();
+      if (sentence.length > 0) sentences.push(sentence);
+      start = end;
+    }
+
+    const rest = normalized.slice(start).trim();
+    if (rest.length > 0) sentences.push(rest);
+
+    // Fusionar fragmentos triviales (p.ej. "4." de un número de página suelto,
+    // o una inicial que el detector no reconoció) con una frase vecina, para
+    // que "Frase Siguiente"/"Frase Anterior" avancen siempre por una unidad
+    // con contenido real y no por signos de puntuación sueltos. Se fusionan
+    // con la frase ANTERIOR (caso normal); si el fragmento trivial es el
+    // primero del documento (no hay frase anterior), se fusiona con la
+    // siguiente en su lugar.
+    const MIN_SENTENCE_LENGTH = 3; // caracteres sin contar el punto final
+    const isTrivial = (s: string) => s.replace(/[.\s]+$/, '').length < MIN_SENTENCE_LENGTH;
+    const merged: string[] = [];
+    for (const s of sentences) {
+      if (isTrivial(s) && merged.length > 0) {
+        merged[merged.length - 1] = `${merged[merged.length - 1]} ${s}`;
+      } else {
+        merged.push(s);
+      }
+    }
+    if (merged.length > 1 && isTrivial(merged[0])) {
+      merged[1] = `${merged[0]} ${merged[1]}`;
+      merged.shift();
+    }
+    return merged;
   }, []);
 
   // Recorre los nodos de texto de un elemento y devuelve el texto del primer
@@ -819,27 +919,26 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   // Crea una nota/cita a partir de la frase que el TTS está leyendo actualmente,
   // marcándola con el color elegido — sin abrir el panel de Anotaciones.
-  // Se reutiliza el mismo canal que la selección manual de texto
-  // (setSelectedCitation -> NotesPanel), que es la única fuente de verdad que
-  // escribe en localStorage[`notes-${bookId}`]. Escribir aquí directamente en
-  // localStorage provocaba pérdidas intermitentes de la nota: el estado React
-  // de NotesPanel podía sobreescribir el storage con datos desactualizados
-  // justo después (p.ej. al recolorear o crear otra nota).
+  // Llama directamente a addCitation() del hook useDocumentNotes: la
+  // persistencia ya NO depende de que NotesPanel esté montado (antes pasaba
+  // por setSelectedCitation + un efecto dentro de NotesPanel, que solo existe
+  // si el panel de notas está abierto — si el usuario marcaba varias frases
+  // mientras escuchaba el TTS con el panel cerrado, todas menos la última se
+  // perdían en silencio).
   const createNoteFromCurrentPhrase = useCallback((color: string, hex: string) => {
     const phraseText = phrases[currentPhraseIndex];
     if (!phraseText) return;
 
-    setSelectedCitation({
+    addCitation({
       text: phraseText,
       color,
-      timestamp: Date.now(),
       page: item?.type === 'epub' ? undefined : currentPage,
     });
 
     // Resalta visualmente la frase en el color elegido de forma persistente,
     // para que no se borre cuando el TTS avance a la siguiente frase.
     highlightCurrentPhrase(phraseText, hex, true);
-  }, [phrases, currentPhraseIndex, item?.type, currentPage, highlightCurrentPhrase]);
+  }, [phrases, currentPhraseIndex, item?.type, currentPage, highlightCurrentPhrase, addCitation]);
 
   // Detener la reproducción de voz
   const handleTtsStop = useCallback(() => {
@@ -1383,25 +1482,6 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
   }, []);
 
-  const [activePalette, setActivePalette ] = useState<{ id: string, color: string, bgClass: string, borderClass: string, textClass: string, name: string, hex: string }[]>([]);
-
-  const DEFAULT_PALETTE = [
-    { id: 'rose-400', color: 'rose-400', bgClass: 'bg-rose-50/50', borderClass: 'border-rose-400', textClass: 'text-rose-600', name: 'Rojo', hex: '#fb7185' },
-    { id: 'sky-400', color: 'sky-400', bgClass: 'bg-sky-50/50', borderClass: 'border-sky-400', textClass: 'text-sky-600', name: 'Azul', hex: '#38bdf8' },
-    { id: 'emerald-400', color: 'emerald-400', bgClass: 'bg-emerald-50/50', borderClass: 'border-emerald-400', textClass: 'text-emerald-600', name: 'Verde', hex: '#34d399' },
-    { id: 'amber-400', color: 'amber-400', bgClass: 'bg-amber-50/50', borderClass: 'border-amber-400', textClass: 'text-amber-600', name: 'Amarillo', hex: '#fbbf24' }
-  ];
-
-  useEffect(() => {
-    if (!bookId) return;
-    fetch(`/api/documents/${bookId}/settings`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(d => {
-        setActivePalette(d.settings?.colorPalette ?? DEFAULT_PALETTE);
-      })
-      .catch(() => setActivePalette(DEFAULT_PALETTE));
-  }, [bookId]);
-
   // Aplica el resaltado pendiente al navegar desde una cita guardada
   // (CitationsManager). Para PDF se espera a que la página destino termine de
   // renderizarse; para EPUB, highlightPhraseInEpub ya reintenta mientras la
@@ -1902,7 +1982,17 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                        onClick={() => {
                                           if (!showVoiceDropdown && voiceButtonRef.current) {
                                              const rect = voiceButtonRef.current.getBoundingClientRect();
-                                             setVoiceDropdownPos({ left: rect.right - 256, bottom: window.innerHeight - rect.top + 4 });
+                                             const spaceAbove = rect.top - 8;
+                                             const spaceBelow = window.innerHeight - rect.bottom - 8;
+                                             const left = rect.right - 256;
+                                             // Preferimos crecer hacia arriba (caso habitual), pero solo si hay
+                                             // espacio real para mostrar al menos un puñado de voces; si no,
+                                             // se ancla hacia abajo desde el botón.
+                                             if (spaceAbove >= 120 || spaceAbove >= spaceBelow) {
+                                                setVoiceDropdownPos({ left, bottom: window.innerHeight - rect.top + 4, maxHeight: Math.min(280, Math.max(120, spaceAbove)) });
+                                             } else {
+                                                setVoiceDropdownPos({ left, top: rect.bottom + 4, maxHeight: Math.min(280, Math.max(120, spaceBelow)) });
+                                             }
                                           }
                                           setShowVoiceDropdown(v => !v);
                                        }}
@@ -1919,10 +2009,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                        <div className="fixed inset-0 z-[60]" onClick={() => setShowVoiceDropdown(false)} />
                                        <div
                                           className="fixed z-[61] w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden"
-                                          style={{ left: Math.max(8, voiceDropdownPos.left), bottom: voiceDropdownPos.bottom }}
+                                          style={{
+                                             left: Math.max(8, voiceDropdownPos.left),
+                                             ...(voiceDropdownPos.top !== undefined ? { top: voiceDropdownPos.top } : { bottom: voiceDropdownPos.bottom }),
+                                          }}
                                           onClick={(e) => e.stopPropagation()}
                                        >
-                                          <div className="max-h-56 overflow-y-auto custom-scrollbar">
+                                          <div className="overflow-y-auto custom-scrollbar" style={{ maxHeight: voiceDropdownPos.maxHeight }}>
                                              {favorites.length > 0 && (
                                                 <div className="px-2 pt-2 pb-1">
                                                    <span className="text-[10px] text-yellow-500 font-bold uppercase tracking-wide px-1">★ Favoritas</span>
@@ -2154,7 +2247,6 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const handleClearSelection = useCallback(() => {
      setSelectedText('');
      setSelectionRect(null);
-     setSelectedCitation(undefined);
   }, []);
 
   const renderNotes = () => (
@@ -2163,9 +2255,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
      >
         <NotesPanel
             documentId={bookId}
-            selectedText={selectedText}
-            selectedCitation={selectedCitation}
-            clearSelection={handleClearSelection}
+            notes={documentNotes}
+            addNote={addDocumentNote}
+            addBookmark={addDocumentBookmark}
+            editNote={editDocumentNote}
+            deleteNote={deleteDocumentNote}
             currentPage={currentPage}
             onNavigateToPage={(page) => setTargetPage({ page: Number(page), t: Date.now() })}
             onNavigateToCitation={(note) => {
@@ -2443,9 +2537,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                          // (currentPage queda fijo en el bookmark inicial), así
                          // que omitimos la referencia de página para no guardar
                          // un dato incorrecto.
-                         setSelectedCitation({ text: selectedText, color: colorItem.color, timestamp: Date.now(), page: item?.type === 'epub' ? undefined : currentPage });
+                         addCitation({ text: selectedText, color: colorItem.color, page: item?.type === 'epub' ? undefined : currentPage });
+                         // Abrir el panel ya es solo una decisión de UX (feedback
+                         // visual inmediato), no una condición para que la cita
+                         // se guarde — addCitation() ya la persistió.
                          if (!showNotes) setShowNotes(true);
-                         setSelectionRect(null);
+                         handleClearSelection();
                        }}
                        style={{ backgroundColor: colorItem.hex }}
                        className="w-5 h-5 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-white/50 cursor-pointer"
@@ -2535,6 +2632,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           {activeTab === 'citations' && (
              <CitationsManager
                documentId={item.id}
+               notes={documentNotes}
+               activePalette={activePalette}
+               savePalette={savePalette}
+               saveNotes={saveDocumentNotes}
                onClose={() => setActiveTab('reader')}
                onNavigateToPage={(page) => {
                  setTargetPage({ page: Number(page), t: Date.now() });

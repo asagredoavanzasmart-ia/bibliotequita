@@ -13,6 +13,7 @@ import { cn } from '../lib/utils';
 import { uploadFile } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
 import { useWakeLock } from '../hooks/useWakeLock';
+import { useDocumentNotes } from '../hooks/useDocumentNotes';
 import { ResourceItem, ResourceKind, ResourceType } from '../types';
 import { PDFReader } from './PDFReader';
 import { EPUBReader } from './EPUBReader';
@@ -100,6 +101,24 @@ async function extractCoverForResource(file: File, fileType: ResourceType): Prom
     console.warn('No se pudo extraer la portada del recurso:', e);
   }
   return undefined;
+}
+
+// Cada recurso (video/audio/imagen/texto) tiene sus propias notas, separadas
+// de las del libro, vía documentId con sufijo "::res::<id>". El hook se
+// instancia aquí (solo cuando el panel de notas de ESE recurso está abierto)
+// para que NotesPanel siga siendo un componente de presentación puro.
+function ResourceNotesPanel({ documentId }: { documentId: string }) {
+  const { notes, addNote, addBookmark, editNote, deleteNote } = useDocumentNotes(documentId);
+  return (
+    <NotesPanel
+      documentId={documentId}
+      notes={notes}
+      addNote={addNote}
+      addBookmark={addBookmark}
+      editNote={editNote}
+      deleteNote={deleteNote}
+    />
+  );
 }
 
 export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
@@ -406,7 +425,7 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
                       </button>
                     </div>
                     <div className="flex-1 overflow-hidden">
-                      <NotesPanel documentId={`${bookId}::res::${r.id}`} />
+                      <ResourceNotesPanel documentId={`${bookId}::res::${r.id}`} />
                     </div>
                   </div>
                 )}

@@ -6,14 +6,6 @@ html, body, #root {
   background-color: var(--bg-app);
 }
 
-/* En Android/WebView con notch (viewport-fit=cover), el área bajo la barra de
-   estado queda fuera del flujo normal y se ve el blanco nativo de la Activity
-   por detrás si nada la cubre. Empujamos todo el contenido ese espacio hacia
-   abajo para que el fondo de la propia app (gris/azul, no blanco) lo cubra. */
-html, body {
-  padding-top: env(safe-area-inset-top);
-}
-
 @theme {
   --color-brand-blue: #00558F;
   --color-brand-light: #A0CFEB;

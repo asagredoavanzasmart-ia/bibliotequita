@@ -60,7 +60,7 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
 
   return (
     <>
-      <div className="flex flex-col gap-4 w-full border-b border-slate-200/50 relative z-10 shrink-0 lg:bg-transparent bg-[var(--sidebar-bg)] sticky top-0">
+      <div className="flex flex-col gap-4 w-full border-b border-white/10 lg:border-slate-200/50 relative z-10 shrink-0 lg:bg-transparent bg-[var(--sidebar-bg)] sticky top-0">
         <div className="flex flex-col md:flex-row items-center justify-between gap-4 px-4 md:px-6 lg:px-8 py-3 lg:py-4">
 
           <div className="flex-1 w-full flex items-center gap-2">
@@ -110,11 +110,17 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
               </button>
             )}
 
-            <div className="hidden sm:flex items-center gap-3 border-l border-slate-200/50 pl-4 ml-2">
-              <select 
+            {/* Este bloque vive sobre fondo OSCURO (--sidebar-bg) entre sm: y lg:
+                (tablet / móvil horizontal) y sobre fondo CLARO/transparente desde
+                lg: (desktop, junto al sidebar fijo). Los colores deben adaptarse a
+                ambos casos — antes usaban siempre tonos pensados para fondo claro
+                (slate-500, bg-card translúcido) y quedaban con bajo contraste,
+                casi invisibles, en el rango oscuro sm:→lg:. */}
+            <div className="hidden sm:flex items-center gap-3 border-l border-white/15 lg:border-slate-200/50 pl-4 ml-2">
+              <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as any)}
-                className="text-sm font-medium border border-slate-200/50 rounded-xl px-3 py-2 text-[var(--text-main)] bg-[var(--bg-card)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] hover:border-[var(--primary)]/50 transition-colors cursor-pointer"
+                className="text-sm font-medium border border-white/15 lg:border-slate-200/50 rounded-xl px-3 py-2 text-white lg:text-[var(--text-main)] bg-white/10 lg:bg-[var(--bg-card)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] hover:border-white/30 lg:hover:border-[var(--primary)]/50 transition-colors cursor-pointer [&>option]:text-slate-800"
               >
                 <option value="manual">Orden Manual</option>
                 <option value="recent">Más recientes</option>
@@ -122,32 +128,32 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
                 <option value="alpha">Alfabético</option>
               </select>
 
-              <div className="flex bg-[var(--bg-card)] border border-slate-200/50 p-1 rounded-xl shadow-sm">
+              <div className="flex bg-white/10 lg:bg-[var(--bg-card)] border border-white/15 lg:border-slate-200/50 p-1 rounded-xl shadow-sm">
                  <button
                     onClick={() => setViewMode('covers')}
                     title="Solo portadas"
-                    className={cn("p-2 rounded-lg transition-colors", viewMode === 'covers' ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "text-slate-500 hover:text-[var(--text-main)] hover:bg-slate-100/50")}
+                    className={cn("p-2 rounded-lg transition-colors", viewMode === 'covers' ? "bg-white/20 lg:bg-[var(--primary)]/10 text-white lg:text-[var(--primary)]" : "text-white/70 lg:text-slate-500 hover:text-white lg:hover:text-[var(--text-main)] hover:bg-white/10 lg:hover:bg-slate-100/50")}
                  >
                     <GalleryVerticalEnd className="w-4 h-4" />
                  </button>
                  <button
                     onClick={() => setViewMode('grid')}
                     title="Cuadrícula"
-                    className={cn("p-2 rounded-lg transition-colors", viewMode === 'grid' ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "text-slate-500 hover:text-[var(--text-main)] hover:bg-slate-100/50")}
+                    className={cn("p-2 rounded-lg transition-colors", viewMode === 'grid' ? "bg-white/20 lg:bg-[var(--primary)]/10 text-white lg:text-[var(--primary)]" : "text-white/70 lg:text-slate-500 hover:text-white lg:hover:text-[var(--text-main)] hover:bg-white/10 lg:hover:bg-slate-100/50")}
                  >
                     <LayoutGrid className="w-4 h-4" />
                  </button>
                  <button
                     onClick={() => setViewMode('grid-compact')}
                     title="Cuadrícula compacta"
-                    className={cn("p-2 rounded-lg transition-colors", viewMode === 'grid-compact' ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "text-slate-500 hover:text-[var(--text-main)] hover:bg-slate-100/50")}
+                    className={cn("p-2 rounded-lg transition-colors", viewMode === 'grid-compact' ? "bg-white/20 lg:bg-[var(--primary)]/10 text-white lg:text-[var(--primary)]" : "text-white/70 lg:text-slate-500 hover:text-white lg:hover:text-[var(--text-main)] hover:bg-white/10 lg:hover:bg-slate-100/50")}
                  >
                     <Grid3x3 className="w-4 h-4" />
                  </button>
                  <button
                     onClick={() => setViewMode('list')}
                     title="Lista"
-                    className={cn("p-2 rounded-lg transition-colors", viewMode === 'list' ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "text-slate-500 hover:text-[var(--text-main)] hover:bg-slate-100/50")}
+                    className={cn("p-2 rounded-lg transition-colors", viewMode === 'list' ? "bg-white/20 lg:bg-[var(--primary)]/10 text-white lg:text-[var(--primary)]" : "text-white/70 lg:text-slate-500 hover:text-white lg:hover:text-[var(--text-main)] hover:bg-white/10 lg:hover:bg-slate-100/50")}
                  >
                     <ListIcon className="w-4 h-4" />
                  </button>
@@ -156,27 +162,27 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
               <button
                  onClick={toggleAppFullscreen}
                  title="Pantalla completa"
-                 className={cn("p-2.5 border border-slate-200/50 rounded-xl transition-all shadow-sm", isAppFullscreen ? "bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/50" : "text-slate-500 hover:text-[var(--primary)] bg-[var(--bg-card)] hover:border-[var(--primary)]/50")}
+                 className={cn("p-2.5 border rounded-xl transition-all shadow-sm", isAppFullscreen ? "bg-white/20 lg:bg-[var(--primary)]/10 text-white lg:text-[var(--primary)] border-white/30 lg:border-[var(--primary)]/50" : "text-white/70 lg:text-slate-500 hover:text-white lg:hover:text-[var(--primary)] bg-white/10 lg:bg-[var(--bg-card)] border-white/15 lg:border-slate-200/50 hover:border-white/30 lg:hover:border-[var(--primary)]/50")}
               >
                  {isAppFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
               </button>
 
-              <button onClick={() => setShowSettings(true)} className="p-2.5 text-slate-500 hover:text-[var(--primary)] bg-[var(--bg-card)] border border-slate-200/50 rounded-xl hover:border-[var(--primary)]/50 transition-all shadow-sm">
+              <button onClick={() => setShowSettings(true)} className="p-2.5 text-white/70 lg:text-slate-500 hover:text-white lg:hover:text-[var(--primary)] bg-white/10 lg:bg-[var(--bg-card)] border border-white/15 lg:border-slate-200/50 hover:border-white/30 lg:hover:border-[var(--primary)]/50 rounded-xl transition-all shadow-sm">
                  <Settings className="w-5 h-5" />
               </button>
 
-              {/* Avatar + logout (en móvil ya están en el Sidebar, evita una fila vacía extra en el header) */}
+              {/* Avatar + logout (en móvil vertical ya están en el Sidebar, evita una fila vacía extra en el header) */}
               {user && (
                 <div className="hidden sm:flex items-center gap-2 pl-1">
                   {user.photo ? (
-                    <img src={user.photo} alt={user.name} className="w-8 h-8 rounded-full border-2 border-[var(--primary)]/30 object-cover" title={user.name} />
+                    <img src={user.photo} alt={user.name} className="w-8 h-8 rounded-full border-2 border-white/30 lg:border-[var(--primary)]/30 object-cover" title={user.name} />
                   ) : (
-                    <div className="w-8 h-8 rounded-full bg-[var(--primary)]/20 flex items-center justify-center text-[var(--primary)] font-bold text-sm">
+                    <div className="w-8 h-8 rounded-full bg-white/15 lg:bg-[var(--primary)]/20 flex items-center justify-center text-white lg:text-[var(--primary)] font-bold text-sm">
                       {user.name?.[0]?.toUpperCase()}
                     </div>
                   )}
                   <a href="/auth/logout" title="Cerrar sesión"
-                    className="p-1.5 text-slate-400 hover:text-red-500 transition-colors rounded-lg hover:bg-red-50"
+                    className="p-1.5 text-white/60 lg:text-slate-400 hover:text-red-400 lg:hover:text-red-500 transition-colors rounded-lg hover:bg-white/10 lg:hover:bg-red-50"
                   >
                     <LogOut className="w-4 h-4" />
                   </a>

@@ -122,6 +122,26 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
   const [dragAnimating, setDragAnimating] = useState(false);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const dragWidthRef = useRef(0);
+  // El cambio de página real (next()/prev()) se dispara 220ms después de
+  // soltar, para que la animación de "deslizar fuera" termine antes de pedirle
+  // a epubjs la siguiente sección. Si el usuario empezaba un NUEVO gesto antes
+  // de que pasaran esos 220ms, el timeout viejo podía disparar next()/prev() Y
+  // setDragOffset(0) a mitad del nuevo gesto, pisándolo — por eso "hay que
+  // arrastrar varias veces para que pase la página". Ahora, si llega un gesto
+  // nuevo con un cambio de página aún pendiente, ese cambio se ejecuta de
+  // inmediato (no se pierde el turno) en vez de dispararse más tarde.
+  const pendingPageChangeRef = useRef<{ action: 'next' | 'prev'; timeout: number } | null>(null);
+
+  const flushPendingPageChange = useCallback(() => {
+    const pending = pendingPageChangeRef.current;
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingPageChangeRef.current = null;
+    if (pending.action === 'next') renditionRef.current?.next();
+    else renditionRef.current?.prev();
+    setDragOffset(0);
+    setDragAnimating(false);
+  }, []);
 
   const handlePageGestureStart = useCallback((e: TouchEvent) => {
     // No interceptar el gesto si el usuario está seleccionando texto: epubjs
@@ -130,9 +150,10 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     const target = e.target as Node;
     const sel = (target?.getRootNode?.() as Document)?.getSelection?.() ?? (e.view as Window | null)?.getSelection?.();
     if (sel && !sel.isCollapsed) return;
+    flushPendingPageChange();
     dragStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
     dragWidthRef.current = containerRef.current?.clientWidth || window.innerWidth;
-  }, []);
+  }, [flushPendingPageChange]);
 
   const handlePageGestureMove = useCallback((e: TouchEvent) => {
     if (!dragStartRef.current || viewMode !== 'paginated') return;
@@ -181,10 +202,12 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     setDragAnimating(true);
     if (dx <= -threshold) {
       setDragOffset(-width);
-      window.setTimeout(() => { renditionRef.current?.next(); setDragOffset(0); setDragAnimating(false); }, 220);
+      const timeout = window.setTimeout(() => { pendingPageChangeRef.current = null; renditionRef.current?.next(); setDragOffset(0); setDragAnimating(false); }, 220);
+      pendingPageChangeRef.current = { action: 'next', timeout };
     } else if (dx >= threshold) {
       setDragOffset(width);
-      window.setTimeout(() => { renditionRef.current?.prev(); setDragOffset(0); setDragAnimating(false); }, 220);
+      const timeout = window.setTimeout(() => { pendingPageChangeRef.current = null; renditionRef.current?.prev(); setDragOffset(0); setDragAnimating(false); }, 220);
+      pendingPageChangeRef.current = { action: 'prev', timeout };
     } else {
       setDragOffset(0);
       window.setTimeout(() => setDragAnimating(false), 220);
@@ -206,6 +229,13 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
       onEnd: (e: Event) => handlePageGestureEnd(e as TouchEvent),
     };
   }, [handlePageGestureStart, handlePageGestureMove, handlePageGestureEnd]);
+
+  // Si el componente se desmonta con un cambio de página pendiente (el
+  // usuario cerró el lector durante los 220ms de la animación), se cancela el
+  // timeout para no llamar a renditionRef tras desmontar.
+  useEffect(() => () => {
+    if (pendingPageChangeRef.current) clearTimeout(pendingPageChangeRef.current.timeout);
+  }, []);
 
   const handleGetRendition = useCallback((rendition: Rendition) => {
     renditionRef.current = rendition;
@@ -238,8 +268,15 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     }).catch(() => { /* EPUB sin spine recorrible; deja el indicador vacío */ });
 
     rendition.on('relocated', (loc: EpubLocation) => {
-      if (loc?.start?.displayed) {
-        setPageProgress({ page: loc.start.displayed.page, total: loc.start.displayed.total });
+      // Justo al abrir el libro, epubjs puede emitir "relocated" antes de que
+      // su paginación interna termine de calcularse: displayed.page/total
+      // llegan como valores no numéricos (se ha visto el string "!"), lo que
+      // mostraba "1 / !" en el contador. Se descartan valores inválidos en
+      // vez de mostrarlos — el contador simplemente espera al próximo evento
+      // ya estable, en lugar de enseñar un número incorrecto.
+      const displayed = loc?.start?.displayed;
+      if (displayed && Number.isFinite(displayed.page) && Number.isFinite(displayed.total) && displayed.total > 0) {
+        setPageProgress({ page: displayed.page, total: displayed.total });
       }
       if (locationsReadyRef.current && loc?.start?.cfi) {
         setPercentProgress(Math.round(rendition.book.locations.percentageFromCfi(loc.start.cfi) * 100));
@@ -361,7 +398,10 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
 
       {viewMode === 'paginated' && pageProgress && (
         <>
-          <span className="text-xs font-mono font-semibold tabular-nums text-[var(--text-muted)] px-1" title="Página actual">
+          {/* min-w reservado para hasta 4 dígitos por lado ("8888 / 8888"):
+              sin esto, libros con cientos/miles de páginas hacían que el
+              número empujara y se viera amontonado contra los botones vecinos. */}
+          <span className="text-xs font-mono font-semibold tabular-nums text-[var(--text-muted)] px-1 min-w-[78px] text-center shrink-0" title="Página actual">
             {pageProgress.page} / {pageProgress.total}
           </span>
           <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
@@ -493,7 +533,12 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
             {!hideOwnBar && (
               <div className={cn(
                 "shrink-0 w-full flex flex-col items-center bg-[var(--bg-card)] border-t border-[var(--border-card)] transition-all duration-300 overflow-hidden",
-                (controlsVisible && !manuallyHidden) ? "max-h-24 sm:max-h-12" : "max-h-[14px]"
+                // En móvil los controles pueden partirse en 2 líneas (flex-wrap
+                // más abajo) + la manija de arrastre arriba: max-h-24 (96px) no
+                // dejaba espacio suficiente y la segunda línea quedaba cortada
+                // por el overflow-hidden. max-h-32 (128px) cubre manija + 2
+                // líneas de botones con margen. En sm: sigue en una sola fila.
+                (controlsVisible && !manuallyHidden) ? "max-h-32 sm:max-h-12" : "max-h-[14px]"
               )}>
                 {/* Manija: tap reabre si está colapsada; arrastrar hacia abajo
                     colapsa, hacia arriba reabre. */}

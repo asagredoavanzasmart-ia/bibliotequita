@@ -33,29 +33,15 @@ import { cn } from '../lib/utils';
 import { exportToDocx, exportToPrintPdf, createGoogleDoc, loginWithGoogle } from '../utils/exportUtils';
 import { uploadFile } from '../lib/uploadFile';
 
-export interface CitationNote {
-  id: string;
-  documentId: string;
-  quote?: string;
-  content: string;
-  pageReference?: number | string;
-  timestamp: number;
-  color?: string;
-  type?: 'note' | 'bookmark';
-}
-
-export interface ColorDefinition {
-  id: string;
-  color: string;
-  bgClass: string;
-  borderClass: string;
-  textClass: string;
-  name: string;
-  hex: string;
-}
+import type { Note as CitationNote, ColorDefinition } from '../hooks/useDocumentNotes';
+export type { CitationNote, ColorDefinition };
 
 interface CitationsManagerProps {
   documentId: string;
+  notes: CitationNote[];
+  activePalette: ColorDefinition[];
+  savePalette: (updater: ColorDefinition[] | ((prev: ColorDefinition[]) => ColorDefinition[])) => void;
+  saveNotes: (updater: CitationNote[] | ((prev: CitationNote[]) => CitationNote[])) => void;
   onClose: () => void;
   onNavigateToPage?: (page: number | string) => void;
   onNavigateToCitation?: (note: CitationNote) => void;
@@ -116,9 +102,7 @@ function sortByPageAndTimestamp(list: CitationNote[]): CitationNote[] {
   });
 }
 
-export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavigateToCitation, currentPage }: CitationsManagerProps) {
-  const [notes, setNotes] = useState<CitationNote[]>([]);
-  const [activePalette, setActivePalette] = useState<ColorDefinition[]>([]);
+export function CitationsManager({ documentId, notes, activePalette, savePalette, saveNotes, onClose, onNavigateToPage, onNavigateToCitation, currentPage }: CitationsManagerProps) {
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
   // documentId "propietario" de la nota que se está editando: el del libro
@@ -214,17 +198,6 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
     }).catch(err => console.error('No se pudo guardar el resumen editado:', err));
   }, [editedSummary, documentId]);
 
-  // Load citations and saved summaries
-  const loadCitations = async () => {
-    try {
-      const res = await fetch(`/api/documents/${documentId}/notes`, { credentials: 'include' });
-      const d = await res.json();
-      if (Array.isArray(d.notes)) setNotes(d.notes);
-    } catch (e) {
-      console.error("Error loading notes in Citations Manager", e);
-    }
-  };
-
   const loadSummaries = async () => {
     try {
       const res = await fetch(`/api/documents/${documentId}/settings`, { credentials: 'include' });
@@ -271,16 +244,6 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
     });
   };
 
-  // Load color palette configuration
-  const loadPalette = async () => {
-    try {
-      const res = await fetch(`/api/documents/${documentId}/settings`, { credentials: 'include' });
-      const d = await res.json();
-      setActivePalette(d.settings?.colorPalette ?? ALL_POSSIBLE_COLORS.slice(0, 4));
-    } catch (e) {
-      setActivePalette(ALL_POSSIBLE_COLORS.slice(0, 4));
-    }
-  };
 
   // Carga la lista de recursos del libro (de CUALQUIER tipo: texto, video,
   // audio, imagen — todos pueden tener notas vía NotesPanel en ResourcesPanel)
@@ -314,78 +277,9 @@ export function CitationsManager({ documentId, onClose, onNavigateToPage, onNavi
 
   useEffect(() => {
     groupByColorLoadedRef.current = false;
-    loadCitations();
-    loadPalette();
     loadSummaries();
     loadResourceCitations();
   }, [documentId]);
-
-  const saveNotes = (updatedNotes: CitationNote[]) => {
-    const parsePageNum = (ref: any): number => {
-      if (ref === undefined || ref === null) return 0;
-      const str = String(ref).trim();
-      if (!str) return 0;
-      const match = str.match(/\d+/);
-      return match ? parseInt(match[0], 10) : 0;
-    };
-
-    const sorted = [...updatedNotes].sort((a, b) => {
-      const pageA = parsePageNum(a.pageReference);
-      const pageB = parsePageNum(b.pageReference);
-
-      const hasPageA = pageA > 0;
-      const hasPageB = pageB > 0;
-
-      if (hasPageA && hasPageB) {
-        if (pageA !== pageB) return pageA - pageB;
-      } else if (hasPageA) {
-        return -1;
-      } else if (hasPageB) {
-        return 1;
-      }
-      return a.timestamp - b.timestamp;
-    });
-
-    fetch(`/api/documents/${documentId}/notes`, {
-      method: 'PUT',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notes: sorted }),
-    }).catch(err => console.error('No se pudieron guardar las notas:', err));
-    setNotes(sorted);
-  };
-
-  // Al escribir el nombre de un color se llama una vez por tecla. Sin debounce,
-  // cada pulsación dispara su propio PUT y, si dos llegan al servidor fuera de
-  // orden (la del penúltimo carácter responde después que la del último), el
-  // nombre final visible queda con una versión vieja aunque en pantalla se
-  // viera el texto completo un instante. Se debounce 400ms y solo se envía la
-  // versión más reciente de la paleta.
-  const savePaletteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingPaletteRef = useRef<ColorDefinition[] | null>(null);
-  const flushPalette = (palette: ColorDefinition[]) => {
-    pendingPaletteRef.current = null;
-    fetch(`/api/documents/${documentId}/settings`, {
-      method: 'PUT',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ colorPalette: palette }),
-    }).catch(err => console.error('No se pudo guardar la paleta de colores:', err));
-  };
-  const savePalette = (updatedPalette: ColorDefinition[]) => {
-    setActivePalette(updatedPalette);
-    pendingPaletteRef.current = updatedPalette;
-    if (savePaletteTimeoutRef.current) clearTimeout(savePaletteTimeoutRef.current);
-    savePaletteTimeoutRef.current = setTimeout(() => flushPalette(updatedPalette), 400);
-  };
-
-  // Si el usuario navega fuera (cambia de pestaña/cierra el panel) antes de
-  // que venza el debounce, el guardado pendiente se envía de inmediato en vez
-  // de perderse — evita que un cambio reciente quede sin persistir.
-  useEffect(() => () => {
-    if (savePaletteTimeoutRef.current) clearTimeout(savePaletteTimeoutRef.current);
-    if (pendingPaletteRef.current) flushPalette(pendingPaletteRef.current);
-  }, []);
 
   // Drag and drop logic
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
