@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { useLibrary } from '../hooks/useLibrary';
 import { getReadingTimeLog } from '../hooks/useReadingTime';
+import { formatMinutes } from '../lib/utils';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { BookOpen, TrendingUp, Layers, Clock, Book, Laptop, Tag as TagIcon, FileType, Timer } from 'lucide-react';
 
@@ -47,14 +48,6 @@ function getProgressStatus(item: { read?: boolean; progress?: number }): string 
 }
 
 const STATUS_ORDER = ['Sin leer', 'Consultado', 'En proceso', 'Revisado', 'Leído'];
-
-function formatMinutes(totalSeconds: number): string {
-  const totalMinutes = Math.round(totalSeconds / 60);
-  if (totalMinutes < 60) return `${totalMinutes} min`;
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
-}
 
 export function AnalyticsDashboard() {
   const { items, categories } = useLibrary();

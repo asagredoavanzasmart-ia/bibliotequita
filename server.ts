@@ -383,6 +383,8 @@ async function startServer() {
           photo: "",
           role: dbUser.role,
         };
+        // Best-effort: no bloquea el login si falla.
+        supabase.from("users").update({ last_login_at: new Date().toISOString() }).eq("id", dbUser.id).then(() => {}, () => {});
         return res.json({ ok: true });
       }
     }
@@ -1335,6 +1337,66 @@ async function startServer() {
     }).length;
   }
 
+  // POST /api/activity/reading-time — acumula segundos de lectura del día
+  // actual (UPSERT por usuario+día). El cliente (useReadingTime.ts) llama esto
+  // periódicamente (no en cada tick) mientras hay un libro abierto, para que
+  // el admin pueda ver actividad real en vez de que quede solo en localStorage.
+  app.post("/api/activity/reading-time", async (req: any, res) => {
+    if (!supabase) return res.json({ ok: true });
+    const seconds = Math.round(Number(req.body?.seconds));
+    if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) {
+      return res.status(400).json({ error: "seconds inválido (1-3600)." });
+    }
+    const day = reqString(req.body?.day, 10) || new Date().toISOString().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return res.status(400).json({ error: "day inválido." });
+
+    const { data: existing } = await supabase
+      .from("reading_time_log")
+      .select("seconds")
+      .eq("user_id", req.user.id)
+      .eq("day", day)
+      .maybeSingle();
+
+    const { error } = await supabase
+      .from("reading_time_log")
+      .upsert({ user_id: req.user.id, day, seconds: (existing?.seconds ?? 0) + seconds });
+
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ ok: true });
+  });
+
+  // GET /api/admin/users/:id/activity — actividad agregada de una cuenta:
+  // última conexión, tiempo de lectura reciente, contenido subido y uso de
+  // herramientas de IA vs. sus límites. Solo admin.
+  app.get("/api/admin/users/:id/activity", requireAdmin, async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const { id } = req.params;
+
+    const [userRes, limitsRes, readingRes, contentCount, resourcesRes] = await Promise.all([
+      supabase.from("users").select("last_login_at, created_at").eq("id", id).maybeSingle(),
+      supabase.from("user_limits").select("*").eq("user_id", id).maybeSingle(),
+      supabase.from("reading_time_log").select("day, seconds").eq("user_id", id).order("day", { ascending: false }).limit(30),
+      countUserContent(id),
+      supabase.from("resources").select("id", { count: "exact", head: true }).eq("user_id", id),
+    ]);
+
+    res.json({
+      last_login_at: userRes.data?.last_login_at ?? null,
+      account_created_at: userRes.data?.created_at ?? null,
+      reading_time: readingRes.data ?? [],
+      content_count: contentCount,
+      resources_count: resourcesRes.count ?? 0,
+      ai_usage: {
+        tts_chars_used: limitsRes.data?.tts_chars_used ?? 0,
+        max_tts_chars: limitsRes.data?.max_tts_chars ?? 0,
+        ai_summaries_used: limitsRes.data?.ai_summaries_used ?? 0,
+        max_ai_summaries: limitsRes.data?.max_ai_summaries ?? 0,
+        audit_analyses_used: limitsRes.data?.audit_analyses_used ?? 0,
+        max_audit_analyses: limitsRes.data?.max_audit_analyses ?? 0,
+      },
+    });
+  });
+
   // Busca y elimina permanentemente libros de la papelera con más de 5 días de antigüedad
   async function cleanupExpiredTrash(): Promise<void> {
     if (!supabase) return;
@@ -1881,12 +1943,35 @@ ${text}
       return res.status(400).json({ error: "Citas inválidas." });
     }
 
+    // Límite de resúmenes IA asignado por el admin (user_limits.max_ai_summaries).
+    // El admin no tiene restricciones. Mismo patrón que max_audit_analyses.
+    const userId = (req as any).user?.id;
+    if (supabase && (req as any).user?.role !== "admin" && userId) {
+      const { data: limits } = await supabase
+        .from("user_limits")
+        .select("max_ai_summaries, ai_summaries_used")
+        .eq("user_id", userId)
+        .maybeSingle();
+      const maxSummaries = limits?.max_ai_summaries ?? 0;
+      const usedSummaries = limits?.ai_summaries_used ?? 0;
+      if (maxSummaries > 0 && usedSummaries >= maxSummaries) {
+        return res.status(429).json({
+          error: `Has alcanzado el límite de ${maxSummaries} resúmenes IA.`,
+          code: "AI_SUMMARY_LIMIT",
+        });
+      }
+    }
+
     try {
       const citationsText = safe.map((c: string, i: number) => `Cita ${i + 1}:\n${c}`).join("\n\n");
       const response = await generateContentWithRetry({
         model: "gemini-2.5-flash",
         contents: `${prompt}\n\nCitas:\n${citationsText}`,
       });
+      if (supabase && userId) {
+        const { data: limits } = await supabase.from("user_limits").select("ai_summaries_used").eq("user_id", userId).maybeSingle();
+        await supabase.from("user_limits").update({ ai_summaries_used: (limits?.ai_summaries_used ?? 0) + 1 }).eq("user_id", userId);
+      }
       res.json({ summary: response?.text || "" });
     } catch (error) {
       console.error("Error generating summary with Gemini:", error);
@@ -2071,7 +2156,19 @@ ${text}
     console.error("[TTS Init] Error al intentar generar archivo de credenciales desde variable de entorno:", err.message);
   }
 
-  async function runGoogleStandardTTS(text: string, voiceName: string, credentialsPath: string, cacheKey: string, res: Response) {
+  // Incrementa el contador de caracteres de voz consumidos por la cuenta.
+  // Best-effort (no bloquea la respuesta de audio si falla) y solo se llama
+  // tras generar audio NUEVO con éxito — un cache HIT no cuenta como uso
+  // porque no se generó nada, ya se había pagado ese costo antes.
+  async function incrementTtsUsage(userId: string | undefined, charCount: number) {
+    if (!supabase || !userId || charCount <= 0) return;
+    try {
+      const { data: limits } = await supabase.from("user_limits").select("tts_chars_used").eq("user_id", userId).maybeSingle();
+      await supabase.from("user_limits").update({ tts_chars_used: (limits?.tts_chars_used ?? 0) + charCount }).eq("user_id", userId);
+    } catch { /* no crítico */ }
+  }
+
+  async function runGoogleStandardTTS(text: string, voiceName: string, credentialsPath: string, cacheKey: string, res: Response, userId?: string) {
     try {
       const resolved = resolveGoogleTtsCredentials(credentialsPath);
       if (!resolved) {
@@ -2125,6 +2222,7 @@ ${text}
 
       res.setHeader("Content-Type", "audio/mpeg");
       res.setHeader("X-Cache", "MISS");
+      await incrementTtsUsage(userId, text.length);
       return res.send(audioBuffer);
     } catch (error: any) {
       console.error("[Google Standard TTS] Error interno:", error);
@@ -2140,6 +2238,21 @@ ${text}
     
     if (!text) {
       return res.status(400).json({ error: "El texto es requerido y debe tener un máximo de 3,000 caracteres." });
+    }
+
+    // Límite de caracteres de voz por cuenta (mismo patrón que max_audit_analyses).
+    const userId = (req as any).user?.id;
+    if (supabase && (req as any).user?.role !== "admin" && userId) {
+      const { data: limits } = await supabase
+        .from("user_limits")
+        .select("max_tts_chars, tts_chars_used")
+        .eq("user_id", userId)
+        .maybeSingle();
+      const maxTts = limits?.max_tts_chars ?? 0;
+      const usedTts = limits?.tts_chars_used ?? 0;
+      if (maxTts > 0 && usedTts + text.length > maxTts) {
+        return res.status(429).json({ error: `Has alcanzado el límite de ${maxTts} caracteres de voz.`, code: "TTS_LIMIT" });
+      }
     }
 
     let activeProvider = provider;
@@ -2174,7 +2287,7 @@ ${text}
         console.warn("[WARN] GEMINI_API_KEY no está configurada en el servidor.");
         if (resolveGoogleTtsCredentials(credentialsPath)) {
           console.log("[TTS Fallback] GEMINI_API_KEY missing. Falling back to google-standard.");
-          return await runGoogleStandardTTS(text, "es-ES-Standard-A", credentialsPath, cacheKey, res);
+          return await runGoogleStandardTTS(text, "es-ES-Standard-A", credentialsPath, cacheKey, res, userId);
         }
         return res.status(503).json({ error: "El servicio de lectura de voz de Google no está disponible temporalmente (falta la API Key de Gemini)." });
       }
@@ -2222,6 +2335,7 @@ ${text}
               
               res.setHeader("Content-Type", mimeType);
               res.setHeader("X-Cache", "MISS");
+              await incrementTtsUsage(userId, text.length);
               res.send(audioBuffer);
               success = true;
               break;
@@ -2236,7 +2350,7 @@ ${text}
           // If Gemini models fail, check if Google Standard credentials exist for fallback
           if (resolveGoogleTtsCredentials(credentialsPath)) {
             console.log("[TTS Fallback] Gemini synthesis failed. Falling back transparently to google-standard.");
-            return await runGoogleStandardTTS(text, "es-ES-Standard-A", credentialsPath, cacheKey, res);
+            return await runGoogleStandardTTS(text, "es-ES-Standard-A", credentialsPath, cacheKey, res, userId);
           } else {
             throw lastErr || new Error("Fallo en todos los modelos de Gemini.");
           }
@@ -2250,7 +2364,7 @@ ${text}
       if (!resolveGoogleTtsCredentials(credentialsPath)) {
         return res.status(503).json({ error: "Credenciales de Google Cloud TTS no encontradas en el servidor." });
       }
-      return await runGoogleStandardTTS(text, voiceId || "es-ES-Standard-A", credentialsPath, cacheKey, res);
+      return await runGoogleStandardTTS(text, voiceId || "es-ES-Standard-A", credentialsPath, cacheKey, res, userId);
     } else {
       const elevenKey = process.env.ELEVENLABS_API_KEY || "";
       if (!elevenKey) {
@@ -2299,6 +2413,7 @@ ${text}
 
         res.setHeader("Content-Type", contentType);
         res.setHeader("X-Cache", "MISS");
+        await incrementTtsUsage(userId, text.length);
         res.send(audioBuffer);
       } catch (error) {
         console.error("Error generating speech with ElevenLabs:", error);

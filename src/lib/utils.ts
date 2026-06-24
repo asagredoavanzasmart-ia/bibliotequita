@@ -7,6 +7,16 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+// Formatea segundos de lectura como "Xh Ym" / "X min". Compartido por
+// AnalyticsDashboard y AdminPanel (actividad de cuentas de prueba).
+export function formatMinutes(totalSeconds: number): string {
+  const totalMinutes = Math.round(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
+}
+
 // Resuelve las fuentes de lectura de un libro de forma retrocompatible.
 // Prioriza los campos nuevos pdfSource/epubSource y, como fallback, mapea el
 // par legacy source/type para que los libros existentes sigan funcionando.

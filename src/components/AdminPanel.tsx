@@ -8,7 +8,8 @@
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, ShieldCheck, Plus, Trash2, Loader2 } from 'lucide-react';
+import { X, ShieldCheck, Plus, Trash2, Loader2, Activity, ChevronDown, ChevronUp } from 'lucide-react';
+import { formatMinutes } from '../lib/utils';
 
 interface AdminUser {
   id: string;
@@ -26,10 +27,45 @@ interface AdminUser {
   } | null;
 }
 
-export function AdminPanel({ onClose }: { onClose: () => void }) {
+interface UserActivity {
+  last_login_at: string | null;
+  account_created_at: string | null;
+  reading_time: { day: string; seconds: number }[];
+  content_count: number;
+  resources_count: number;
+  ai_usage: {
+    tts_chars_used: number; max_tts_chars: number;
+    ai_summaries_used: number; max_ai_summaries: number;
+    audit_analyses_used: number; max_audit_analyses: number;
+  };
+}
+
+export function AdminPanel({ onClose, currentUserId }: { onClose: () => void; currentUserId?: string }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Actividad por usuario: se carga on-demand al expandir cada tarjeta (no
+  // junto con la lista inicial) para no disparar N+1 requests al abrir el panel.
+  const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
+  const [activityByUser, setActivityByUser] = useState<Record<string, UserActivity>>({});
+  const [loadingActivityFor, setLoadingActivityFor] = useState<string | null>(null);
+
+  const toggleActivity = async (id: string) => {
+    if (expandedUserId === id) {
+      setExpandedUserId(null);
+      return;
+    }
+    setExpandedUserId(id);
+    if (activityByUser[id]) return;
+    setLoadingActivityFor(id);
+    try {
+      const res = await fetch(`/api/admin/users/${id}/activity`, { credentials: 'include' });
+      const data = await res.json();
+      if (res.ok) setActivityByUser(prev => ({ ...prev, [id]: data }));
+    } catch { /* se muestra vacío si falla */ }
+    finally { setLoadingActivityFor(null); }
+  };
 
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -213,33 +249,87 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
               </div>
             ) : (
               <div className="space-y-2">
-                {users.map(u => (
+                {users.map(u => {
+                  const isSelf = !!currentUserId && u.id === currentUserId;
+                  return (
                   <div key={u.id} className="bg-[var(--bg-card)] border border-[var(--border-card)] rounded-xl p-4 space-y-3">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <div>
-                        <p className="font-bold text-sm">{u.username}</p>
+                        <p className="font-bold text-sm flex items-center gap-1.5">
+                          {u.username}
+                          {isSelf && <span className="text-[10px] font-bold uppercase tracking-wide text-[var(--primary)] bg-[var(--primary)]/10 px-1.5 py-0.5 rounded">Tú</span>}
+                        </p>
                         <p className="text-xs text-[var(--text-muted)]">
                           {u.role === 'admin' ? 'Administrador' : 'Usuario'} · {u.is_active ? 'Activo' : 'Deshabilitado'}
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => updateUser(u.id, { is_active: !u.is_active })}
-                          className={u.is_active
-                            ? "text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-50 text-amber-600 hover:bg-amber-100 transition-colors"
-                            : "text-xs font-bold px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100 transition-colors"}
+                          onClick={() => toggleActivity(u.id)}
+                          className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-lg bg-sky-50 text-sky-600 hover:bg-sky-100 transition-colors"
+                          title="Ver actividad"
                         >
-                          {u.is_active ? 'Deshabilitar' : 'Habilitar'}
+                          <Activity className="w-3.5 h-3.5" />
+                          Actividad
+                          {expandedUserId === u.id ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                         </button>
-                        <button
-                          onClick={() => deleteUser(u.id, u.username)}
-                          className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 transition-colors"
-                          title="Eliminar"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        {/* No puedes deshabilitar ni eliminar tu propia cuenta —
+                            el backend ya lo rechaza para "eliminar" (no puede
+                            quedarse sin admin a mitad de sesión), pero antes el
+                            botón seguía visible y clickeable igual, dando la
+                            impresión de que la app permitía autoeliminarse. */}
+                        {!isSelf && (
+                          <>
+                            <button
+                              onClick={() => updateUser(u.id, { is_active: !u.is_active })}
+                              className={u.is_active
+                                ? "text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-50 text-amber-600 hover:bg-amber-100 transition-colors"
+                                : "text-xs font-bold px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100 transition-colors"}
+                            >
+                              {u.is_active ? 'Deshabilitar' : 'Habilitar'}
+                            </button>
+                            <button
+                              onClick={() => deleteUser(u.id, u.username)}
+                              className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 transition-colors"
+                              title="Eliminar"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
+
+                    {expandedUserId === u.id && (
+                      <div className="bg-[var(--bg-app)] border border-[var(--border-card)] rounded-lg p-3 text-xs space-y-2">
+                        {loadingActivityFor === u.id ? (
+                          <div className="flex items-center justify-center py-3 text-[var(--text-muted)]">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          </div>
+                        ) : activityByUser[u.id] ? (
+                          (() => {
+                            const a = activityByUser[u.id];
+                            const totalReadingSeconds = a.reading_time.reduce((sum, r) => sum + r.seconds, 0);
+                            const fmtLimit = (used: number, max: number) => max > 0 ? `${used} / ${max}` : `${used} (sin límite)`;
+                            return (
+                              <>
+                                <p><span className="font-bold text-[var(--text-main)]">Última conexión:</span> {a.last_login_at ? new Date(a.last_login_at).toLocaleString() : 'Nunca'}</p>
+                                <p><span className="font-bold text-[var(--text-main)]">Tiempo de lectura (últimos 30 días):</span> {formatMinutes(totalReadingSeconds)}</p>
+                                <p><span className="font-bold text-[var(--text-main)]">Contenido subido:</span> {a.content_count} libros · {a.resources_count} recursos</p>
+                                <div className="pt-1 border-t border-[var(--border-card)] space-y-1">
+                                  <p className="font-bold text-[var(--text-main)]">Uso de IA vs. límites:</p>
+                                  <p>TTS: {fmtLimit(a.ai_usage.tts_chars_used, a.ai_usage.max_tts_chars)} caracteres</p>
+                                  <p>Resúmenes: {fmtLimit(a.ai_usage.ai_summaries_used, a.ai_usage.max_ai_summaries)}</p>
+                                  <p>Análisis de estudios: {fmtLimit(a.ai_usage.audit_analyses_used, a.ai_usage.max_audit_analyses)}</p>
+                                </div>
+                              </>
+                            );
+                          })()
+                        ) : (
+                          <p className="text-[var(--text-muted)]">No se pudo cargar la actividad.</p>
+                        )}
+                      </div>
+                    )}
 
                     {u.user_limits && (
                       <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
@@ -286,7 +376,8 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

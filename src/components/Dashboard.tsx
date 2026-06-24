@@ -35,7 +35,7 @@ interface DemoQuota {
 
 interface DashboardProps {
   onOpenBook: (id: string) => void;
-  user?: { name: string; email: string; photo: string; role?: string };
+  user?: { id: string; name: string; email: string; photo: string; role?: string };
 }
 
 export function Dashboard({ onOpenBook, user }: DashboardProps) {
@@ -326,7 +326,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
       </main>
       
       {showMobileProfile && <SettingsModal onClose={() => setShowMobileProfile(false)} />}
-      {showAdminPanel && <AdminPanel onClose={() => setShowAdminPanel(false)} />}
+      {showAdminPanel && <AdminPanel onClose={closeAdminPanel} currentUserId={user?.id} />}
       {showManualAdd && (
         <AddManualModal
           onClose={() => { setShowManualAdd(false); refreshQuota(); }}
