@@ -53,7 +53,7 @@ function AiRetryButton({ field, extractedText, retryingField, onRetry }: {
 }
 
 export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProps) {
-  const { categories, addCategory, playlists, addPlaylist, items } = useLibrary();
+  const { categories, addCategory, playlists, addPlaylist, items, tags: allTags, addTag: createGlobalTag } = useLibrary();
 
   const [formData, setFormData] = useState({
     title: '',
@@ -97,22 +97,38 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
   const [newCategoryName, setNewCategoryName] = useState('');
   const [showNewCategory, setShowNewCategory] = useState(false);
 
-  const [tags, setTags] = useState<string[]>([]);
+  // Estado local = IDs de TagData asignados a este libro (no nombres).
+  const [tagIds, setTagIds] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState('');
-  const allExistingTags = Array.from(
-    new Set(items.flatMap((i) => i.tags || []))
-  ).filter((tag) => !tags.includes(tag));
+  // Sugerencias para el datalist: nombres de etiquetas existentes que aún no
+  // están asignadas a este libro.
+  const allExistingTags = allTags.filter((t) => !tagIds.includes(t.id)).map((t) => t.name);
+  // Paleta por defecto para etiquetas creadas al vuelo (se puede recolorear
+  // luego en Configuración).
+  const TAG_FALLBACK_COLORS = ['#fb7185', '#38bdf8', '#34d399', '#fbbf24', '#a78bfa', '#fb923c'];
 
-  const addTag = (tagName: string) => {
+  const addTagToSelection = async (tagName: string) => {
     const trimmed = tagName.trim();
-    if (trimmed && !tags.includes(trimmed)) {
-      setTags(prev => [...prev, trimmed]);
-    }
     setTagInput('');
+    if (!trimmed) return;
+    // ¿Ya existe una etiqueta con ese nombre? (case-insensitive) → usar su id.
+    const existing = allTags.find((t) => t.name.toLowerCase() === trimmed.toLowerCase());
+    if (existing) {
+      if (!tagIds.includes(existing.id)) setTagIds((prev) => [...prev, existing.id]);
+      return;
+    }
+    // No existe → crearla al vuelo y asignar el id resultante.
+    try {
+      const color = TAG_FALLBACK_COLORS[allTags.length % TAG_FALLBACK_COLORS.length];
+      const created = await createGlobalTag({ name: trimmed, color });
+      setTagIds((prev) => (prev.includes(created.id) ? prev : [...prev, created.id]));
+    } catch (err) {
+      console.error('No se pudo crear la etiqueta:', err);
+    }
   };
 
-  const removeTag = (tagName: string) => {
-    setTags(prev => prev.filter(t => t !== tagName));
+  const removeTag = (tagId: string) => {
+    setTagIds(prev => prev.filter(t => t !== tagId));
   };
 
   const analyzeImageContent = async (base64Str: string) => {
@@ -471,7 +487,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       ownedDigital: formData.ownedDigital,
       toBuy: formData.toBuy,
       progress: 0,   // todo libro importado empieza en 0% de lectura
-      tags
+      tags: tagIds
     });
   };
 
@@ -779,7 +795,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                             onKeyDown={(e) => {
                                if (e.key === 'Enter') {
                                   e.preventDefault();
-                                  addTag(tagInput);
+                                  addTagToSelection(tagInput);
                                }
                             }}
                             list="add-tags-suggestions"
@@ -793,31 +809,35 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                          </datalist>
                          <button
                             type="button"
-                            onClick={() => addTag(tagInput)}
+                            onClick={() => addTagToSelection(tagInput)}
                             className="bg-[var(--primary)] text-white px-3 py-1.5 rounded-lg text-sm font-bold hover:opacity-90 active:scale-95 transition-all"
                          >
                             +
                          </button>
                       </div>
                       <div className="flex flex-wrap gap-1.5 min-h-[1.5rem]">
-                         {tags.map((tag) => (
+                         {tagIds.map((tagId) => {
+                            const tag = allTags.find((t) => t.id === tagId);
+                            if (!tag) return null;
+                            return (
                             <span
-                               key={tag}
+                               key={tagId}
                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[var(--bg-app)] border border-slate-200/50 text-[11px] font-bold text-[var(--text-muted)] transition-all hover:bg-slate-100"
                             >
-                               <Tag className="w-2.5 h-2.5 text-slate-400" />
-                               {tag}
+                               <span className={cn("w-2 h-2 rounded-full shrink-0", colorSwatchProps(tag.color).className)} style={colorSwatchProps(tag.color).style} />
+                               {tag.name}
                                <button
                                   type="button"
-                                  onClick={() => removeTag(tag)}
+                                  onClick={() => removeTag(tagId)}
                                   className="text-slate-400 hover:text-rose-500 font-bold ml-0.5 text-xs focus:outline-none cursor-pointer"
                                   title="Quitar"
                                >
                                   ×
                                </button>
                             </span>
-                         ))}
-                         {tags.length === 0 && (
+                            );
+                         })}
+                         {tagIds.length === 0 && (
                             <span className="text-[11px] text-[var(--text-muted)] italic py-0.5">Sin etiquetas</span>
                          )}
                       </div>

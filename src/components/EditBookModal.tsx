@@ -24,7 +24,7 @@ interface EditBookModalProps {
 }
 
 export function EditBookModal({ item, onClose, onSave, inline = false }: EditBookModalProps) {
-  const { playlists, categories, stages, addCategory, addPlaylist, deleteItem, items } = useLibrary();
+  const { playlists, categories, stages, addCategory, addPlaylist, deleteItem, items, tags: allTags, addTag: createGlobalTag } = useLibrary();
 
   
   const [title, setTitle] = useState(item.title || '');
@@ -58,22 +58,32 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   const [coverUrl, setCoverUrl] = useState(item.thumbnailUrl || '');
   const [type, setType] = useState(item.type || 'externa');
   const [rating, setRating] = useState(item.rating || 0);
-  const [tags, setTags] = useState<string[]>(item.tags || []);
+  // Estado local = IDs de TagData asignados a este libro (no nombres).
+  const [tagIds, setTagIds] = useState<string[]>(item.tags || []);
   const [tagInput, setTagInput] = useState('');
-  const allExistingTags = Array.from(
-    new Set(items.flatMap((i) => i.tags || []))
-  ).filter((tag) => !tags.includes(tag));
+  const allExistingTags = allTags.filter((t) => !tagIds.includes(t.id)).map((t) => t.name);
+  const TAG_FALLBACK_COLORS = ['#fb7185', '#38bdf8', '#34d399', '#fbbf24', '#a78bfa', '#fb923c'];
 
-  const addTag = (tagName: string) => {
+  const addTagToSelection = async (tagName: string) => {
     const trimmed = tagName.trim();
-    if (trimmed && !tags.includes(trimmed)) {
-      setTags(prev => [...prev, trimmed]);
-    }
     setTagInput('');
+    if (!trimmed) return;
+    const existing = allTags.find((t) => t.name.toLowerCase() === trimmed.toLowerCase());
+    if (existing) {
+      if (!tagIds.includes(existing.id)) setTagIds((prev) => [...prev, existing.id]);
+      return;
+    }
+    try {
+      const color = TAG_FALLBACK_COLORS[allTags.length % TAG_FALLBACK_COLORS.length];
+      const created = await createGlobalTag({ name: trimmed, color });
+      setTagIds((prev) => (prev.includes(created.id) ? prev : [...prev, created.id]));
+    } catch (err) {
+      console.error('No se pudo crear la etiqueta:', err);
+    }
   };
 
-  const removeTag = (tagName: string) => {
-    setTags(prev => prev.filter(t => t !== tagName));
+  const removeTag = (tagId: string) => {
+    setTagIds(prev => prev.filter(t => t !== tagId));
   };
   
   const [digitalSource, setDigitalSource] = useState(item.source || '');
@@ -135,7 +145,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
       thumbnailUrl: coverUrl,
       type: primaryType,
       rating,
-      tags,
+      tags: tagIds,
     });
     onClose();
   };
@@ -714,7 +724,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                            onKeyDown={(e) => {
                               if (e.key === 'Enter') {
                                  e.preventDefault();
-                                 addTag(tagInput);
+                                 addTagToSelection(tagInput);
                               }
                            }}
                            list="edit-tags-suggestions"
@@ -728,31 +738,35 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                         </datalist>
                         <button
                            type="button"
-                           onClick={() => addTag(tagInput)}
+                           onClick={() => addTagToSelection(tagInput)}
                            className="bg-[var(--primary)] text-white px-3 py-2 rounded-xl text-xs font-bold hover:opacity-90 active:scale-95 transition-all"
                         >
                            +
                         </button>
                      </div>
                      <div className="flex flex-wrap gap-1.5 min-h-[1.5rem]">
-                        {tags.map((tag) => (
+                        {tagIds.map((tagId) => {
+                           const tag = allTags.find((t) => t.id === tagId);
+                           if (!tag) return null;
+                           return (
                            <span
-                              key={tag}
+                              key={tagId}
                               className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 border border-slate-200 text-[10px] font-bold text-slate-600 transition-all hover:bg-slate-200"
                            >
-                              <Tag className="w-2.5 h-2.5 text-slate-400" />
-                              {tag}
+                              <span className={cn("w-2 h-2 rounded-full shrink-0", colorSwatchProps(tag.color).className)} style={colorSwatchProps(tag.color).style} />
+                              {tag.name}
                               <button
                                  type="button"
-                                 onClick={() => removeTag(tag)}
+                                 onClick={() => removeTag(tagId)}
                                  className="text-slate-400 hover:text-rose-500 font-bold ml-0.5 text-xs focus:outline-none cursor-pointer"
                                  title="Quitar"
                               >
                                  ×
                               </button>
                            </span>
-                        ))}
-                        {tags.length === 0 && (
+                           );
+                        })}
+                        {tagIds.length === 0 && (
                            <span className="text-[10px] text-[var(--text-muted)] italic py-0.5">Sin etiquetas</span>
                         )}
                      </div>
@@ -1166,7 +1180,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                               onKeyDown={(e) => {
                                  if (e.key === 'Enter') {
                                     e.preventDefault();
-                                    addTag(tagInput);
+                                    addTagToSelection(tagInput);
                                  }
                               }}
                               list="edit-tags-suggestions"
@@ -1180,31 +1194,35 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                            </datalist>
                            <button
                               type="button"
-                              onClick={() => addTag(tagInput)}
+                              onClick={() => addTagToSelection(tagInput)}
                               className="bg-[var(--primary)] text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:opacity-90 active:scale-95 transition-all"
                            >
                               +
                            </button>
                         </div>
                         <div className="flex flex-wrap gap-2 min-h-[1.5rem]">
-                           {tags.map((tag) => (
+                           {tagIds.map((tagId) => {
+                              const tag = allTags.find((t) => t.id === tagId);
+                              if (!tag) return null;
+                              return (
                               <span
-                                 key={tag}
+                                 key={tagId}
                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-xs font-bold text-slate-600 transition-all hover:bg-slate-200"
                               >
-                                 <Tag className="w-3 h-3 text-slate-400" />
-                                 {tag}
+                                 <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", colorSwatchProps(tag.color).className)} style={colorSwatchProps(tag.color).style} />
+                                 {tag.name}
                                  <button
                                     type="button"
-                                    onClick={() => removeTag(tag)}
+                                    onClick={() => removeTag(tagId)}
                                     className="text-slate-400 hover:text-rose-500 font-bold ml-1 text-xs focus:outline-none cursor-pointer"
                                     title="Quitar"
                                  >
                                     ×
                                  </button>
                               </span>
-                           ))}
-                           {tags.length === 0 && (
+                              );
+                           })}
+                           {tagIds.length === 0 && (
                               <span className="text-xs text-[var(--text-muted)] italic py-1">Sin etiquetas</span>
                            )}
                         </div>

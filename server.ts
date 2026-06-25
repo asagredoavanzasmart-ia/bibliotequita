@@ -690,6 +690,46 @@ async function startServer() {
       .order("list_index", { ascending: true });
     if (itemsError) return res.status(500).json({ error: itemsError.message });
 
+    let { data: tags, error: tagError } = await supabase
+      .from("library_tags")
+      .select("id, name, color")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true });
+    if (tagError) return res.status(500).json({ error: tagError.message });
+
+    // Migración de etiquetas legadas: antes `data.tags` guardaba el NOMBRE de
+    // la etiqueta como string suelto (sin color ni identidad propia). Si el
+    // usuario no tiene ninguna fila en library_tags todavía pero sus items sí
+    // tienen nombres de etiqueta, se crea una fila real por cada nombre único
+    // y se reescribe data.tags de cada item sustituyendo nombre→id — preserva
+    // tanto los nombres como la asignación existente, una sola vez por cuenta.
+    if ((!tags || tags.length === 0) && itemRows && itemRows.length > 0) {
+      const legacyNames = Array.from(new Set(
+        itemRows.flatMap((row) => ((row.data as any)?.tags ?? []) as string[])
+          .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+      ));
+      if (legacyNames.length > 0) {
+        const palette = ["#fb7185", "#38bdf8", "#34d399", "#fbbf24", "#a78bfa", "#fb923c"];
+        const { data: createdTags, error: seedError } = await supabase
+          .from("library_tags")
+          .insert(legacyNames.map((name, i) => ({ user_id: userId, name, color: palette[i % palette.length] })))
+          .select("id, name, color");
+        if (!seedError && createdTags) {
+          tags = createdTags;
+          const nameToId = new Map(createdTags.map((t) => [t.name.toLowerCase(), t.id]));
+          for (const row of itemRows) {
+            const data = row.data as { tags?: string[] };
+            if (!data.tags || data.tags.length === 0) continue;
+            const migratedIds = data.tags
+              .map((name) => nameToId.get(String(name).toLowerCase()))
+              .filter((id): id is string => !!id);
+            await supabase.from("library_items").update({ data: { ...data, tags: migratedIds } }).eq("id", row.id).eq("user_id", userId);
+            (data as any).tags = migratedIds;
+          }
+        }
+      }
+    }
+
     const items = (itemRows ?? []).map((row) => ({ ...(row.data as object), id: row.id, listIndex: row.list_index }));
 
     let { data: settings, error: settError } = await supabase
@@ -713,6 +753,7 @@ async function startServer() {
       items,
       playlists: (playlists ?? []).map((p) => ({ id: p.id, name: p.name, color: p.color })),
       categories: (categories ?? []).map((c) => ({ id: c.id, name: c.name })),
+      tags: (tags ?? []).map((t) => ({ id: t.id, name: t.name, color: t.color })),
       settings: {
         theme: settings.theme,
         fontFamily: settings.font_family,
@@ -979,6 +1020,74 @@ async function startServer() {
       if (data.folderIds?.includes(id)) {
         const folderIds = data.folderIds.filter((fId) => fId !== id);
         await supabase.from("library_items").update({ data: { ...data, folderIds } }).eq("id", item.id).eq("user_id", userId);
+      }
+    }
+
+    res.json({ ok: true });
+  });
+
+  // POST /api/library/tags — crea una etiqueta.
+  app.post("/api/library/tags", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { name, color } = req.body ?? {};
+    if (!name) return res.status(400).json({ error: "Nombre requerido." });
+
+    const { data: row, error } = await supabase
+      .from("library_tags")
+      .insert({ user_id: userId, name, color })
+      .select("id, name, color")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.status(201).json({ tag: row });
+  });
+
+  // PUT /api/library/tags/:id — renombra o recolorea una etiqueta. Como los
+  // libros guardan el ID (no el nombre) en data.tags, renombrar aquí no
+  // requiere tocar ningún item — la asignación se conserva automáticamente.
+  app.put("/api/library/tags/:id", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { id } = req.params;
+    const { name, color } = req.body ?? {};
+
+    const patch: Record<string, unknown> = {};
+    if (name !== undefined) patch.name = name;
+    if (color !== undefined) patch.color = color;
+
+    const { data: row, error } = await supabase
+      .from("library_tags")
+      .update(patch)
+      .eq("id", id)
+      .eq("user_id", userId)
+      .select("id, name, color")
+      .single();
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ tag: row });
+  });
+
+  // DELETE /api/library/tags/:id — borra una etiqueta y la quita de los items.
+  app.delete("/api/library/tags/:id", async (req: any, res) => {
+    if (!supabase) return res.status(503).json({ error: "Base de datos no disponible." });
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    const { error: delError } = await supabase.from("library_tags").delete().eq("id", id).eq("user_id", userId);
+    if (delError) return res.status(400).json({ error: delError.message });
+
+    const { data: items, error: itemsError } = await supabase
+      .from("library_items")
+      .select("id, data")
+      .eq("user_id", userId);
+    if (itemsError) return res.status(500).json({ error: itemsError.message });
+
+    for (const item of items ?? []) {
+      const data = item.data as { tags?: string[] };
+      if (data.tags?.includes(id)) {
+        const tags = data.tags.filter((tId) => tId !== id);
+        await supabase.from("library_items").update({ data: { ...data, tags } }).eq("id", item.id).eq("user_id", userId);
       }
     }
 

@@ -100,7 +100,7 @@ const THEME_COLORS = [
 ];
 
 export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlaylist, activeStage, setActiveStage, filters, setFilters, viewMode, setViewMode, collapsed, setCollapsed, onOpenSettings, onOpenAdmin, onClose, user }: SidebarProps) {
-  const { playlists, stages, categories, addPlaylist, updatePlaylist, deletePlaylist, items, sortBy, setSortBy, cardSettings } = useLibrary();
+  const { playlists, stages, categories, tags, addPlaylist, updatePlaylist, deletePlaylist, items, sortBy, setSortBy, cardSettings } = useLibrary();
   const [isCreating, setIsCreating] = useState(false);
   const [isCategoriesExpanded, setIsCategoriesExpanded] = useState(false);
   const [isFiltersExpanded, setIsFiltersExpanded] = useState(false);
@@ -114,6 +114,7 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
   const [isAlphabeticTitleExpanded, setIsAlphabeticTitleExpanded] = useState(false);
   const [isAlphabeticAuthorExpanded, setIsAlphabeticAuthorExpanded] = useState(false);
   const [isEtapasExpanded, setIsEtapasExpanded] = useState(false);
+  const [isTagsExpanded, setIsTagsExpanded] = useState(false);
   const [isMisListasExpanded, setIsMisListasExpanded] = useState(false);
 
   const years = Array.from(new Set(items.map(i => i.year).filter(Boolean))) as string[];
@@ -398,6 +399,42 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
               </li>
             ))}
           </ul>
+          )}
+        </div>
+
+        <div className="px-6 py-4 pb-2 border-b border-white/10">
+          <div className="flex items-center justify-between mb-2 ml-2">
+             <h2 className="text-[10px] font-bold text-white/50 uppercase tracking-widest cursor-pointer hover:text-white transition-colors" onClick={() => setIsTagsExpanded(!isTagsExpanded)}>
+                Etiquetas
+             </h2>
+             <button onClick={() => setIsTagsExpanded(!isTagsExpanded)} className="text-white/50 hover:text-white">
+                {isTagsExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+             </button>
+          </div>
+          {isTagsExpanded && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {tags.map(tag => {
+                const activeTagIds = filters.tagIds ?? [];
+                const isActive = activeTagIds.includes(tag.id);
+                return (
+                  <button
+                    key={tag.id}
+                    onClick={() => {
+                      const next = isActive ? activeTagIds.filter((id: string) => id !== tag.id) : [...activeTagIds, tag.id];
+                      setFilters({ ...filters, tagIds: next });
+                    }}
+                    className={cn(
+                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold transition-all",
+                      isActive ? "bg-white/20 text-white ring-1 ring-white/40" : "bg-white/5 text-white/70 hover:bg-white/10"
+                    )}
+                  >
+                    <span className={cn("w-2 h-2 rounded-full shrink-0", colorSwatchProps(tag.color).className)} style={colorSwatchProps(tag.color).style} />
+                    {tag.name}
+                  </button>
+                );
+              })}
+              {tags.length === 0 && <span className="text-[11px] text-white/40 italic">Sin etiquetas creadas</span>}
+            </div>
           )}
         </div>
 

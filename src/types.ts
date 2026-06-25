@@ -59,9 +59,14 @@ export interface CategoryData {
   hidden?: boolean;   // Oculta de la barra lateral (no se borra). Categorías base.
 }
 
-// Sistema de etiquetas (TagData) eliminado durante el desarrollo.
-// Si se reintroduce, hacerlo con identidad por id (no por nombre) para que
-// renombrar una etiqueta no rompa el matching en BookItem.
+// Etiqueta con identidad propia: BookItem.tags guarda IDs de TagData (no
+// nombres sueltos), para que renombrar una etiqueta no rompa la asignación
+// en los libros que ya la tienen.
+export interface TagData {
+  id: string;
+  name: string;
+  color: string;   // clase Tailwind ('bg-rose-500') o hex ('#rrggbb'), igual que PlaylistData.color
+}
 
 export interface PurchaseLink {
   id: string;
@@ -101,7 +106,7 @@ export interface BookItem {
   isbn?: string;                // ISBN
   progress?: number;            // 0-100
   rating?: number;              // 1-5 estrellas
-  tags?: string[];              // Etiquetas del material
+  tags?: string[];              // IDs de TagData (no nombres — ver comentario en TagData)
   bookmarkPage?: number | string; // Última página marcada → se reanuda lectura aquí
   purchaseLinks?: PurchaseLink[];
   deletedAt?: string;

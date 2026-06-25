@@ -1,27 +1,20 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Settings2, Palette, Library, Plus, Trash2, Edit2, AppWindow, Eye, EyeOff, ChevronUp, ChevronDown } from 'lucide-react';
+import { X, Settings2, Palette, Library, Plus, Trash2, Edit2, AppWindow, Eye, EyeOff, ChevronUp, ChevronDown, Tag, AlertTriangle } from 'lucide-react';
 import { cn, colorSwatchProps, getOrderedNavSections, NAV_SECTIONS_META } from '../lib/utils';
 import { useLibrary, ThemeMode } from '../hooks/useLibrary';
-
-const PRESET_PLAYLIST_COLORS = [
-  'bg-slate-800 text-white',
-  'bg-rose-500 text-white',
-  'bg-emerald-500 text-white',
-  'bg-blue-500 text-white',
-  'bg-purple-500 text-white',
-  'bg-amber-500 text-white',
-];
+import { ColorPicker, APP_COLOR_PALETTE } from './ColorPicker';
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const {
     theme, setTheme, fontFamily, setFontFamily,
     categories, addCategory, updateCategory, deleteCategory,
     playlists, addPlaylist, updatePlaylist, deletePlaylist,
+    tags, addTag, updateTag, deleteTag,
     cardSettings, setCardSettings
   } = useLibrary();
 
-  const [activeTab, setActiveTab] = useState<'theme' | 'categories' | 'cards' | 'playlists'>('theme');
+  const [activeTab, setActiveTab] = useState<'theme' | 'categories' | 'cards' | 'playlists' | 'tags'>('theme');
   
   // Custom theme array
   const themes: { id: ThemeMode; name: string; desc: string; colors: string[] }[] = [
@@ -49,10 +42,18 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
 
   // States for Playlists
   const [newPlaylistName, setNewPlaylistName] = useState('');
-  const [newPlaylistColor, setNewPlaylistColor] = useState('#3b82f6');
+  const [newPlaylistColor, setNewPlaylistColor] = useState(APP_COLOR_PALETTE[0]);
   const [editPlaylistId, setEditPlaylistId] = useState<string | null>(null);
   const [editPlaylistName, setEditPlaylistName] = useState('');
   const [editPlaylistColor, setEditPlaylistColor] = useState('');
+
+  // States for Tags
+  const [newTagName, setNewTagName] = useState('');
+  const [newTagColor, setNewTagColor] = useState(APP_COLOR_PALETTE[3]);
+  const [editTagId, setEditTagId] = useState<string | null>(null);
+  const [editTagName, setEditTagName] = useState('');
+  const [editTagColor, setEditTagColor] = useState('');
+  const [confirmDeleteTagId, setConfirmDeleteTagId] = useState<string | null>(null);
 
   // Paleta personalizada (tema "custom")
   const customDark = cardSettings.customPalette?.dark || '#1e2986';
@@ -111,6 +112,9 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               </button>
               <button onClick={() => setActiveTab('playlists')} className={cn("flex shrink-0 items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left", activeTab === 'playlists' ? "bg-[var(--primary)]" : "hover:bg-white/10")}>
                 <Library className="w-4 h-4" /> Listas
+              </button>
+              <button onClick={() => setActiveTab('tags')} className={cn("flex shrink-0 items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left", activeTab === 'tags' ? "bg-[var(--primary)]" : "hover:bg-white/10")}>
+                <Tag className="w-4 h-4" /> Etiquetas
               </button>
               <button onClick={() => setActiveTab('cards')} className={cn("flex shrink-0 items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left", activeTab === 'cards' ? "bg-[var(--primary)]" : "hover:bg-white/10")}>
                 <AppWindow className="w-4 h-4" /> Tarjetas
@@ -244,63 +248,29 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               {activeTab === 'playlists' && (
                 <div className="space-y-6">
                    <h3 className="text-lg font-bold">Configuración de Listas</h3>
-                   <div className="flex gap-2">
-                      <select 
-                        value={newPlaylistColor} 
-                        onChange={e => setNewPlaylistColor(e.target.value)}
-                        className="px-3 py-2 rounded-lg border border-slate-200/50 text-sm focus:ring-2 focus:ring-[var(--primary)] bg-[var(--bg-card)] text-[var(--text-main)] outline-none"
-                      >
-                         <option value="bg-slate-800 text-white">Gris</option>
-                         <option value="bg-rose-500 text-white">Rosa</option>
-                         <option value="bg-emerald-500 text-white">Esmeralda</option>
-                         <option value="bg-blue-500 text-white">Azul</option>
-                         <option value="bg-purple-500 text-white">Morado</option>
-                         <option value="bg-amber-500 text-white">Ambar</option>
-                      </select>
-                      <input 
-                         value={newPlaylistName} onChange={e => setNewPlaylistName(e.target.value)} 
+                   <div className="flex gap-2 items-center">
+                      <ColorPicker value={newPlaylistColor} onChange={setNewPlaylistColor} label="Color de la lista" />
+                      <input
+                         value={newPlaylistName} onChange={e => setNewPlaylistName(e.target.value)}
+                         onKeyDown={e => { if (e.key === 'Enter' && newPlaylistName.trim()) { addPlaylist({ name: newPlaylistName.trim(), color: newPlaylistColor }); setNewPlaylistName(''); } }}
                          className="flex-1 px-3 py-2 rounded-lg border border-slate-200/50 text-sm focus:ring-2 focus:ring-[var(--primary)] bg-[var(--bg-card)] text-[var(--text-main)] outline-none"
                          placeholder="Nueva lista..."
                       />
-                      <button 
+                      <button
                         onClick={() => { if(newPlaylistName.trim()) { addPlaylist({ name: newPlaylistName.trim(), color: newPlaylistColor }); setNewPlaylistName(''); } }}
                         className="bg-[var(--primary)] text-white px-3 py-2 rounded-lg flex items-center justify-center hover:opacity-90"
                       >
                          <Plus className="w-4 h-4" />
                       </button>
                    </div>
-                   
+
                    <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
                       {playlists.map(pl => (
                          <div key={pl.id} className="flex items-center justify-between p-3 rounded-lg border border-slate-200/50 bg-[var(--bg-card)]">
                             {editPlaylistId === pl.id ? (
-                               <div className="flex items-center gap-2 flex-1 relative">
-                                  <select
-                                    value={PRESET_PLAYLIST_COLORS.includes(editPlaylistColor) ? editPlaylistColor : ''}
-                                    onChange={e => setEditPlaylistColor(e.target.value)}
-                                    className="w-8 h-8 rounded-full border-0 outline-none text-transparent bg-clip-text"
-                                    style={{appearance: 'none'}}
-                                  >
-                                     <option value="bg-slate-800 text-white">Gris</option>
-                                     <option value="bg-rose-500 text-white">Rosa</option>
-                                     <option value="bg-emerald-500 text-white">Esmeralda</option>
-                                     <option value="bg-blue-500 text-white">Azul</option>
-                                     <option value="bg-purple-500 text-white">Morado</option>
-                                     <option value="bg-amber-500 text-white">Ambar</option>
-                                  </select>
-                                  <label
-                                    title="Elegir color personalizado"
-                                    className={cn("relative w-6 h-6 rounded-full cursor-pointer overflow-hidden border border-slate-300 shrink-0", !PRESET_PLAYLIST_COLORS.includes(editPlaylistColor) ? 'ring-2 ring-[var(--primary)]' : '')}
-                                    style={!PRESET_PLAYLIST_COLORS.includes(editPlaylistColor) ? { backgroundColor: editPlaylistColor } : { background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)' }}
-                                  >
-                                     <input
-                                       type="color"
-                                       value={!PRESET_PLAYLIST_COLORS.includes(editPlaylistColor) ? editPlaylistColor : '#ffffff'}
-                                       onChange={e => setEditPlaylistColor(e.target.value)}
-                                       className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                     />
-                                  </label>
-                                  <input autoFocus value={editPlaylistName} onChange={e => setEditPlaylistName(e.target.value)} onBlur={() => { updatePlaylist(pl.id, { name: editPlaylistName || pl.name, color: editPlaylistColor }); setEditPlaylistId(null); }} onKeyDown={e => e.key === 'Enter' && e.currentTarget.blur()} className="flex-1 bg-transparent outline-none text-sm font-medium" />
+                               <div className="flex items-center gap-2 flex-1">
+                                  <ColorPicker value={editPlaylistColor} onChange={(c) => { setEditPlaylistColor(c); updatePlaylist(pl.id, { color: c }); }} />
+                                  <input autoFocus value={editPlaylistName} onChange={e => setEditPlaylistName(e.target.value)} onBlur={() => { updatePlaylist(pl.id, { name: editPlaylistName || pl.name }); setEditPlaylistId(null); }} onKeyDown={e => e.key === 'Enter' && e.currentTarget.blur()} className="flex-1 bg-transparent outline-none text-sm font-medium" />
                                </div>
                             ) : (
                                <div className="flex items-center gap-2">
@@ -315,6 +285,70 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                          </div>
                       ))}
                    </div>
+                </div>
+              )}
+
+              {activeTab === 'tags' && (
+                <div className="space-y-6">
+                   <h3 className="text-lg font-bold">Etiquetas</h3>
+                   <p className="text-xs text-[var(--text-muted)] -mt-4">Renombrar una etiqueta conserva su asignación en todos los libros que la tengan.</p>
+                   <div className="flex gap-2 items-center">
+                      <ColorPicker value={newTagColor} onChange={setNewTagColor} label="Color de la etiqueta" />
+                      <input
+                         value={newTagName} onChange={e => setNewTagName(e.target.value)}
+                         onKeyDown={e => { if (e.key === 'Enter' && newTagName.trim()) { addTag({ name: newTagName.trim(), color: newTagColor }).catch(() => {}); setNewTagName(''); } }}
+                         className="flex-1 px-3 py-2 rounded-lg border border-slate-200/50 text-sm focus:ring-2 focus:ring-[var(--primary)] bg-[var(--bg-card)] text-[var(--text-main)] outline-none"
+                         placeholder="Nueva etiqueta..."
+                      />
+                      <button
+                        onClick={() => { if(newTagName.trim()) { addTag({ name: newTagName.trim(), color: newTagColor }).catch(() => {}); setNewTagName(''); } }}
+                        className="bg-[var(--primary)] text-white px-3 py-2 rounded-lg flex items-center justify-center hover:opacity-90"
+                      >
+                         <Plus className="w-4 h-4" />
+                      </button>
+                   </div>
+
+                   <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
+                      {tags.length === 0 && <p className="text-sm text-[var(--text-muted)] italic">No hay etiquetas todavía.</p>}
+                      {tags.map(tag => (
+                         <div key={tag.id} className="flex items-center justify-between p-3 rounded-lg border border-slate-200/50 bg-[var(--bg-card)]">
+                            {editTagId === tag.id ? (
+                               <div className="flex items-center gap-2 flex-1">
+                                  <ColorPicker value={editTagColor} onChange={(c) => { setEditTagColor(c); updateTag(tag.id, { color: c }); }} />
+                                  <input autoFocus value={editTagName} onChange={e => setEditTagName(e.target.value)} onBlur={() => { updateTag(tag.id, { name: editTagName || tag.name }); setEditTagId(null); }} onKeyDown={e => e.key === 'Enter' && e.currentTarget.blur()} className="flex-1 bg-transparent outline-none text-sm font-medium" />
+                               </div>
+                            ) : (
+                               <div className="flex items-center gap-2">
+                                  <div className={cn("w-3 h-3 rounded-full", colorSwatchProps(tag.color).className)} style={colorSwatchProps(tag.color).style} />
+                                  <span className="text-sm font-medium">{tag.name}</span>
+                               </div>
+                            )}
+                            <div className="flex items-center gap-1">
+                               <button onClick={() => { setEditTagId(tag.id); setEditTagName(tag.name); setEditTagColor(tag.color || 'bg-slate-800'); }} className="p-1.5 text-slate-400 hover:text-[var(--primary)] rounded-md"><Edit2 className="w-4 h-4" /></button>
+                               <button onClick={() => setConfirmDeleteTagId(tag.id)} className="p-1.5 text-slate-400 hover:text-rose-500 rounded-md"><Trash2 className="w-4 h-4" /></button>
+                            </div>
+                         </div>
+                      ))}
+                   </div>
+
+                   {/* Confirmación antes de borrar una etiqueta. */}
+                   {confirmDeleteTagId && (
+                     <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4" onClick={() => setConfirmDeleteTagId(null)}>
+                       <div className="bg-[var(--bg-app)] border border-[var(--border-card)] rounded-2xl shadow-2xl max-w-sm w-full p-5" onClick={e => e.stopPropagation()}>
+                         <div className="flex items-start gap-3 mb-4">
+                           <div className="bg-rose-100 text-rose-600 p-2 rounded-xl shrink-0"><AlertTriangle className="w-5 h-5" /></div>
+                           <div>
+                             <h4 className="font-bold text-[var(--text-main)]">Eliminar etiqueta</h4>
+                             <p className="text-sm text-[var(--text-muted)] mt-1">Se quitará de todos los libros que la tengan. Esta acción no se puede deshacer.</p>
+                           </div>
+                         </div>
+                         <div className="flex justify-end gap-2">
+                           <button onClick={() => setConfirmDeleteTagId(null)} className="px-4 py-2 rounded-lg text-sm font-bold bg-slate-200 text-slate-600 hover:bg-slate-300">Cancelar</button>
+                           <button onClick={() => { deleteTag(confirmDeleteTagId); setConfirmDeleteTagId(null); }} className="px-4 py-2 rounded-lg text-sm font-bold bg-rose-500 text-white hover:bg-rose-600">Eliminar</button>
+                         </div>
+                       </div>
+                     </div>
+                   )}
                 </div>
               )}
 

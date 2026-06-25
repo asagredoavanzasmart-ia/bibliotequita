@@ -17,7 +17,7 @@
 // =============================================================================
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { BookItem, PlaylistData, StageData, CategoryData, CardSettings } from '../types';
+import { BookItem, PlaylistData, StageData, CategoryData, CardSettings, TagData } from '../types';
 import { deleteUploadedFile } from '../lib/uploadFile';
 
 // Temas disponibles (ver index.css → [data-theme="..."] para los tokens CSS).
@@ -29,6 +29,7 @@ interface LibraryContextType {
   playlists: PlaylistData[];
   stages: StageData[];
   categories: CategoryData[];
+  tags: TagData[];
   theme: ThemeMode;
   fontFamily: FontFamily;
   cardSettings: CardSettings;
@@ -49,6 +50,13 @@ interface LibraryContextType {
   addCategory: (category: Omit<CategoryData, 'id'>) => void;
   updateCategory: (id: string, updates: Partial<CategoryData>) => void;
   deleteCategory: (id: string) => void;
+
+  // addTag devuelve la promesa con el tag creado para que AddManualModal/
+  // EditBookModal puedan encadenar y conocer el id recién asignado (crear
+  // etiquetas "al vuelo" al escribir un nombre nuevo, no solo desde Ajustes).
+  addTag: (tag: Omit<TagData, 'id'>) => Promise<TagData>;
+  updateTag: (id: string, updates: Partial<TagData>) => void;
+  deleteTag: (id: string) => void;
 
   setTheme: (theme: ThemeMode) => void;
   setFontFamily: (font: FontFamily) => void;
@@ -102,6 +110,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const [trashItems, setTrashItems] = useState<BookItem[]>([]);
   const [playlists, setPlaylists] = useState<PlaylistData[]>([]);
   const [categories, setCategories] = useState<CategoryData[]>([]);
+  const [tags, setTags] = useState<TagData[]>([]);
   const [theme, setThemeState] = useState<ThemeMode>('blue');
   const [fontFamily, setFontFamilyState] = useState<FontFamily>('Inter');
   const [cardSettings, setCardSettingsState] = useState<CardSettings>(DEFAULT_CARD_SETTINGS);
@@ -116,6 +125,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         setItems(data.items ?? []);
         setPlaylists(data.playlists ?? []);
         setCategories(data.categories ?? []);
+        setTags(data.tags ?? []);
         if (data.settings) {
           setThemeState(data.settings.theme || 'blue');
           setFontFamilyState(data.settings.fontFamily || 'Inter');
@@ -267,6 +277,27 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       .catch((err) => console.error('No se pudo borrar la categoría:', err));
   };
 
+  const addTag = (tag: Omit<TagData, 'id'>): Promise<TagData> => {
+    return apiFetch('/api/library/tags', { method: 'POST', body: JSON.stringify(tag) })
+      .then((data) => {
+        setTags((prev) => [...prev, data.tag]);
+        return data.tag as TagData;
+      });
+  };
+
+  const updateTag = (id: string, updates: Partial<TagData>) => {
+    setTags((prev) => prev.map((t) => (t.id === id ? { ...t, ...updates } : t)));
+    apiFetch(`/api/library/tags/${id}`, { method: 'PUT', body: JSON.stringify(updates) })
+      .catch((err) => console.error('No se pudo actualizar la etiqueta:', err));
+  };
+
+  const deleteTag = (id: string) => {
+    setTags((prev) => prev.filter((t) => t.id !== id));
+    setItems((prev) => prev.map((item) => ({ ...item, tags: (item.tags ?? []).filter((tId) => tId !== id) })));
+    apiFetch(`/api/library/tags/${id}`, { method: 'DELETE' })
+      .catch((err) => console.error('No se pudo borrar la etiqueta:', err));
+  };
+
   const reorderItems = (activeId: string, overId: string) => {
     setItems((items) => {
       const oldIndex = items.findIndex((i) => i.id === activeId);
@@ -297,6 +328,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         playlists,
         stages,
         categories,
+        tags,
         theme,
         fontFamily,
         cardSettings,
@@ -314,6 +346,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         addCategory,
         updateCategory,
         deleteCategory,
+        addTag,
+        updateTag,
+        deleteTag,
         setTheme,
         setFontFamily,
         setCardSettings,

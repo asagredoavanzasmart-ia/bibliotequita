@@ -439,6 +439,11 @@ export function BookGrid({ category, viewMode, sortBy, stageFilter, playlistFilt
        if (filters.toBuy === 'false') result = result.filter(i => !i.toBuy);
        if (filters.authorInitial) result = result.filter(i => i.author && i.author[0]?.toUpperCase() === filters.authorInitial);
        if (filters.titleInitial) result = result.filter(i => i.title && i.title[0]?.toUpperCase() === filters.titleInitial);
+       // Unión (OR): un libro puede tener varias etiquetas, basta con que
+       // coincida con AL MENOS una de las seleccionadas en el filtro.
+       if (filters.tagIds && filters.tagIds.length > 0) {
+         result = result.filter(i => (i.tags ?? []).some((tId: string) => filters.tagIds.includes(tId)));
+       }
     }
 
     result.sort((a, b) => {

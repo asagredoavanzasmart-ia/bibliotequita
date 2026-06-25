@@ -54,6 +54,25 @@ const SENTENCE_ABBREVIATIONS = new Set([
   'cía', 'ca', 'sa', 'ltda',
 ]);
 
+// Una línea es "número de página" si es solo dígitos, o dígitos rodeados de
+// guiones/puntos/espacios ("- 18 -", "19.", "Pág. 20", "[20]") → no se lee.
+function isPageNumberLine(line: string): boolean {
+  const t = line.trim();
+  if (!t) return false;
+  return /^[\s.\-–—[\]()]*\d{1,4}[\s.\-–—[\]()]*$/.test(t) ||
+         /^(p[aá]g(\.|ina)?|page)\s*\.?\s*\d{1,4}\.?$/i.test(t);
+}
+
+// Una línea es "título/encabezado" si NO termina en signo de oración ni coma,
+// es relativamente corta y no es un párrafo → se lee como unidad propia.
+function isHeadingLine(line: string): boolean {
+  const t = line.trim();
+  if (!t || t.length > 90) return false;
+  if (/[.,;:?!…]$/.test(t)) return false;
+  if (t.split(/\s+/).length > 14) return false;
+  return true;
+}
+
 // Convierte un color hex (#rgb o #rrggbb) a rgba(r,g,b,alpha). Si el color ya
 // viene en otro formato (rgb/rgba/nombre), lo devuelve tal cual.
 // Se usa para resaltar citas SIN la propiedad `opacity` (que rompe el
@@ -380,15 +399,65 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       if (!pageEl) return '';
 
       const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
+      // Reconstruir LÍNEAS reales agrupando los spans de pdf.js por su posición
+      // vertical (top): cada renglón visual del PDF es una línea, y dos spans
+      // en la misma fila pertenecen al mismo renglón. Esto preserva la
+      // estructura (título / número de página / párrafos) que antes se perdía
+      // al aplastar todo con \s+→' '. Los renglones se separan con '\n' para
+      // que el segmentador pueda distinguir bloques.
+      if (textLayer) {
+        const spans = Array.from(textLayer.querySelectorAll('span')) as HTMLElement[];
+        const realSpans = spans.filter(s => (s.textContent || '').trim().length > 0);
+        if (realSpans.length > 0) {
+          const lines: { top: number; text: string }[] = [];
+          const TOLERANCE = 6; // px: spans con top dentro de este margen = misma línea
+          for (const span of realSpans) {
+            const top = span.offsetTop;
+            const txt = span.textContent || '';
+            const existing = lines.find(l => Math.abs(l.top - top) <= TOLERANCE);
+            if (existing) {
+              existing.text += txt;
+            } else {
+              lines.push({ top, text: txt });
+            }
+          }
+          lines.sort((a, b) => a.top - b.top);
+          const cleanLines = lines
+            .map(l => ({ top: l.top, text: l.text.replace(/\s+/g, ' ').trim() }))
+            .filter(l => l.text.length > 0);
+
+          if (cleanLines.length > 0) {
+            // Interlineado típico = mediana de los gaps verticales entre
+            // renglones consecutivos. Un gap claramente mayor a ese valor
+            // (~1.6×) indica separación de BLOQUE (título ↔ párrafo, párrafo ↔
+            // párrafo): se marca con doble salto '\n\n'. Dentro de un mismo
+            // bloque, los renglones van con un solo '\n' (wrap de columna).
+            // Esto detecta títulos por su separación real en la página, sin
+            // adivinar por longitud (frágil).
+            const gaps: number[] = [];
+            for (let i = 1; i < cleanLines.length; i++) gaps.push(cleanLines[i].top - cleanLines[i - 1].top);
+            const sortedGaps = [...gaps].sort((a, b) => a - b);
+            const medianGap = sortedGaps.length > 0 ? sortedGaps[Math.floor(sortedGaps.length / 2)] : 0;
+            const blockThreshold = medianGap > 0 ? medianGap * 1.6 : Infinity;
+
+            let out = cleanLines[0].text;
+            for (let i = 1; i < cleanLines.length; i++) {
+              const gap = cleanLines[i].top - cleanLines[i - 1].top;
+              out += (gap > blockThreshold ? '\n\n' : '\n') + cleanLines[i].text;
+            }
+            if (out.trim()) return out;
+          }
+        }
+      }
+      // Respaldo si no hay capa de texto con spans posicionados.
       const text = textLayer ? textLayer.textContent : pageEl.textContent;
-
-      if (!text) return '';
-
-      return text.replace(/\s+/g, ' ').trim();
+      return text ? text.replace(/\s+/g, ' ').trim() : '';
     }
     if (item?.type === 'txt') {
       const el = document.getElementById('txt-content');
-      return el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+      if (!el) return '';
+      // En TXT los saltos de línea reales ya están en el innerText; se conservan.
+      return ((el as HTMLElement).innerText || el.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
     }
     if (item?.type === 'epub') {
       return getEpubVisibleText();
@@ -408,69 +477,64 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // decimales ("3.14") — de ahí que el TTS "seleccionara frases casi
   // aleatorias". Aquí se recorre el texto carácter a carácter y solo se corta
   // en un punto cuando el contexto inmediato descarta esos falsos positivos.
-  const splitIntoPhrases = useCallback((text: string): string[] => {
-    if (!text) return [];
-    const normalized = text.replace(/\s+/g, ' ').trim();
+  // Corta UN párrafo (texto ya en una sola línea) en oraciones de punto a
+  // punto, descartando los falsos positivos de "." (decimales, iniciales,
+  // abreviaturas, elipsis). No corta en "?"/"!"/";".
+  const splitParagraphIntoSentences = useCallback((paragraph: string): string[] => {
+    const normalized = paragraph.replace(/\s+/g, ' ').trim();
     if (!normalized) return [];
-
     const sentences: string[] = [];
     let start = 0;
-
     for (let i = 0; i < normalized.length; i++) {
       if (normalized[i] !== '.') continue;
-
-      // Punto decimal: dígito antes y después ("3.14") → no es fin de frase.
       if (/\d/.test(normalized[i - 1] ?? '') && /\d/.test(normalized[i + 1] ?? '')) continue;
-      // Elipsis "...": esperar al último punto de la racha.
       if (normalized[i + 1] === '.') continue;
-      // Iniciales tipo "J.R.R.": letra mayúscula sola precedida de espacio,
-      // inicio de texto, u otro punto (la inicial anterior de la racha).
       const prevChar = normalized[i - 1] ?? '';
       const beforePrev = normalized[i - 2] ?? '';
       const isInitial = /[A-ZÁÉÍÓÚÑ]/.test(prevChar) && (beforePrev === '' || beforePrev === ' ' || beforePrev === '.');
       if (isInitial) continue;
-      // Abreviatura conocida: la "palabra" que termina justo en este punto.
       const wordMatch = normalized.slice(0, i).match(/([a-záéíóúñ]+)$/i);
       if (wordMatch && SENTENCE_ABBREVIATIONS.has(wordMatch[1].toLowerCase())) continue;
-      // Punto seguido de letra minúscula sin espacio: abreviatura no
-      // catalogada o puntuación interna (p.ej. "p.ej" suelto) → no cortar.
       if (/[a-záéíóúñ]/.test(normalized[i + 1] ?? '')) continue;
-
-      // Las comillas/paréntesis de cierre inmediatamente después del punto
-      // ("...comillas.") pertenecen a la frase que termina, no a la siguiente.
       let end = i + 1;
       while (end < normalized.length && /["'”’)\]]/.test(normalized[end])) end++;
       const sentence = normalized.slice(start, end).trim();
       if (sentence.length > 0) sentences.push(sentence);
       start = end;
     }
-
     const rest = normalized.slice(start).trim();
     if (rest.length > 0) sentences.push(rest);
-
-    // Fusionar fragmentos triviales (p.ej. "4." de un número de página suelto,
-    // o una inicial que el detector no reconoció) con una frase vecina, para
-    // que "Frase Siguiente"/"Frase Anterior" avancen siempre por una unidad
-    // con contenido real y no por signos de puntuación sueltos. Se fusionan
-    // con la frase ANTERIOR (caso normal); si el fragmento trivial es el
-    // primero del documento (no hay frase anterior), se fusiona con la
-    // siguiente en su lugar.
-    const MIN_SENTENCE_LENGTH = 3; // caracteres sin contar el punto final
-    const isTrivial = (s: string) => s.replace(/[.\s]+$/, '').length < MIN_SENTENCE_LENGTH;
-    const merged: string[] = [];
-    for (const s of sentences) {
-      if (isTrivial(s) && merged.length > 0) {
-        merged[merged.length - 1] = `${merged[merged.length - 1]} ${s}`;
-      } else {
-        merged.push(s);
-      }
-    }
-    if (merged.length > 1 && isTrivial(merged[0])) {
-      merged[1] = `${merged[0]} ${merged[1]}`;
-      merged.shift();
-    }
-    return merged;
+    return sentences;
   }, []);
+
+  // Convierte el texto de la página en las unidades de lectura del TTS. El
+  // texto viene separado en BLOQUES por '\n\n' (cada bloque es un párrafo, un
+  // título o un número de página — detectados en getActivePageText por el gap
+  // vertical real entre renglones). Dentro de un bloque, los renglones van con
+  // un solo '\n' (wrap de columna) y se unen en un párrafo:
+  //   - bloque que es número de página → se descarta (no se lee);
+  //   - bloque-título (corto, sin punto final) → una unidad propia;
+  //   - bloque-párrafo → se corta en oraciones de punto a punto.
+  const splitIntoPhrases = useCallback((text: string): string[] => {
+    if (!text) return [];
+    // Compatibilidad: si el texto no trae bloques '\n\n' (TXT/EPUB o respaldo),
+    // se trata todo como un único bloque.
+    const blocks = text.includes('\n\n')
+      ? text.split(/\n{2,}/)
+      : [text];
+
+    const units: string[] = [];
+    for (const block of blocks) {
+      // Unir los renglones del bloque (wrap de columna) en un solo párrafo.
+      const paragraph = block.split('\n').map(l => l.trim()).filter(Boolean).join(' ').trim();
+      if (!paragraph) continue;
+      if (isPageNumberLine(paragraph)) continue;          // número de página → no se lee
+      if (isHeadingLine(paragraph)) { units.push(paragraph); continue; }  // título → unidad propia
+      units.push(...splitParagraphIntoSentences(paragraph));              // párrafo → punto a punto
+    }
+
+    return units.filter(u => u.trim().length > 0);
+  }, [splitParagraphIntoSentences]);
 
   // Recorre los nodos de texto de un elemento y devuelve el texto del primer
   // nodo cuyo rect intersecta verticalmente con el rect del viewport dado.
@@ -713,53 +777,59 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       const spans = pageEl.querySelectorAll('.react-pdf__Page__textContent span[style]');
       if (spans.length === 0) continue;
 
-      let fullText = '';
+      // Se construye el texto normalizado de la página Y, en paralelo, el rango
+      // [start,end) de CADA span dentro de ESE mismo texto normalizado. Antes
+      // los offsets se calculaban sobre el texto sin normalizar y luego se
+      // re-buscaba cada span con indexOf() sobre el normalizado — dos sistemas
+      // de coordenadas distintos que se desincronizaban y resaltaban spans
+      // equivocados (el "salteado" con huecos). Aquí ambos usan el MISMO
+      // texto normalizado, carácter a carácter, sin volver a buscar nada.
+      let normalizedFullText = '';
       const spanRanges: { span: any; start: number; end: number }[] = [];
+      let prevEndedWithSpace = true; // colapsa espacios entre spans igual que \s+→' '
       spans.forEach((span: any) => {
-        const text = span.textContent || '';
-        const start = fullText.length;
-        fullText += text;
-        spanRanges.push({ span, start, end: fullText.length });
+        const raw = (span.textContent || '').toLowerCase();
+        // Normaliza este fragmento colapsando espacios, teniendo en cuenta si
+        // el texto acumulado ya terminaba en espacio (para no duplicarlos).
+        let normalized = raw.replace(/\s+/g, ' ');
+        if (prevEndedWithSpace) normalized = normalized.replace(/^ /, '');
+        const start = normalizedFullText.length;
+        normalizedFullText += normalized;
+        spanRanges.push({ span, start, end: normalizedFullText.length });
+        if (normalized.length > 0) prevEndedWithSpace = normalized.endsWith(' ');
       });
 
-      const normalizedFullText = fullText.toLowerCase().replace(/\s+/g, ' ');
       let matchIndex = normalizedFullText.indexOf(cleanPhrase);
       let matchLen = cleanPhrase.length;
       if (matchIndex === -1) {
         // Respaldo: coincidencia por las primeras palabras.
-        const firstWords = cleanPhrase.split(' ').slice(0, 3).join(' ');
-        const partial = normalizedFullText.indexOf(firstWords);
+        const firstWords = cleanPhrase.split(' ').slice(0, 4).join(' ');
+        const partial = firstWords.length >= 3 ? normalizedFullText.indexOf(firstWords) : -1;
         if (partial === -1) continue;
         matchIndex = partial;
+        matchLen = firstWords.length;
       }
 
       const startPos = matchIndex;
       const endPos = matchIndex + matchLen;
-      let currentPos = 0;
       spanRanges.forEach(({ span, start, end }) => {
-        const spanLength = end - start;
-        const spanStartNormalized = normalizedFullText.indexOf(span.textContent?.toLowerCase() || '', currentPos);
-        if (spanStartNormalized !== -1) {
-          currentPos = spanStartNormalized + spanLength;
-          const spanEndNormalized = spanStartNormalized + spanLength;
-          const overlaps = (spanStartNormalized < endPos && spanEndNormalized > startPos);
-          if (overlaps) {
-            span.style.transition = 'background-color 0.25s ease-in-out';
-            // Alfa dentro del color (NO usar opacity: crea stacking context y
-            // desactiva el mix-blend-mode, dejando el color opaco sobre el negro).
-            span.style.backgroundColor = toRgba(color, 0.5);
-            span.style.mixBlendMode = 'darken';     // El negro del texto siempre gana → letras intactas
-            span.style.borderRadius = '3px';
-            if (persistent) span.dataset.citationHighlight = 'true';
-            if (!highlightedAny) {
-              // 'nearest' (no 'center'): si la frase ya está visible o casi,
-              // no la fuerza al centro exacto del viewport — solo desplaza lo
-              // mínimo necesario para que quede dentro de la vista. Con
-              // 'center' cada Play producía un salto grande aunque el texto
-              // ya estuviera a la vista.
-              span.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-              highlightedAny = true;
-            }
+        // Un span se resalta si su rango [start,end) se solapa con el rango de
+        // la frase [startPos,endPos). Esto cubre TODOS los spans intermedios
+        // (sin huecos), porque los rangos son contiguos en el texto normalizado.
+        const overlaps = start < endPos && end > startPos;
+        if (overlaps) {
+          span.style.transition = 'background-color 0.25s ease-in-out';
+          // Alfa dentro del color (NO usar opacity: crea stacking context y
+          // desactiva el mix-blend-mode, dejando el color opaco sobre el negro).
+          span.style.backgroundColor = toRgba(color, 0.5);
+          span.style.mixBlendMode = 'darken';     // El negro del texto siempre gana → letras intactas
+          span.style.borderRadius = '3px';
+          if (persistent) span.dataset.citationHighlight = 'true';
+          if (!highlightedAny) {
+            // 'nearest' (no 'center'): solo desplaza lo mínimo para que la
+            // frase entre en la vista, sin saltos bruscos si ya estaba visible.
+            span.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            highlightedAny = true;
           }
         }
       });

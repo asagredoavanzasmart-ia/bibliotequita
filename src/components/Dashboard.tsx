@@ -46,7 +46,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
   const [sidebarCollapsedDesktop, setSidebarCollapsedDesktop] = useState(false);
   const sidebarTouchStartRef = useRef<number | null>(null);
   const mainTouchStartRef = useRef<{ x: number; y: number } | null>(null);
-  const [filters, setFilters] = useState({ year: '', author: '', subject: '', read: '', toBuy: '', authorInitial: '', titleInitial: '' });
+  const [filters, setFilters] = useState({ year: '', author: '', subject: '', read: '', toBuy: '', authorInitial: '', titleInitial: '', tagIds: [] as string[] });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [showMobileProfile, setShowMobileProfile] = useState(false);
