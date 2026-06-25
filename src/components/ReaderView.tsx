@@ -392,6 +392,44 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     });
   }, []);
 
+  // Agrupa los spans de la capa de texto de pdf.js en LÍNEAS reales (por
+  // posición vertical) y cada línea conserva sus spans en orden. Es la ÚNICA
+  // función que decide "qué es una línea" — la usan tanto getActivePageText
+  // (para construir el string que se segmenta) como highlightPhraseInDOM
+  // (para resaltar). Antes existían dos reconstrucciones de texto
+  // independientes (una para extraer, otra para resaltar) que normalizaban
+  // espacios de forma sutilmente distinta entre renglones — cuando el join
+  // insertaba un espacio que el DOM plano no tenía (común en texto
+  // justificado, donde una línea no siempre termina en espacio real), los
+  // índices de carácter se desalineaban, el match exacto fallaba, y el
+  // resaltado caía al respaldo impreciso de "primeras palabras" — lo cual
+  // pintaba de más (un párrafo entero en vez de una oración).
+  const buildPageLines = useCallback((pageEl: Element): { top: number; text: string; spans: HTMLElement[] }[] => {
+    const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
+    if (!textLayer) return [];
+    const spans = Array.from(textLayer.querySelectorAll('span')) as HTMLElement[];
+    const realSpans = spans.filter(s => (s.textContent || '').trim().length > 0);
+    if (realSpans.length === 0) return [];
+
+    const TOLERANCE = 6; // px: spans con top dentro de este margen = misma línea
+    const lines: { top: number; text: string; spans: HTMLElement[] }[] = [];
+    for (const span of realSpans) {
+      const top = span.offsetTop;
+      const txt = span.textContent || '';
+      const existing = lines.find(l => Math.abs(l.top - top) <= TOLERANCE);
+      if (existing) {
+        existing.text += txt;
+        existing.spans.push(span);
+      } else {
+        lines.push({ top, text: txt, spans: [span] });
+      }
+    }
+    lines.sort((a, b) => a.top - b.top);
+    return lines
+      .map(l => ({ top: l.top, text: l.text.replace(/\s+/g, ' ').trim(), spans: l.spans }))
+      .filter(l => l.text.length > 0);
+  }, []);
+
   // Función para extraer texto del DOM de la página activa del PDF, TXT o EPUB
   const getActivePageText = useCallback(() => {
     if (item?.type === 'pdf') {
@@ -399,55 +437,26 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       if (!pageEl) return '';
 
       const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
-      // Reconstruir LÍNEAS reales agrupando los spans de pdf.js por su posición
-      // vertical (top): cada renglón visual del PDF es una línea, y dos spans
-      // en la misma fila pertenecen al mismo renglón. Esto preserva la
-      // estructura (título / número de página / párrafos) que antes se perdía
-      // al aplastar todo con \s+→' '. Los renglones se separan con '\n' para
-      // que el segmentador pueda distinguir bloques.
-      if (textLayer) {
-        const spans = Array.from(textLayer.querySelectorAll('span')) as HTMLElement[];
-        const realSpans = spans.filter(s => (s.textContent || '').trim().length > 0);
-        if (realSpans.length > 0) {
-          const lines: { top: number; text: string }[] = [];
-          const TOLERANCE = 6; // px: spans con top dentro de este margen = misma línea
-          for (const span of realSpans) {
-            const top = span.offsetTop;
-            const txt = span.textContent || '';
-            const existing = lines.find(l => Math.abs(l.top - top) <= TOLERANCE);
-            if (existing) {
-              existing.text += txt;
-            } else {
-              lines.push({ top, text: txt });
-            }
-          }
-          lines.sort((a, b) => a.top - b.top);
-          const cleanLines = lines
-            .map(l => ({ top: l.top, text: l.text.replace(/\s+/g, ' ').trim() }))
-            .filter(l => l.text.length > 0);
+      const cleanLines = buildPageLines(pageEl);
 
-          if (cleanLines.length > 0) {
-            // Interlineado típico = mediana de los gaps verticales entre
-            // renglones consecutivos. Un gap claramente mayor a ese valor
-            // (~1.6×) indica separación de BLOQUE (título ↔ párrafo, párrafo ↔
-            // párrafo): se marca con doble salto '\n\n'. Dentro de un mismo
-            // bloque, los renglones van con un solo '\n' (wrap de columna).
-            // Esto detecta títulos por su separación real en la página, sin
-            // adivinar por longitud (frágil).
-            const gaps: number[] = [];
-            for (let i = 1; i < cleanLines.length; i++) gaps.push(cleanLines[i].top - cleanLines[i - 1].top);
-            const sortedGaps = [...gaps].sort((a, b) => a - b);
-            const medianGap = sortedGaps.length > 0 ? sortedGaps[Math.floor(sortedGaps.length / 2)] : 0;
-            const blockThreshold = medianGap > 0 ? medianGap * 1.6 : Infinity;
+      if (cleanLines.length > 0) {
+        // Interlineado típico = mediana de los gaps verticales entre
+        // renglones consecutivos. Un gap claramente mayor (~1.6×) indica
+        // separación de BLOQUE (título ↔ párrafo, párrafo ↔ párrafo): se
+        // marca con doble salto '\n\n'. Dentro de un mismo bloque, los
+        // renglones van con un solo '\n' (wrap de columna).
+        const gaps: number[] = [];
+        for (let i = 1; i < cleanLines.length; i++) gaps.push(cleanLines[i].top - cleanLines[i - 1].top);
+        const sortedGaps = [...gaps].sort((a, b) => a - b);
+        const medianGap = sortedGaps.length > 0 ? sortedGaps[Math.floor(sortedGaps.length / 2)] : 0;
+        const blockThreshold = medianGap > 0 ? medianGap * 1.6 : Infinity;
 
-            let out = cleanLines[0].text;
-            for (let i = 1; i < cleanLines.length; i++) {
-              const gap = cleanLines[i].top - cleanLines[i - 1].top;
-              out += (gap > blockThreshold ? '\n\n' : '\n') + cleanLines[i].text;
-            }
-            if (out.trim()) return out;
-          }
+        let out = cleanLines[0].text;
+        for (let i = 1; i < cleanLines.length; i++) {
+          const gap = cleanLines[i].top - cleanLines[i - 1].top;
+          out += (gap > blockThreshold ? '\n\n' : '\n') + cleanLines[i].text;
         }
+        if (out.trim()) return out;
       }
       // Respaldo si no hay capa de texto con spans posicionados.
       const text = textLayer ? textLayer.textContent : pageEl.textContent;
@@ -774,29 +783,35 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     let highlightedAny = false;
 
     for (const pageEl of pageEls) {
-      const spans = pageEl.querySelectorAll('.react-pdf__Page__textContent span[style]');
-      if (spans.length === 0) continue;
+      // Reconstruir la página con buildPageLines — LA MISMA función que generó
+      // el texto que se segmentó en frases (getActivePageText). Antes este
+      // highlight recorría los spans en orden DOM plano y los unía sin
+      // separador entre líneas, mientras que la extracción de texto unía los
+      // renglones con un espacio explícito (join(' ')) — esa diferencia de un
+      // solo carácter por salto de línea desalineaba los índices de carácter
+      // en cuanto la frase cruzaba un renglón, el match exacto fallaba, y el
+      // resaltado caía al respaldo impreciso de "primeras palabras" (pintando
+      // de más, hasta un párrafo entero). Ahora ambos lados usan el mismo
+      // texto, con el mismo separador, así que los índices SIEMPRE coinciden.
+      const cleanLines = buildPageLines(pageEl);
+      if (cleanLines.length === 0) continue;
 
-      // Se construye el texto normalizado de la página Y, en paralelo, el rango
-      // [start,end) de CADA span dentro de ESE mismo texto normalizado. Antes
-      // los offsets se calculaban sobre el texto sin normalizar y luego se
-      // re-buscaba cada span con indexOf() sobre el normalizado — dos sistemas
-      // de coordenadas distintos que se desincronizaban y resaltaban spans
-      // equivocados (el "salteado" con huecos). Aquí ambos usan el MISMO
-      // texto normalizado, carácter a carácter, sin volver a buscar nada.
       let normalizedFullText = '';
-      const spanRanges: { span: any; start: number; end: number }[] = [];
-      let prevEndedWithSpace = true; // colapsa espacios entre spans igual que \s+→' '
-      spans.forEach((span: any) => {
-        const raw = (span.textContent || '').toLowerCase();
-        // Normaliza este fragmento colapsando espacios, teniendo en cuenta si
-        // el texto acumulado ya terminaba en espacio (para no duplicarlos).
-        let normalized = raw.replace(/\s+/g, ' ');
-        if (prevEndedWithSpace) normalized = normalized.replace(/^ /, '');
-        const start = normalizedFullText.length;
-        normalizedFullText += normalized;
-        spanRanges.push({ span, start, end: normalizedFullText.length });
-        if (normalized.length > 0) prevEndedWithSpace = normalized.endsWith(' ');
+      const spanRanges: { span: HTMLElement; start: number; end: number }[] = [];
+      cleanLines.forEach((line, lineIdx) => {
+        if (lineIdx > 0) normalizedFullText += ' '; // mismo separador que el join(' ') de splitIntoPhrases
+        // Dentro de la línea, repartir sus caracteres normalizados entre sus
+        // spans originales en proporción a la longitud de cada uno — alcanza
+        // para que el resaltado cubra los spans correctos del renglón.
+        const lineStart = normalizedFullText.length;
+        normalizedFullText += line.text.toLowerCase();
+        let pos = lineStart;
+        for (const span of line.spans) {
+          const spanLen = (span.textContent || '').replace(/\s+/g, ' ').length;
+          const end = Math.min(pos + spanLen, lineStart + line.text.length);
+          spanRanges.push({ span, start: pos, end });
+          pos = end;
+        }
       });
 
       let matchIndex = normalizedFullText.indexOf(cleanPhrase);
@@ -845,7 +860,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         highlightPhraseInDOM(phraseText, color, persistent, retriesLeft - 1);
       }, 250);
     }
-  }, []);
+  }, [buildPageLines]);
 
   // Resalta la frase actual dentro del/los iframe(s) del EPUB visible.
   // A diferencia del PDF (que ya tiene spans por carácter del text layer),
