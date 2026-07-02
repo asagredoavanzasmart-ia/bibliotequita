@@ -404,63 +404,111 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // índices de carácter se desalineaban, el match exacto fallaba, y el
   // resaltado caía al respaldo impreciso de "primeras palabras" — lo cual
   // pintaba de más (un párrafo entero en vez de una oración).
-  const buildPageLines = useCallback((pageEl: Element): { top: number; text: string; spans: HTMLElement[] }[] => {
+  // Cada línea produce, además del texto normalizado, un charMap con UNA
+  // entrada por carácter de `text` apuntando al nodo de texto del DOM y al
+  // offset crudo del que proviene. Con eso el resaltado puede construir
+  // Ranges exactos por carácter (getClientRects) en vez de pintar spans
+  // enteros — que era la causa de que la marca cubriera renglones completos
+  // cruzando límites de oración (1 span de pdf.js ≈ 1 renglón).
+  //
+  // La normalización se hace carácter a carácter con NFKC (ligaduras 'ﬁ'→'fi'),
+  // descartando invisibles (soft hyphen U+00AD, zero-width) y colapsando
+  // rachas de espacios — PDFs con ese tipo de caracteres hacían fallar el
+  // match exacto de la frase ("en este PDF no marca nada").
+  const buildPageLines = useCallback((pageEl: Element): { top: number; text: string; charMap: { node: Text; offset: number }[] }[] => {
     const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
     if (!textLayer) return [];
-    const spans = Array.from(textLayer.querySelectorAll('span')) as HTMLElement[];
-    const realSpans = spans.filter(s => (s.textContent || '').trim().length > 0);
+    const allSpans = Array.from(textLayer.querySelectorAll('span')) as HTMLElement[];
+    const realSpans = allSpans.filter(s => (s.textContent || '').trim().length > 0);
     if (realSpans.length === 0) return [];
 
     const TOLERANCE = 6; // px: spans con top dentro de este margen = misma línea
-    const lines: { top: number; text: string; spans: HTMLElement[] }[] = [];
+    const rawLines: { top: number; spans: HTMLElement[] }[] = [];
     for (const span of realSpans) {
       const top = span.offsetTop;
-      const txt = span.textContent || '';
-      const existing = lines.find(l => Math.abs(l.top - top) <= TOLERANCE);
-      if (existing) {
-        existing.text += txt;
-        existing.spans.push(span);
-      } else {
-        lines.push({ top, text: txt, spans: [span] });
-      }
+      const existing = rawLines.find(l => Math.abs(l.top - top) <= TOLERANCE);
+      if (existing) existing.spans.push(span);
+      else rawLines.push({ top, spans: [span] });
     }
-    lines.sort((a, b) => a.top - b.top);
-    return lines
-      .map(l => ({ top: l.top, text: l.text.replace(/\s+/g, ' ').trim(), spans: l.spans }))
-      .filter(l => l.text.length > 0);
+    rawLines.sort((a, b) => a.top - b.top);
+
+    const INVISIBLES = new Set(['\u00AD', '\u200B', '\u200C', '\u200D', '\uFEFF']);
+    const lines: { top: number; text: string; charMap: { node: Text; offset: number }[] }[] = [];
+    for (const rl of rawLines) {
+      let text = '';
+      const charMap: { node: Text; offset: number }[] = [];
+      let prevSpace = true; // true inicial = trim izquierdo implícito
+      for (const span of rl.spans) {
+        const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
+        let tn: Node | null;
+        while ((tn = walker.nextNode())) {
+          const raw = tn.textContent || '';
+          for (let i = 0; i < raw.length; i++) {
+            const expanded = raw[i].normalize('NFKC'); // 'ﬁ' → 'fi', etc.
+            for (const c of expanded) {
+              if (INVISIBLES.has(c)) continue;
+              if (/\s/.test(c)) {
+                if (prevSpace) continue;
+                text += ' ';
+                charMap.push({ node: tn as Text, offset: i });
+                prevSpace = true;
+              } else {
+                text += c;
+                charMap.push({ node: tn as Text, offset: i });
+                prevSpace = false;
+              }
+            }
+          }
+        }
+      }
+      // Trim derecho (el izquierdo lo hace prevSpace=true inicial).
+      while (text.endsWith(' ')) { text = text.slice(0, -1); charMap.pop(); }
+      if (text.length > 0) lines.push({ top: rl.top, text, charMap });
+    }
+    return lines;
   }, []);
+
+  // Texto ESTRUCTURADO de una página PDF concreta (bloques '\n\n' por gap
+  // vertical, renglones '\n'). Parametrizado por número de página para que el
+  // avance automático de página del audiolibro use EXACTAMENTE la misma
+  // extracción que el Play inicial — antes ese camino usaba textContent plano
+  // + split('.') ingenuo, y todo el sistema (segmentación de punto a punto,
+  // títulos, resaltado) se degradaba en cuanto el lector pasaba de página.
+  const getPdfPageStructuredText = useCallback((pageNum: number | string): string => {
+    const pageEl = document.getElementById(`pdf-page-${pageNum}`);
+    if (!pageEl) return '';
+
+    const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
+    const cleanLines = buildPageLines(pageEl);
+
+    if (cleanLines.length > 0) {
+      // Interlineado típico = mediana de los gaps verticales entre
+      // renglones consecutivos. Un gap claramente mayor (~1.6×) indica
+      // separación de BLOQUE (título ↔ párrafo, párrafo ↔ párrafo): se
+      // marca con doble salto '\n\n'. Dentro de un mismo bloque, los
+      // renglones van con un solo '\n' (wrap de columna).
+      const gaps: number[] = [];
+      for (let i = 1; i < cleanLines.length; i++) gaps.push(cleanLines[i].top - cleanLines[i - 1].top);
+      const sortedGaps = [...gaps].sort((a, b) => a - b);
+      const medianGap = sortedGaps.length > 0 ? sortedGaps[Math.floor(sortedGaps.length / 2)] : 0;
+      const blockThreshold = medianGap > 0 ? medianGap * 1.6 : Infinity;
+
+      let out = cleanLines[0].text;
+      for (let i = 1; i < cleanLines.length; i++) {
+        const gap = cleanLines[i].top - cleanLines[i - 1].top;
+        out += (gap > blockThreshold ? '\n\n' : '\n') + cleanLines[i].text;
+      }
+      if (out.trim()) return out;
+    }
+    // Respaldo si no hay capa de texto con spans posicionados.
+    const text = textLayer ? textLayer.textContent : pageEl.textContent;
+    return text ? text.replace(/\s+/g, ' ').trim() : '';
+  }, [buildPageLines]);
 
   // Función para extraer texto del DOM de la página activa del PDF, TXT o EPUB
   const getActivePageText = useCallback(() => {
     if (item?.type === 'pdf') {
-      const pageEl = document.getElementById(`pdf-page-${currentPage}`);
-      if (!pageEl) return '';
-
-      const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
-      const cleanLines = buildPageLines(pageEl);
-
-      if (cleanLines.length > 0) {
-        // Interlineado típico = mediana de los gaps verticales entre
-        // renglones consecutivos. Un gap claramente mayor (~1.6×) indica
-        // separación de BLOQUE (título ↔ párrafo, párrafo ↔ párrafo): se
-        // marca con doble salto '\n\n'. Dentro de un mismo bloque, los
-        // renglones van con un solo '\n' (wrap de columna).
-        const gaps: number[] = [];
-        for (let i = 1; i < cleanLines.length; i++) gaps.push(cleanLines[i].top - cleanLines[i - 1].top);
-        const sortedGaps = [...gaps].sort((a, b) => a - b);
-        const medianGap = sortedGaps.length > 0 ? sortedGaps[Math.floor(sortedGaps.length / 2)] : 0;
-        const blockThreshold = medianGap > 0 ? medianGap * 1.6 : Infinity;
-
-        let out = cleanLines[0].text;
-        for (let i = 1; i < cleanLines.length; i++) {
-          const gap = cleanLines[i].top - cleanLines[i - 1].top;
-          out += (gap > blockThreshold ? '\n\n' : '\n') + cleanLines[i].text;
-        }
-        if (out.trim()) return out;
-      }
-      // Respaldo si no hay capa de texto con spans posicionados.
-      const text = textLayer ? textLayer.textContent : pageEl.textContent;
-      return text ? text.replace(/\s+/g, ' ').trim() : '';
+      return getPdfPageStructuredText(currentPage);
     }
     if (item?.type === 'txt') {
       const el = document.getElementById('txt-content');
@@ -472,7 +520,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       return getEpubVisibleText();
     }
     return '';
-  }, [item?.type, currentPage, getEpubVisibleText]);
+  }, [item?.type, currentPage, getEpubVisibleText, getPdfPageStructuredText]);
 
   // Divide el texto en unidades de lectura SIEMPRE de punto a punto (seguido
   // o aparte — ambos son el mismo carácter ".", la diferencia es de formato
@@ -575,6 +623,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // y devuelve su índice. Si no se encuentra, devuelve 0.
   const findPhraseIndexForSnippet = useCallback((phraseList: string[], snippet: string | null): number => {
     if (!snippet) return 0;
+    // El snippet viene del DOM crudo: aplicar la misma normalización que el
+    // pipeline de extracción (NFKC, sin invisibles, espacios colapsados) para
+    // que compare bien contra las frases ya normalizadas.
+    snippet = snippet.normalize('NFKC').replace(/[\u00AD\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
     const needle = snippet.slice(0, 40).toLowerCase();
     for (let i = 0; i < phraseList.length; i++) {
       if (phraseList[i].toLowerCase().includes(needle) || needle.includes(phraseList[i].toLowerCase().replace(/\.$/, ''))) {
@@ -754,6 +806,31 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // persistent=true marca los spans con data-citation-highlight="true" para que el
   // resaltado de una cita guardada no sea borrado por el siguiente paso del TTS
   // (que solo limpia spans sin esa marca).
+  // Resalta con precisión POR CARÁCTER usando una capa overlay de rectángulos
+  // (Range.getClientRects), el mismo patrón que usan los lectores PDF
+  // profesionales. El sistema anterior pintaba spans ENTEROS del text layer de
+  // pdf.js — y como un span ≈ un renglón visual, una oración que empezaba a
+  // mitad de renglón pintaba el renglón completo, incluyendo la cola de la
+  // oración anterior y la cabeza de la siguiente: la marca nunca era
+  // estrictamente "de punto a punto" aunque la segmentación fuera correcta.
+  // Con el charMap de buildPageLines, la marca empieza y termina exactamente
+  // en los caracteres de la oración.
+  const ensurePdfHighlightLayer = (pageEl: Element): HTMLElement => {
+    let layer = pageEl.querySelector(':scope > .tts-hl-layer') as HTMLElement | null;
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.className = 'tts-hl-layer';
+      layer.style.position = 'absolute';
+      layer.style.inset = '0';
+      layer.style.pointerEvents = 'none';
+      layer.style.zIndex = '3';
+      // darken: el texto negro del canvas siempre gana → letras intactas bajo el color.
+      layer.style.mixBlendMode = 'darken';
+      pageEl.appendChild(layer);
+    }
+    return layer;
+  };
+
   const highlightPhraseInDOM = useCallback((phraseText: string, color: string = '#fbbf24', persistent: boolean = false, retriesLeft: number = 8) => {
     // Cancelar cualquier reintento pendiente de una llamada anterior.
     if (pdfHighlightRetryRef.current) {
@@ -761,99 +838,97 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       pdfHighlightRetryRef.current = null;
     }
 
-    // Limpiar resaltados NO persistentes en TODAS las páginas montadas (no solo
-    // en la página actual: con el visor virtualizado y la actualización asíncrona
-    // de currentPage no es fiable saber de antemano en qué página está la cita).
-    document.querySelectorAll('.react-pdf__Page__textContent span[style]').forEach((span: any) => {
-      if (span.dataset?.citationHighlight === 'true') return;
-      span.style.backgroundColor = '';
-      span.style.borderRadius = '';
-      span.style.transition = '';
-      span.style.mixBlendMode = '';
-      span.style.opacity = '';
-    });
+    // Limpiar rectángulos NO persistentes en todas las páginas montadas.
+    document.querySelectorAll('.tts-hl-layer > div:not([data-persistent])').forEach(d => d.remove());
 
     if (!phraseText || phraseText.trim().length === 0) return;
 
+    // La frase proviene del MISMO pipeline de normalización de buildPageLines
+    // (vía getPdfPageStructuredText → splitIntoPhrases), así que basta
+    // lowercase + colapso de espacios para el matching.
     const cleanPhrase = phraseText.replace(/\s+/g, ' ').trim().toLowerCase();
     if (cleanPhrase.length < 3) return;
 
-    // Buscar la frase en cada página montada hasta encontrarla y resaltarla.
     const pageEls = Array.from(document.querySelectorAll('.react-pdf__Page'));
     let highlightedAny = false;
 
     for (const pageEl of pageEls) {
-      // Reconstruir la página con buildPageLines — LA MISMA función que generó
-      // el texto que se segmentó en frases (getActivePageText). Antes este
-      // highlight recorría los spans en orden DOM plano y los unía sin
-      // separador entre líneas, mientras que la extracción de texto unía los
-      // renglones con un espacio explícito (join(' ')) — esa diferencia de un
-      // solo carácter por salto de línea desalineaba los índices de carácter
-      // en cuanto la frase cruzaba un renglón, el match exacto fallaba, y el
-      // resaltado caía al respaldo impreciso de "primeras palabras" (pintando
-      // de más, hasta un párrafo entero). Ahora ambos lados usan el mismo
-      // texto, con el mismo separador, así que los índices SIEMPRE coinciden.
       const cleanLines = buildPageLines(pageEl);
       if (cleanLines.length === 0) continue;
 
-      let normalizedFullText = '';
-      const spanRanges: { span: HTMLElement; start: number; end: number }[] = [];
-      cleanLines.forEach((line, lineIdx) => {
-        if (lineIdx > 0) normalizedFullText += ' '; // mismo separador que el join(' ') de splitIntoPhrases
-        // Dentro de la línea, repartir sus caracteres normalizados entre sus
-        // spans originales en proporción a la longitud de cada uno — alcanza
-        // para que el resaltado cubra los spans correctos del renglón.
-        const lineStart = normalizedFullText.length;
-        normalizedFullText += line.text.toLowerCase();
-        let pos = lineStart;
-        for (const span of line.spans) {
-          const spanLen = (span.textContent || '').replace(/\s+/g, ' ').length;
-          const end = Math.min(pos + spanLen, lineStart + line.text.length);
-          spanRanges.push({ span, start: pos, end });
-          pos = end;
-        }
+      // Texto de página + charMap global (misma construcción que la extracción:
+      // renglones unidos con un espacio — el separador se marca con null, no se
+      // pinta y simplemente parte el run en dos rectángulos, uno por renglón).
+      let normText = '';
+      const charMap: ({ node: Text; offset: number } | null)[] = [];
+      cleanLines.forEach((line, idx) => {
+        if (idx > 0) { normText += ' '; charMap.push(null); }
+        normText += line.text.toLowerCase();
+        charMap.push(...line.charMap);
       });
 
-      let matchIndex = normalizedFullText.indexOf(cleanPhrase);
+      let matchIndex = normText.indexOf(cleanPhrase);
       let matchLen = cleanPhrase.length;
       if (matchIndex === -1) {
-        // Respaldo: coincidencia por las primeras palabras.
-        const firstWords = cleanPhrase.split(' ').slice(0, 4).join(' ');
-        const partial = firstWords.length >= 3 ? normalizedFullText.indexOf(firstWords) : -1;
+        // Respaldo acotado: primeras palabras con longitud mínima exigente,
+        // para no pintar por una coincidencia trivial.
+        const firstWords = cleanPhrase.split(' ').slice(0, 6).join(' ');
+        const partial = firstWords.length >= 12 ? normText.indexOf(firstWords) : -1;
         if (partial === -1) continue;
         matchIndex = partial;
         matchLen = firstWords.length;
       }
 
-      const startPos = matchIndex;
-      const endPos = matchIndex + matchLen;
-      spanRanges.forEach(({ span, start, end }) => {
-        // Un span se resalta si su rango [start,end) se solapa con el rango de
-        // la frase [startPos,endPos). Esto cubre TODOS los spans intermedios
-        // (sin huecos), porque los rangos son contiguos en el texto normalizado.
-        const overlaps = start < endPos && end > startPos;
-        if (overlaps) {
-          span.style.transition = 'background-color 0.25s ease-in-out';
-          // Alfa dentro del color (NO usar opacity: crea stacking context y
-          // desactiva el mix-blend-mode, dejando el color opaco sobre el negro).
-          span.style.backgroundColor = toRgba(color, 0.5);
-          span.style.mixBlendMode = 'darken';     // El negro del texto siempre gana → letras intactas
-          span.style.borderRadius = '3px';
-          if (persistent) span.dataset.citationHighlight = 'true';
-          if (!highlightedAny) {
-            // 'nearest' (no 'center'): solo desplaza lo mínimo para que la
-            // frase entre en la vista, sin saltos bruscos si ya estaba visible.
-            span.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            highlightedAny = true;
-          }
-        }
-      });
+      // Agrupar los caracteres del match en "runs" contiguos por nodo de texto.
+      // Dentro de un mismo nodo los offsets crudos son crecientes; cualquier
+      // hueco entre ellos son espacios colapsados/invisibles que también deben
+      // quedar cubiertos, así que el run simplemente se extiende.
+      const runs: { node: Text; a: number; b: number }[] = [];
+      for (let k = matchIndex; k < matchIndex + matchLen && k < charMap.length; k++) {
+        const e = charMap[k];
+        if (!e) continue;
+        const last = runs[runs.length - 1];
+        if (last && last.node === e.node && e.offset >= last.b) last.b = e.offset;
+        else runs.push({ node: e.node, a: e.offset, b: e.offset });
+      }
+      if (runs.length === 0) continue;
 
+      const layer = ensurePdfHighlightLayer(pageEl);
+      const baseRect = pageEl.getBoundingClientRect();
+      let firstDiv: HTMLElement | null = null;
+      for (const run of runs) {
+        try {
+          const range = document.createRange();
+          range.setStart(run.node, Math.min(run.a, run.node.length));
+          range.setEnd(run.node, Math.min(run.b + 1, run.node.length));
+          for (const r of Array.from(range.getClientRects())) {
+            if (r.width <= 0 || r.height <= 0) continue;
+            const d = document.createElement('div');
+            d.style.position = 'absolute';
+            d.style.left = `${r.left - baseRect.left}px`;
+            d.style.top = `${r.top - baseRect.top}px`;
+            d.style.width = `${r.width}px`;
+            d.style.height = `${r.height}px`;
+            d.style.backgroundColor = toRgba(color, 0.45);
+            d.style.borderRadius = '3px';
+            if (persistent) d.dataset.persistent = 'true';
+            layer.appendChild(d);
+            if (!firstDiv) firstDiv = d;
+          }
+        } catch { /* el nodo pudo mutar entre la extracción y el pintado */ }
+      }
+      if (firstDiv) {
+        // 'nearest': solo desplaza lo mínimo para que la frase entre en vista.
+        firstDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        highlightedAny = true;
+      }
       if (highlightedAny) break;
     }
 
     // Si no se encontró en ninguna página montada, la página destino puede estar
     // todavía montándose tras un salto a la cita: reintentar unas pocas veces.
+    // (En PDFs escaneados sin capa de texto no hay nada que pintar: los
+    // reintentos se agotan en silencio y el audio sigue normalmente.)
     if (!highlightedAny && retriesLeft > 0) {
       pdfHighlightRetryRef.current = setTimeout(() => {
         pdfHighlightRetryRef.current = null;
@@ -1040,6 +1115,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         });
       });
     } else {
+      // Rectángulos persistentes del overlay nuevo.
+      document.querySelectorAll('.tts-hl-layer > div[data-persistent]').forEach(d => d.remove());
+      // Limpieza legacy: citas antiguas que hubieran quedado con estilos
+      // directamente sobre los spans del text layer (sistema anterior).
       document.querySelectorAll('.react-pdf__Page__textContent span[data-citation-highlight="true"]').forEach((span: any) => {
         span.style.backgroundColor = '';
         span.style.borderRadius = '';
@@ -1194,6 +1273,20 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         });
 
         ttsAbortRef.current = null;
+
+        // 429 (límite de peticiones): NO matar la sesión de audiolibro — es un
+        // estado transitorio. Se espera lo que indique Retry-After (o 20s) y se
+        // reintenta la MISMA frase mientras la sesión siga activa. Antes esto
+        // lanzaba error y detenía la lectura definitivamente, imposibilitando
+        // sesiones largas si se rozaba el límite en algún momento.
+        if (response.status === 429) {
+          const retryAfter = Number(response.headers.get('retry-after'));
+          const waitMs = (Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, 60) : 20) * 1000;
+          setTtsStatus('loading');
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+          if (ttsActiveRef.current) playPhraseRef.current?.(index, phraseList);
+          return;
+        }
 
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));
@@ -1420,14 +1513,22 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // cambio (evento 'relocated'), y solo DESPUÉS extraer el texto y empezar a
   // leer — si se lee antes de tiempo, el texto extraído no es el que quedó
   // visible en pantalla.
+  // NOTA CRÍTICA: estos dos handlers son el camino del avance AUTOMÁTICO del
+  // audiolibro (onended → siguiente página). Deben usar EXACTAMENTE la misma
+  // extracción (getPdfPageStructuredText) y el mismo segmentador
+  // (splitIntoPhrases) que el Play inicial. Antes usaban text.split('.')
+  // ingenuo + texto plano: en cuanto el lector pasaba de página, la
+  // segmentación punto-a-punto y el resaltado se degradaban por completo
+  // (frases cortadas en abreviaturas, números de página leídos, resaltado
+  // que no coincidía con el texto de la página).
   const handleTtsPrevPage = useCallback(async () => {
     handleTtsStop();
     if (item?.type === 'epub') {
       epubRenditionRef.current?.prev();
       await waitForEpubRelocated();
       const text = getEpubVisibleText();
-      if (text) {
-        const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
+      const phraseList = splitIntoPhrases(text);
+      if (phraseList.length > 0) {
         setPhrases(phraseList);
         setTtsTextSource('page');
         playPhrase(0, phraseList, true);
@@ -1440,15 +1541,15 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setTargetPage({ page: newPage, t: Date.now() });
     setCurrentPage(newPage);
     setTimeout(async () => {
-      const text = await getPageTextWithOcrFallback(newPage);
-      if (text) {
-        const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
+      const text = getPdfPageStructuredText(newPage) || await getPageTextWithOcrFallback(newPage);
+      const phraseList = splitIntoPhrases(text);
+      if (phraseList.length > 0) {
         setPhrases(phraseList);
         setTtsTextSource('page');
         playPhrase(0, phraseList, true);
       }
     }, 800);
-  }, [currentPage, item?.type, handleTtsStop, playPhrase, getPageTextWithOcrFallback, getEpubVisibleText, waitForEpubRelocated]);
+  }, [currentPage, item?.type, handleTtsStop, playPhrase, getPdfPageStructuredText, getPageTextWithOcrFallback, getEpubVisibleText, waitForEpubRelocated, splitIntoPhrases]);
 
   const handleTtsNextPage = useCallback(async () => {
     handleTtsStop();
@@ -1456,8 +1557,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       epubRenditionRef.current?.next();
       await waitForEpubRelocated();
       const text = getEpubVisibleText();
-      if (text) {
-        const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
+      const phraseList = splitIntoPhrases(text);
+      if (phraseList.length > 0) {
         setPhrases(phraseList);
         setTtsTextSource('page');
         playPhrase(0, phraseList, true);
@@ -1470,15 +1571,15 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setTargetPage({ page: newPage, t: Date.now() });
     setCurrentPage(newPage);
     setTimeout(async () => {
-      const text = await getPageTextWithOcrFallback(newPage);
-      if (text) {
-        const phraseList = text.split('.').map(p => p.trim()).filter(p => p.length > 0).map(p => p + '.');
+      const text = getPdfPageStructuredText(newPage) || await getPageTextWithOcrFallback(newPage);
+      const phraseList = splitIntoPhrases(text);
+      if (phraseList.length > 0) {
         setPhrases(phraseList);
         setTtsTextSource('page');
         playPhrase(0, phraseList, true);
       }
     }, 800);
-  }, [currentPage, totalPages, item?.type, handleTtsStop, playPhrase, getPageTextWithOcrFallback, getEpubVisibleText, waitForEpubRelocated]);
+  }, [currentPage, totalPages, item?.type, handleTtsStop, playPhrase, getPdfPageStructuredText, getPageTextWithOcrFallback, getEpubVisibleText, waitForEpubRelocated, splitIntoPhrases]);
 
   // Ref estable para encadenar el avance de página desde onended sin closures stale.
   handleTtsNextPageRef.current = handleTtsNextPage;

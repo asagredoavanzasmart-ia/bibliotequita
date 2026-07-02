@@ -93,8 +93,11 @@ const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || 300);
 const AI_RATE_LIMIT_WINDOW_MIN = Number(process.env.AI_RATE_LIMIT_WINDOW_MIN || 5);
 const AI_RATE_LIMIT_MAX = Number(process.env.AI_RATE_LIMIT_MAX || 30);
 // TTS se llama frase a frase (18-20 por página) — necesita un límite propio más generoso
+// TTS se llama frase a frase (reproducción + precarga de la siguiente):
+// un audiolibro continuo con frases cortas puede llegar a ~400 llamadas por
+// ventana de 5 min. 600 da margen 1.5× sin abrir la puerta a abuso real.
 const TTS_RATE_LIMIT_WINDOW_MIN = Number(process.env.TTS_RATE_LIMIT_WINDOW_MIN || 5);
-const TTS_RATE_LIMIT_MAX = Number(process.env.TTS_RATE_LIMIT_MAX || 300);
+const TTS_RATE_LIMIT_MAX = Number(process.env.TTS_RATE_LIMIT_MAX || 600);
 
 const ALLOW_PROXY_HOSTS = (process.env.ALLOW_PROXY_HOSTS || "")
   .split(",")
@@ -427,12 +430,19 @@ async function startServer() {
   app.use("/api/", requireAuth);
 
   // Rate limit global (todas las rutas /api/*).
+  // /api/tts y /api/ocr-page se EXCLUYEN de este limiter global: tienen el
+  // suyo propio (ttsLimiter) y se llaman frase a frase — un audiolibro de 2h
+  // genera ~1500-3000 llamadas TTS, que agotaban las 300/15min del global a
+  // los ~15 minutos de reproducción ("Demasiadas solicitudes...") aunque el
+  // ttsLimiter específico aún tuviera cuota. /api/activity/reading-time
+  // también se excluye (1 ping cada 30s durante toda la sesión de lectura).
   const apiLimiter = rateLimit({
     windowMs: RATE_LIMIT_WINDOW_MIN * 60 * 1000,
     max: RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Demasiadas solicitudes. Intenta de nuevo más tarde." },
+    skip: (req) => req.path === "/tts" || req.path === "/ocr-page" || req.path === "/activity/reading-time",
   });
   app.use("/api/", apiLimiter);
 
