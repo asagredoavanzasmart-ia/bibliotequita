@@ -63,9 +63,13 @@ interface PDFReaderProps {
   // Nodo DOM (gestionado por ReaderView) donde portar índice/paginación/zoom
   // cuando hideOwnBar es true. null/undefined → no se porta nada.
   mergedBarPortalTarget?: HTMLElement | null;
+  // Notifica cada cambio de escala (botones, rueda+ctrl o pinch). ReaderView
+  // lo usa para repintar los resaltados de citas, que son rects en píxeles
+  // absolutos y quedan corridos cuando la capa de texto se re-renderiza.
+  onScaleChange?: (scale: number) => void;
 }
 
-function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPage, controlsVisible = true, outlineOpen, onToggleOutline, generatedToc, onGenerateToc, generatingToc = false, hideOwnBar = false, mergedBarPortalTarget = null }: PDFReaderProps) {
+function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPage, controlsVisible = true, outlineOpen, onToggleOutline, generatedToc, onGenerateToc, generatingToc = false, hideOwnBar = false, mergedBarPortalTarget = null, onScaleChange }: PDFReaderProps) {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
@@ -86,6 +90,14 @@ function PDFReaderComponent({ url, hideControls = false, onPageChange, targetPag
   
   const [scrollingPage, setScrollingPage] = useState<boolean>(false);
   const visiblePagesHeight = useRef<Record<number, number>>({});
+
+  // Un solo efecto sobre `scale` cubre todas las vías de zoom a la vez
+  // (botones, rueda+ctrl y pinch), sin instrumentar cada handler.
+  const onScaleChangeRef = useRef(onScaleChange);
+  useEffect(() => { onScaleChangeRef.current = onScaleChange; }, [onScaleChange]);
+  useEffect(() => {
+    onScaleChangeRef.current?.(scale);
+  }, [scale]);
 
   // Rango de páginas a montar realmente (1-based, inclusivo) cuando VIRTUALIZE.
   const [renderRange, setRenderRange] = useState<{ start: number; end: number }>({ start: 1, end: 1 + OVERSCAN });

@@ -447,6 +447,9 @@ export function BookGrid({ category, viewMode, sortBy, stageFilter, playlistFilt
     }
 
     result.sort((a, b) => {
+      // Los libros fijados con pin van siempre primero, en cualquier orden
+      // (incluido el manual: el pin gana sobre el arrastre).
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
       if (sortBy === 'manual') return (a.listIndex ?? 0) - (b.listIndex ?? 0);
       if (sortBy === 'recent') return b.timestamp - a.timestamp;
       if (sortBy === 'oldest') return a.timestamp - b.timestamp;

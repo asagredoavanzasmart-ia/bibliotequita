@@ -357,6 +357,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Timeout del reintento de resaltado PDF (la página destino puede no estar
   // montada todavía si el visor virtualiza páginas — ver highlightPhraseInDOM).
   const pdfHighlightRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Resaltados de cita (persistentes) pintados sobre el PDF visible y última
+  // frase no persistente del TTS: los rects son píxeles absolutos calculados
+  // para la escala vigente al pintarlos, así que al cambiar el zoom hay que
+  // repintarlos desde estos registros (ver handlePdfScaleChange).
+  const paintedCitationsRef = useRef<{ phrase: string; hex: string }[]>([]);
+  const lastTtsHighlightRef = useRef<{ phrase: string; hex?: string } | null>(null);
+  const scaleRepaintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Texto visible en los iframes internos de la rendition de epubjs (vista
   // de página única o doble — concatena todas las páginas activas).
@@ -831,7 +838,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     return layer;
   };
 
-  const highlightPhraseInDOM = useCallback((phraseText: string, color: string = '#fbbf24', persistent: boolean = false, retriesLeft: number = 8) => {
+  const highlightPhraseInDOM = useCallback((phraseText: string, color: string = '#fbbf24', persistent: boolean = false, retriesLeft: number = 8, scrollToMatch: boolean = true) => {
     // Cancelar cualquier reintento pendiente de una llamada anterior.
     if (pdfHighlightRetryRef.current) {
       clearTimeout(pdfHighlightRetryRef.current);
@@ -919,7 +926,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       }
       if (firstDiv) {
         // 'nearest': solo desplaza lo mínimo para que la frase entre en vista.
-        firstDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        // En repintados (p. ej. tras un cambio de zoom) no se desplaza nada:
+        // el usuario está justamente ajustando su encuadre.
+        if (scrollToMatch) firstDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         highlightedAny = true;
       }
       if (highlightedAny) break;
@@ -932,7 +941,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     if (!highlightedAny && retriesLeft > 0) {
       pdfHighlightRetryRef.current = setTimeout(() => {
         pdfHighlightRetryRef.current = null;
-        highlightPhraseInDOM(phraseText, color, persistent, retriesLeft - 1);
+        highlightPhraseInDOM(phraseText, color, persistent, retriesLeft - 1, scrollToMatch);
       }, 250);
     }
   }, [buildPageLines]);
@@ -1087,6 +1096,21 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // persistent=true crea un resaltado permanente (cita guardada) que no se
   // borra en el siguiente paso del TTS.
   const highlightCurrentPhrase = useCallback((phraseText: string, color?: string, persistent: boolean = false) => {
+    // Registro para el repintado tras cambios de zoom del PDF (los rects del
+    // overlay son píxeles absolutos y quedan corridos al re-renderizarse la
+    // capa de texto). El EPUB usa <mark> en el flujo del documento y refluye
+    // solo, no necesita registro.
+    if (item?.type !== 'epub') {
+      if (persistent && phraseText) {
+        const hex = color || '#fbbf24';
+        paintedCitationsRef.current = [
+          ...paintedCitationsRef.current.filter(e => e.phrase !== phraseText),
+          { phrase: phraseText, hex },
+        ];
+      } else if (!persistent) {
+        lastTtsHighlightRef.current = phraseText ? { phrase: phraseText, hex: color } : null;
+      }
+    }
     if (item?.type === 'epub') {
       highlightPhraseInEpub(phraseText, color, 3, persistent);
     } else {
@@ -1116,6 +1140,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       });
     } else {
       // Rectángulos persistentes del overlay nuevo.
+      paintedCitationsRef.current = [];
       document.querySelectorAll('.tts-hl-layer > div[data-persistent]').forEach(d => d.remove());
       // Limpieza legacy: citas antiguas que hubieran quedado con estilos
       // directamente sobre los spans del text layer (sistema anterior).
@@ -1129,6 +1154,31 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       });
     }
   }, [item?.type]);
+
+  // Al cambiar la escala del PDF los rects del overlay (píxeles absolutos)
+  // quedan corridos respecto al texto re-renderizado. Se espera a que el zoom
+  // se asiente (debounce: pinch/rueda disparan muchos cambios seguidos), se
+  // descartan los rects viejos y se repintan citas y frase actual del TTS
+  // desde los registros — sin scrollIntoView, para no mover el encuadre que
+  // el usuario está ajustando.
+  const handlePdfScaleChange = useCallback(() => {
+    if (scaleRepaintTimerRef.current) clearTimeout(scaleRepaintTimerRef.current);
+    scaleRepaintTimerRef.current = setTimeout(() => {
+      scaleRepaintTimerRef.current = null;
+      document.querySelectorAll('.tts-hl-layer > div').forEach(d => d.remove());
+      for (const entry of paintedCitationsRef.current) {
+        highlightPhraseInDOM(entry.phrase, entry.hex, true, 8, false);
+      }
+      const tts = lastTtsHighlightRef.current;
+      if (tts && ttsActiveRef.current) {
+        highlightPhraseInDOM(tts.phrase, tts.hex, false, 8, false);
+      }
+    }, 350);
+  }, [highlightPhraseInDOM]);
+
+  useEffect(() => () => {
+    if (scaleRepaintTimerRef.current) clearTimeout(scaleRepaintTimerRef.current);
+  }, []);
 
   // Crea una nota/cita a partir de la frase que el TTS está leyendo actualmente,
   // marcándola con el color elegido — sin abrir el panel de Anotaciones.
@@ -1928,49 +1978,58 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Arrastre del divisor con Pointer Events: el handle captura el puntero
+  // (setPointerCapture en onPointerDown) y tiene touch-action: none, así el
+  // navegador no convierte el gesto en scroll ni "suelta" el arrastre a mitad
+  // de camino en móvil (con mouse/touch events el scroll nativo secuestraba
+  // el gesto tras unos píxeles). Con la captura activa, los pointermove
+  // siguen llegando aunque el dedo pase por encima del PDF o del iframe EPUB.
   useEffect(() => {
-    const onMouseMove = (e: MouseEvent | TouchEvent) => {
+    const onPointerMove = (e: PointerEvent) => {
         if (!isDragging) return;
         const container = containerRef.current;
         if (!container) return;
         const rect = container.getBoundingClientRect();
-        
-        const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-        const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
 
         if (isPortrait) {
             // vertical split
-            const y = Math.max(0, Math.min(clientY - rect.top, rect.height));
+            const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
             const p = (y / rect.height) * 100;
             // if position is 'left' (which means top in portrait), Reader is at the top
             // actually let's say 'right' means Notes are at the bottom, so Reader is top
             setSplitRatio(notesPosition === 'right' ? p : 100 - p);
         } else {
             // horizontal split
-            const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+            const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
             const p = (x / rect.width) * 100;
             setSplitRatio(notesPosition === 'right' ? p : 100 - p);
         }
     };
-    const onMouseUp = () => setIsDragging(false);
-    
+    const onPointerUp = () => setIsDragging(false);
+
     if (isDragging) {
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('touchmove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
-        document.addEventListener('touchend', onMouseUp);
+        document.addEventListener('pointermove', onPointerMove);
+        document.addEventListener('pointerup', onPointerUp);
+        document.addEventListener('pointercancel', onPointerUp);
         document.body.style.userSelect = 'none'; // prevent text selection while dragging
     } else {
         document.body.style.userSelect = '';
     }
     return () => {
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('touchmove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
-        document.removeEventListener('touchend', onMouseUp);
+        document.removeEventListener('pointermove', onPointerMove);
+        document.removeEventListener('pointerup', onPointerUp);
+        document.removeEventListener('pointercancel', onPointerUp);
         document.body.style.userSelect = '';
     }
   }, [isDragging, notesPosition, isPortrait]);
+
+  const handleDividerPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    // Captura: todos los pointermove/up del gesto llegan a este elemento
+    // aunque el dedo salga de él (imprescindible para un handle de 6px).
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* navegadores viejos */ }
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
 
   // Handle controls disappearing when clicking the screen in fullscreen
   const handleScreenClick = (e: React.MouseEvent) => {
@@ -2089,7 +2148,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         onClick={handleScreenClick}
      >
         <div className="flex-1 overflow-hidden pointer-events-auto">
-          {activeType === 'pdf' && <PDFReader url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} controlsVisible={pageControlsVisible} outlineOpen={pdfOutlineOpen} onToggleOutline={() => setPdfOutlineOpen(v => !v)} generatedToc={item.generatedToc} onGenerateToc={handleGenerateToc} generatingToc={generatingToc} hideOwnBar={showTtsWidget} mergedBarPortalTarget={showTtsWidget ? mergedBarSlotEl : null} />}
+          {activeType === 'pdf' && <PDFReader url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} controlsVisible={pageControlsVisible} outlineOpen={pdfOutlineOpen} onToggleOutline={() => setPdfOutlineOpen(v => !v)} generatedToc={item.generatedToc} onGenerateToc={handleGenerateToc} generatingToc={generatingToc} hideOwnBar={showTtsWidget} mergedBarPortalTarget={showTtsWidget ? mergedBarSlotEl : null} onScaleChange={handlePdfScaleChange} />}
           {activeType === 'epub' && (
             <EPUBReader
               url={activeSource}
@@ -2333,7 +2392,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                        propia fila apilada debajo de los colores, no en este mismo scroll
                        lateral — antes todo iba en una sola fila con overflow-x-auto y
                        quedaba "escondido" a un slide de distancia). */}
-                   <div className="flex items-center justify-start sm:justify-center gap-1 sm:gap-2 overflow-x-auto no-scrollbar px-1 py-0.5 shrink-0 [&>button]:shrink-0">
+                   <div className={cn(
+                     "flex items-center justify-start sm:justify-center gap-1 sm:gap-2 overflow-x-auto no-scrollbar px-1 py-0.5 shrink-0 [&>button]:shrink-0",
+                     // En horizontal, la columna lateral de colores (w-16, absolute
+                     // left-0) tapa el inicio de esta fila: se reserva su ancho.
+                     isMobileLandscape && "pl-16"
+                   )}>
 
                       {/* En horizontal (tablet/desktop) el slot de paginación/zoom
                           fusionado sigue viviendo en esta misma fila, junto a los
@@ -2454,15 +2518,19 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           {/* Móvil horizontal: columna lateral fija de colores a la izquierda,
               fuera del recuadro del widget (como en la maqueta), para no robar
               ancho a la fila de controles cuando hay poco alto disponible. */}
+          {/* Ancho fijo w-16 (64px): la fila de controles del widget lleva
+              pl-16 en horizontal para empezar justo después de la columna,
+              sin que los círculos tapen la paginación. Los círculos (máx. 5)
+              se reparten el alto disponible con tamaño flexible (clamp). */}
           {showTtsWidget && isMobileLandscape && (
-             <div onClick={(e) => e.stopPropagation()} className="absolute top-0 left-0 bottom-0 z-40 flex flex-col items-center justify-center gap-4 px-3 bg-[var(--bg-card)]/95 backdrop-blur-md border-r border-[var(--border-card)]">
+             <div onClick={(e) => e.stopPropagation()} className="absolute top-0 left-0 bottom-0 z-40 w-16 flex flex-col items-center justify-evenly gap-2 py-2 px-2 bg-[var(--bg-card)]/95 backdrop-blur-md border-r border-[var(--border-card)]">
                 {activePalette.slice(0, 5).map((colorItem) => (
                    <button
                      key={colorItem.id}
                      disabled={currentPhraseIndex < 0 || phrases.length === 0}
                      onClick={(e) => { e.stopPropagation(); createNoteFromCurrentPhrase(colorItem.color, colorItem.hex); }}
                      style={{ backgroundColor: colorItem.hex }}
-                     className="w-14 h-14 rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-md cursor-pointer shrink-0"
+                     className="h-[clamp(1.75rem,10vh,3rem)] w-[clamp(1.75rem,10vh,3rem)] rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-md cursor-pointer shrink"
                      title={`Resaltar y anotar (${colorItem.name})`}
                    />
                 ))}
@@ -2806,9 +2874,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
              {showNotes && (
                  <>
                      <div 
-                         onMouseDown={() => setIsDragging(true)}
-                         onTouchStart={() => setIsDragging(true)}
-                         className={cn("z-20 hover:bg-[var(--primary)] transition-colors flex items-center justify-center shadow-lg active:bg-[var(--primary)] shrink-0", isPortrait ? "h-6 w-full cursor-row-resize bg-slate-200" : "w-6 h-full cursor-col-resize bg-slate-200")}
+                         onPointerDown={handleDividerPointerDown}
+                         className={cn("z-20 hover:bg-[var(--primary)] transition-colors flex items-center justify-center shadow-lg active:bg-[var(--primary)] shrink-0 touch-none", isPortrait ? "h-6 w-full cursor-row-resize bg-slate-200" : "w-6 h-full cursor-col-resize bg-slate-200")}
                      >
                          <div className={cn("bg-slate-400 rounded-full", isPortrait ? "w-8 h-1" : "h-8 w-1")} />
                      </div>
@@ -2822,9 +2889,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                  <>
                      <div style={notesPaneStyle} className="relative z-10 border-b md:border-b-0 md:border-r border-slate-200 shadow-2xl min-w-0 min-h-0">{renderNotes()}</div>
                      <div 
-                         onMouseDown={() => setIsDragging(true)}
-                         onTouchStart={() => setIsDragging(true)}
-                         className={cn("z-20 hover:bg-[var(--primary)] transition-colors flex items-center justify-center shadow-lg active:bg-[var(--primary)] shrink-0", isPortrait ? "h-6 w-full cursor-row-resize bg-slate-200" : "w-6 h-full cursor-col-resize bg-slate-200")}
+                         onPointerDown={handleDividerPointerDown}
+                         className={cn("z-20 hover:bg-[var(--primary)] transition-colors flex items-center justify-center shadow-lg active:bg-[var(--primary)] shrink-0 touch-none", isPortrait ? "h-6 w-full cursor-row-resize bg-slate-200" : "w-6 h-full cursor-col-resize bg-slate-200")}
                      >
                          <div className={cn("bg-slate-400 rounded-full", isPortrait ? "w-8 h-1" : "h-8 w-1")} />
                      </div>

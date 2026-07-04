@@ -2,9 +2,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ReactReader, ReactReaderStyle } from 'react-reader';
 import type { Rendition, Location as EpubLocation } from 'epubjs';
-import type { NavItem } from 'epubjs';
 import { get } from 'idb-keyval';
-import { List, ZoomIn, ZoomOut, ChevronLeft, ChevronDown, BookOpen, AlignJustify } from 'lucide-react';
+import { List, ZoomIn, ZoomOut, ChevronDown, BookOpen, AlignJustify, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface EPUBReaderProps {
@@ -65,19 +64,22 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
   const [location, setLocation] = useState<string | number>(0);
   const [actualUrl, setActualUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<boolean>(false);
-  const [toc, setToc] = useState<NavItem[]>([]);
-  const [showToc, setShowToc] = useState(false);
   const [fontSizeIndex, setFontSizeIndex] = useState(DEFAULT_FONT_SIZE_INDEX);
   const [manuallyHidden, setManuallyHidden] = useState(false);
   const [viewMode, setViewMode] = useState<EpubViewMode>(() => {
     const saved = typeof window !== 'undefined' ? window.localStorage.getItem(VIEW_MODE_STORAGE_KEY) : null;
     return saved === 'paginated' ? 'paginated' : 'scroll';
   });
-  // Progreso mostrado en la franja: página N/M en modo Páginas, % en modo Scroll.
+  // Progreso mostrado en la franja: página N/M (global, sobre todo el libro,
+  // calculado con book.locations) en modo Páginas, % en modo Scroll.
   const [pageProgress, setPageProgress] = useState<{ page: number; total: number } | null>(null);
   const [percentProgress, setPercentProgress] = useState<number | null>(null);
+  // true cuando book.locations.generate() terminó de recorrer TODO el libro:
+  // habilita el contador global de páginas y apaga la animación de carga.
+  const [locationsReady, setLocationsReady] = useState(false);
   const renditionRef = useRef<Rendition | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Espejo en ref para el listener de "relocated" (registrado una sola vez).
   const locationsReadyRef = useRef(false);
 
   const setViewModePersisted = useCallback((mode: EpubViewMode) => {
@@ -85,6 +87,7 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     setPageProgress(null);
     setPercentProgress(null);
     locationsReadyRef.current = false;
+    setLocationsReady(false);
     try { window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode); } catch { /* localStorage puede no estar disponible (modo privado) */ }
   }, []);
 
@@ -179,6 +182,11 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     const dy = e.touches[0].clientY - dragStartRef.current.y;
     // Gesto predominantemente vertical: es scroll/lectura normal, no swipe de página.
     if (Math.abs(dy) > Math.abs(dx) * 1.5 && Math.abs(dx) < 15) return;
+    // Gesto ya horizontal: cancelar el scroll nativo del iframe para que no
+    // secuestre el arrastre (requiere que el listener de touchmove esté
+    // registrado con passive: false — con passive: true el navegador se
+    // quedaba con el gesto y el swipe de página "no funcionaba").
+    if (Math.abs(dx) > 10 && e.cancelable) e.preventDefault();
     setDragOffset(dx);
   }, [viewMode]);
 
@@ -274,34 +282,39 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
       body: { padding: '0 4px !important', margin: '0 !important' },
       'p, div, section, article': { 'max-width': '100% !important' },
     });
-    rendition.book.loaded.navigation.then((nav) => setToc(nav.toc));
+    // Página global (sobre TODO el libro) a partir de book.locations. El
+    // displayed.page/total de epubjs es POR CAPÍTULO (en secciones cortas
+    // mostraba "1 / 1" como si el libro entero tuviera una página), así que
+    // el contador se calcula siempre contra las locations globales.
+    const updateGlobalPage = (cfi: string | undefined) => {
+      if (!locationsReadyRef.current || !cfi) return;
+      const locs = rendition.book.locations as any;
+      const totalRaw = typeof locs.length === 'function' ? locs.length() : locs.total;
+      const total = Number(totalRaw) || 0;
+      const idx = Number(locs.locationFromCfi(cfi));
+      if (total > 0 && Number.isFinite(idx) && idx >= 0) {
+        setPageProgress({ page: Math.min(idx + 1, total), total });
+      }
+      setPercentProgress(Math.round(rendition.book.locations.percentageFromCfi(cfi) * 100));
+    };
 
-    // book.locations.generate() necesita recorrer todo el libro una vez; se
-    // dispara en segundo plano sin bloquear la lectura. Habilita el % de
-    // progreso en modo Scroll (página/total real ya viene gratis del propio
-    // evento "relocated" en modo Páginas, sin necesitar locations).
+    // book.locations.generate() recorre todo el libro una vez (los EPUB no
+    // traen páginas fijas: hay que "paginar" el texto completo). Mientras
+    // corre, el visor muestra la animación de carga (ver overlay) y al
+    // terminar se habilitan el contador global N/M y el % de progreso.
     rendition.book.ready.then(() => rendition.book.locations.generate(1024)).then(() => {
       locationsReadyRef.current = true;
-      const current = rendition.location?.start?.cfi;
-      if (current) {
-        setPercentProgress(Math.round(rendition.book.locations.percentageFromCfi(current) * 100));
-      }
-    }).catch(() => { /* EPUB sin spine recorrible; deja el indicador vacío */ });
+      setLocationsReady(true);
+      updateGlobalPage(rendition.location?.start?.cfi);
+    }).catch(() => {
+      // EPUB sin spine recorrible: sin contador, pero no se deja la
+      // animación de carga puesta para siempre.
+      locationsReadyRef.current = true;
+      setLocationsReady(true);
+    });
 
     rendition.on('relocated', (loc: EpubLocation) => {
-      // Justo al abrir el libro, epubjs puede emitir "relocated" antes de que
-      // su paginación interna termine de calcularse: displayed.page/total
-      // llegan como valores no numéricos (se ha visto el string "!"), lo que
-      // mostraba "1 / !" en el contador. Se descartan valores inválidos en
-      // vez de mostrarlos — el contador simplemente espera al próximo evento
-      // ya estable, en lugar de enseñar un número incorrecto.
-      const displayed = loc?.start?.displayed;
-      if (displayed && Number.isFinite(displayed.page) && Number.isFinite(displayed.total) && displayed.total > 0) {
-        setPageProgress({ page: displayed.page, total: displayed.total });
-      }
-      if (locationsReadyRef.current && loc?.start?.cfi) {
-        setPercentProgress(Math.round(rendition.book.locations.percentageFromCfi(loc.start.cfi) * 100));
-      }
+      updateGlobalPage(loc?.start?.cfi);
       // El contenido de la nueva sección/página ya está listo: si había un
       // cambio de página en vuelo por gesto de swipe, se resuelve ahora (en
       // vez de esperar un tiempo fijo a ciegas que podía dejar la pantalla en
@@ -318,7 +331,9 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
       const doc = contents?.window?.document;
       if (!doc) return;
       doc.addEventListener('touchstart', pageGestureHandlersRef.current.onStart, { passive: true });
-      doc.addEventListener('touchmove', pageGestureHandlersRef.current.onMove, { passive: true });
+      // passive: false — el move debe poder llamar a preventDefault() cuando
+      // el gesto es horizontal, o el scroll nativo se queda con el arrastre.
+      doc.addEventListener('touchmove', pageGestureHandlersRef.current.onMove, { passive: false });
       doc.addEventListener('touchend', pageGestureHandlersRef.current.onEnd, { passive: true });
     });
 
@@ -329,11 +344,6 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     const clamped = Math.max(0, Math.min(FONT_SIZES.length - 1, index));
     setFontSizeIndex(clamped);
     renditionRef.current?.themes.fontSize(`${FONT_SIZES[clamped]}%`);
-  }, []);
-
-  const goToTocItem = useCallback((href: string) => {
-    renditionRef.current?.display(href);
-    setShowToc(false);
   }, []);
 
   // El layout paginado fija el ancho de columna en píxeles al montar; si el
@@ -394,30 +404,17 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
     };
   }, [url]);
 
-  // Contenido de índice/zoom de fuente — extraído para poder renderizarse
-  // tanto in-place (franja propia) como vía portal (fusionado en el widget
-  // TTS) sin duplicar JSX.
+  // Contenido de la franja — extraído para poder renderizarse tanto in-place
+  // (franja propia) como vía portal (fusionado en el widget TTS) sin duplicar
+  // JSX. Una sola línea: [libro/scroll] [página N / M] [zoom − % +].
+  // El índice vive únicamente en el botón "≡" de arriba (el integrado de
+  // react-reader); el panel de índice propio que se abría desde aquí se
+  // eliminó por duplicado.
   const renderBarControls = () => (
     <>
       <button
-        onClick={() => setShowToc(v => !v)}
-        className={cn(
-          "p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all",
-          showToc && "text-[var(--primary)] bg-[var(--primary)]/10"
-        )}
-        title={showToc ? "Cerrar índice" : "Índice"}
-      >
-        {/* Con el índice abierto, el ícono cambia a una flecha "‹" para
-            indicar que volver a tocarlo lo cierra (en vez de mantener el
-            mismo ícono de lista, que no comunicaba esa acción). */}
-        {showToc ? <ChevronLeft className="w-5 h-5" /> : <List className="w-5 h-5" />}
-      </button>
-
-      <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
-
-      <button
         onClick={() => setViewModePersisted(viewMode === 'paginated' ? 'scroll' : 'paginated')}
-        className="p-2.5 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+        className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
         title={viewMode === 'paginated' ? "Cambiar a vista de scroll continuo" : "Cambiar a vista de páginas"}
       >
         {viewMode === 'paginated' ? <BookOpen className="w-5 h-5" /> : <AlignJustify className="w-5 h-5" />}
@@ -425,13 +422,15 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
 
       <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
 
-      {viewMode === 'paginated' && pageProgress && (
+      {viewMode === 'paginated' && (
         <>
           {/* min-w reservado para hasta 4 dígitos por lado ("8888 / 8888"):
               sin esto, libros con cientos/miles de páginas hacían que el
               número empujara y se viera amontonado contra los botones vecinos. */}
-          <span className="text-xs font-mono font-semibold tabular-nums text-[var(--text-muted)] px-1 min-w-[78px] text-center shrink-0" title="Página actual">
-            {pageProgress.page} / {pageProgress.total}
+          <span className="text-xs font-mono font-semibold tabular-nums text-[var(--text-muted)] px-1 min-w-[78px] text-center shrink-0 inline-flex items-center justify-center" title="Página actual">
+            {locationsReady && pageProgress
+              ? <>{pageProgress.page} / {pageProgress.total}</>
+              : <Loader2 className="w-3.5 h-3.5 animate-spin" />}
           </span>
           <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
         </>
@@ -444,11 +443,6 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
           <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
         </>
       )}
-
-      {/* Fuerza el salto a una 2da línea en pantallas angostas (flex-wrap del
-          contenedor padre): el grupo de zoom queda siempre en su propia fila
-          en vez de comprimirse junto al resto con scroll horizontal. */}
-      <div className="w-full h-0 sm:hidden" />
 
       <div className="flex items-center gap-1">
         <button
@@ -470,23 +464,6 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
         </button>
       </div>
     </>
-  );
-
-  const renderTocItems = (items: NavItem[], depth = 0) => (
-    <ul className={cn(depth > 0 && "ml-3 border-l border-slate-200 pl-2")}>
-      {items.map((navItem) => (
-        <li key={navItem.id}>
-          <button
-            onClick={() => goToTocItem(navItem.href)}
-            className="block w-full text-left text-base md:text-sm text-slate-700 hover:text-[var(--primary)] py-2 md:py-1.5 px-1 rounded hover:bg-[var(--primary)]/5 transition-colors truncate"
-            title={navItem.label?.trim()}
-          >
-            {navItem.label?.trim()}
-          </button>
-          {navItem.subitems && navItem.subitems.length > 0 && renderTocItems(navItem.subitems, depth + 1)}
-        </li>
-      ))}
-    </ul>
   );
 
   return (
@@ -528,35 +505,12 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
                 />
               </div>
 
-              {/* Panel de Índice (TOC): overlay a pantalla completa por encima de
-                  cualquier otro contenido (incluido el reproductor TTS y el
-                  header del lector) en móvil, panel lateral en tablet/PC —
-                  mismo patrón que el outline del PDF. z-[60] (no z-50) para
-                  escapar del stacking context del panel del lector y quedar
-                  por encima del header (z-30) y la barra TTS (z-40). */}
-              {showToc && (
-                <div className="fixed inset-0 z-[60] flex">
-                  <div className="absolute inset-0 bg-black/30 md:hidden" onClick={() => setShowToc(false)} />
-                  {/* bg-white sólido (no bg-card, que es semitransparente por
-                      diseño en tarjetas normales): este panel se superpone al
-                      texto del documento y debe ser completamente opaco — antes
-                      se veía "transparente", con el texto de fondo calándose
-                      a través de la lista de capítulos. */}
-                  <div className="relative z-10 w-full md:w-72 h-full bg-white dark:bg-slate-900 border-r border-[var(--border-card)] shadow-2xl flex flex-col">
-                    <div className="p-4 border-b border-[var(--border-card)] bg-slate-50 dark:bg-slate-800 flex-none flex items-center justify-between">
-                      <h3 className="font-bold text-[var(--text-main)] text-sm flex items-center gap-2">
-                        <List className="w-4 h-4" /> Índice
-                      </h3>
-                      <button onClick={() => setShowToc(false)} className="text-[var(--text-muted)] hover:text-[var(--primary)] p-2 transition-colors">
-                        <ChevronLeft className="w-5 h-5" />
-                      </button>
-                    </div>
-                    <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
-                      {toc.length > 0 ? renderTocItems(toc) : (
-                        <p className="text-sm text-slate-400 text-center mt-4">Este libro no tiene índice.</p>
-                      )}
-                    </div>
-                  </div>
+              {/* Animación de carga mientras book.locations.generate() recorre
+                  todo el libro para la paginación global del modo Páginas. */}
+              {viewMode === 'paginated' && !locationsReady && (
+                <div className="absolute inset-0 z-20 bg-white/85 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="w-9 h-9 animate-spin text-[var(--primary)]" />
+                  <p className="text-sm font-medium text-[var(--text-muted)]">Preparando páginas…</p>
                 </div>
               )}
             </div>
@@ -567,12 +521,10 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
             {!hideOwnBar && (
               <div className={cn(
                 "shrink-0 w-full flex flex-col items-center bg-[var(--bg-card)] border-t border-[var(--border-card)] transition-all duration-300 overflow-hidden",
-                // En móvil los controles pueden partirse en 2 líneas (flex-wrap
-                // más abajo) + la manija de arrastre arriba: max-h-24 (96px) no
-                // dejaba espacio suficiente y la segunda línea quedaba cortada
-                // por el overflow-hidden. max-h-32 (128px) cubre manija + 2
-                // líneas de botones con margen. En sm: sigue en una sola fila.
-                (controlsVisible && !manuallyHidden) ? "max-h-32 sm:max-h-12" : "max-h-[14px]"
+                // Sin el botón de índice ni el salto de línea del zoom, los
+                // controles caben en UNA sola fila también en móvil: manija +
+                // fila de botones entran en max-h-12.
+                (controlsVisible && !manuallyHidden) ? "max-h-16" : "max-h-[14px]"
               )}>
                 {/* Manija: tap reabre si está colapsada; arrastrar hacia abajo
                     colapsa, hacia arriba reabre. */}
@@ -586,10 +538,10 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
                   <div className="w-10 h-1 rounded-full bg-[var(--text-muted)]/40" />
                 </div>
 
-                {/* En pantallas angostas (vertical) los controles se parten en
-                    2 líneas (flex-wrap) en vez de forzar scroll horizontal —
-                    en pantallas anchas (sm:) siguen en una sola fila. */}
-                <div className="flex items-center justify-center flex-wrap sm:flex-nowrap gap-2 px-3 sm:px-4 pb-1.5 w-full text-[var(--text-main)] sm:whitespace-nowrap sm:overflow-x-auto no-scrollbar">
+                {/* Una sola línea siempre: [libro/scroll] [página] [zoom]. Si en
+                    una pantalla muy angosta no cupiera, scrollea lateralmente
+                    en vez de partirse en dos líneas. */}
+                <div className="flex items-center justify-center flex-nowrap gap-1.5 sm:gap-2 px-2 sm:px-4 pb-1.5 w-full text-[var(--text-main)] whitespace-nowrap overflow-x-auto no-scrollbar">
                   {renderBarControls()}
                   <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
                   <button

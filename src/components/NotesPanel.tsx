@@ -65,6 +65,19 @@ export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, 
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
+  // Ancho real del panel (no de la ventana): en móvil horizontal el panel
+  // puede quedar muy angosto y el placeholder largo del textarea se envuelve
+  // y se ve cortado — bajo el umbral se usa un placeholder corto.
+  const footerRef = useRef<HTMLDivElement>(null);
+  const [isNarrowPane, setIsNarrowPane] = useState(false);
+  useEffect(() => {
+    const el = footerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => setIsNarrowPane(el.clientWidth < 300));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   // Grabación de notas de voz.
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessingAudio, setIsProcessingAudio] = useState(false);
@@ -383,7 +396,7 @@ export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, 
          <div ref={notesEndRef} className="h-4" />
       </div>
 
-      <div className="p-2.5 sm:p-3 border-t border-slate-100 bg-[#fdfdfd] shrink-0 shadow-[0_-10px_20px_-10px_rgba(0,0,0,0.05)] relative z-20">
+      <div ref={footerRef} className="p-2.5 sm:p-3 border-t border-slate-100 bg-[#fdfdfd] shrink-0 shadow-[0_-10px_20px_-10px_rgba(0,0,0,0.05)] relative z-20">
          {audioError && (
            <div className="mb-2 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5">
              {audioError}
@@ -405,9 +418,9 @@ export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, 
            <textarea
              value={editorContent}
              onChange={e => setEditorContent(e.target.value)}
-             placeholder="Escribe una nota…"
+             placeholder={isNarrowPane ? "Nota…" : "Escribe una nota…"}
              rows={isCompact ? 1 : 2}
-             className="flex-1 bg-slate-50 border border-slate-200 rounded-2xl px-3.5 py-2.5 text-sm focus:border-[#00558F] focus:ring-1 focus:ring-[#00558F] focus:bg-white transition-all resize-none shadow-sm no-scrollbar max-h-32"
+             className="flex-1 min-w-0 bg-slate-50 border border-slate-200 rounded-2xl px-3.5 py-2.5 text-sm focus:border-[#00558F] focus:ring-1 focus:ring-[#00558F] focus:bg-white transition-all resize-none shadow-sm no-scrollbar max-h-32"
            />
            {/* Botón de nota de voz */}
            <button
