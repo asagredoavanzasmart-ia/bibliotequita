@@ -2905,7 +2905,18 @@ SECCIÓN guia_de_aprendizaje:
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath, { maxAge: "1d", index: false }));
+    app.use(express.static(distPath, {
+      maxAge: "1d",
+      index: false,
+      // El Service Worker y el manifest de la PWA NO deben cachearse 1 día:
+      // el navegador debe poder detectar versiones nuevas de la app enseguida
+      // (con caché largo, los usuarios quedarían pegados al build anterior).
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith("sw.js") || filePath.endsWith(".webmanifest") || filePath.endsWith("registerSW.js")) {
+          res.setHeader("Cache-Control", "no-cache");
+        }
+      },
+    }));
     app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });

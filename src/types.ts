@@ -99,6 +99,7 @@ export interface BookItem {
   ownedPhysical?: boolean;
   ownedDigital?: boolean;
   pinned?: boolean;             // Aparece en la vista "Destacados" (chincheta)
+  offlineAvailable?: boolean;   // El archivo está descargado en el dispositivo (caché 'offline-books')
   favorite?: boolean;           // Aparece en la vista "Favoritos" (estrella)
   toRead?: boolean;             // Aparece en la vista "Por Leer" (reloj de arena)
   subject?: string;

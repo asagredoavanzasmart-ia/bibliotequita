@@ -364,6 +364,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const paintedCitationsRef = useRef<{ phrase: string; hex: string }[]>([]);
   const lastTtsHighlightRef = useRef<{ phrase: string; hex?: string } | null>(null);
   const scaleRepaintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Utterance en curso de la voz LOCAL del navegador (speechSynthesis) — el
+  // respaldo sin conexión del TTS. null = se está usando la voz del servidor.
+  const browserUtterRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   // Texto visible en los iframes internos de la rendition de epubjs (vista
   // de página única o doble — concatena todas las páginas activas).
@@ -1219,6 +1222,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       epubHighlightRetryRef.current = null;
     }
     ttsStepTargetRef.current = null;
+    // Cortar la voz local del navegador si era la que estaba sonando.
+    // (El ref se anula ANTES de cancel() para que su onend no encadene nada.)
+    if (browserUtterRef.current) {
+      browserUtterRef.current = null;
+      window.speechSynthesis?.cancel();
+    }
     if (currentAudio) {
       currentAudio.onended = null;
       currentAudio.onerror = null;
@@ -1240,6 +1249,62 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       navigator.mediaSession.playbackState = 'none';
     }
   }, [currentAudio, highlightCurrentPhrase]);
+
+  // Voz LOCAL del navegador (Web Speech API) — respaldo sin conexión.
+  // Mismo modelo que los lectores offline (p. ej. ReadEra): la app no genera
+  // el audio, se lo delega al motor de voz que ya vive en el dispositivo.
+  // Se usa automáticamente cuando no hay red (o el servidor TTS es
+  // inalcanzable), manteniendo el mismo flujo: resaltado de la frase,
+  // encadenado a la siguiente y avance de página al terminar.
+  // Devuelve false si el navegador no tiene síntesis de voz disponible.
+  const speakWithBrowserVoice = useCallback((index: number, phraseList: string[]): boolean => {
+    const synth = window.speechSynthesis;
+    if (!synth) return false;
+
+    // Reemplaza cualquier utterance previa (ref a null primero: su onend no
+    // debe encadenar la frase siguiente al ser cancelada).
+    browserUtterRef.current = null;
+    synth.cancel();
+
+    const utter = new SpeechSynthesisUtterance(phraseList[index]);
+    const voices = synth.getVoices();
+    const esVoice =
+      voices.find(v => v.localService && v.lang?.toLowerCase().startsWith('es')) ||
+      voices.find(v => v.lang?.toLowerCase().startsWith('es')) ||
+      null;
+    if (esVoice) utter.voice = esVoice;
+    utter.lang = esVoice?.lang || 'es-ES';
+
+    utter.onend = () => {
+      if (browserUtterRef.current !== utter) return; // cancelada/reemplazada
+      browserUtterRef.current = null;
+      const nextIndex = index + 1;
+      if (nextIndex < phraseList.length) {
+        playPhraseRef.current?.(nextIndex, phraseList);
+      } else if (ttsTextSource === 'page' && ttsActiveRef.current) {
+        handleTtsNextPageRef.current?.();
+      } else {
+        handleTtsStop();
+      }
+    };
+    utter.onerror = (e) => {
+      if (browserUtterRef.current !== utter) return;
+      // 'canceled'/'interrupted' = detención intencional, no un error real.
+      if (e.error === 'canceled' || e.error === 'interrupted') return;
+      browserUtterRef.current = null;
+      setTtsStatus('error');
+      setTtsErrorMessage('La voz local del navegador falló en esta frase.');
+    };
+
+    browserUtterRef.current = utter;
+    setCurrentAudio(null);
+    synth.speak(utter);
+    setTtsStatus('playing');
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = 'playing';
+    }
+    return true;
+  }, [ttsTextSource, handleTtsStop]);
 
   // Reproducción paso a paso frase por frase con pre-fetching asíncrono y resiliencia a errores.
   //
@@ -1295,6 +1360,18 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       currentAudio.onerror = null;
       currentAudio.pause();
       currentAudio.src = '';
+    }
+    // Si la frase anterior sonó con la voz local, cortarla antes de decidir
+    // la ruta de esta (ref a null primero: su onend no debe encadenar nada).
+    if (browserUtterRef.current) {
+      browserUtterRef.current = null;
+      window.speechSynthesis?.cancel();
+    }
+
+    // SIN CONEXIÓN: no hay red para pedir la voz del servidor — usar la voz
+    // local del navegador y seguir la lectura sin interrupción.
+    if (!navigator.onLine && speakWithBrowserVoice(index, phraseList)) {
+      return;
     }
 
     try {
@@ -1473,11 +1550,16 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     } catch (error: any) {
       // AbortError ocurre al cambiar proveedor/modelo — no es un error real
       if (error?.name === 'AbortError') return;
+      // Fallo de RED (servidor caído / conexión perdida a mitad de sesión):
+      // caer a la voz local del navegador en vez de matar la lectura.
+      if ((error instanceof TypeError || !navigator.onLine) && speakWithBrowserVoice(index, phraseList)) {
+        return;
+      }
       console.error('Error in playPhrase:', error);
       setTtsStatus('error');
       setTtsErrorMessage(error.message || 'No se pudo reproducir la frase actual.');
     }
-  }, [currentAudio, item, currentPage, selectedVoice, selectedProvider, selectedModel, highlightCurrentPhrase, handleTtsStop, ttsTextSource, saveTtsPosition]);
+  }, [currentAudio, item, currentPage, selectedVoice, selectedProvider, selectedModel, highlightCurrentPhrase, handleTtsStop, ttsTextSource, saveTtsPosition, speakWithBrowserVoice]);
 
   // Mantener el ref siempre apuntando a la versión más reciente de playPhrase
   playPhraseRef.current = playPhrase;
@@ -1636,6 +1718,22 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   // Play / Pausa general
   const handleTtsPlayPause = async () => {
+    // Voz local del navegador (modo sin conexión): pausa/reanuda con la API
+    // de speechSynthesis — currentAudio es null en esa ruta.
+    if (browserUtterRef.current && (ttsStatus === 'playing' || ttsStatus === 'paused')) {
+      if (ttsStatus === 'playing') {
+        window.speechSynthesis?.pause();
+        setTtsStatus('paused');
+      } else {
+        window.speechSynthesis?.resume();
+        setTtsStatus('playing');
+      }
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = ttsStatus === 'playing' ? 'paused' : 'playing';
+      }
+      return;
+    }
+
     if (ttsStatus === 'playing' && currentAudio) {
       currentAudio.pause();
       setTtsStatus('paused');

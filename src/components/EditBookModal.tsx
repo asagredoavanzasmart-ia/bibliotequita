@@ -1,7 +1,8 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { BookItem, PlaylistData, StageData } from '../types';
-import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag, Download, Camera } from 'lucide-react';
+import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag, Download, Camera, WifiOff, Loader2 } from 'lucide-react';
+import { bookOfflineUrls, downloadBookOffline, removeBookOffline, isBookOffline, offlineSupported } from '../lib/offlineBooks';
 import { ImageCropModal } from './ImageCropModal';
 import { cn, colorSwatchProps } from '../lib/utils';
 import { useLibrary } from '../hooks/useLibrary';
@@ -24,7 +25,7 @@ interface EditBookModalProps {
 }
 
 export function EditBookModal({ item, onClose, onSave, inline = false }: EditBookModalProps) {
-  const { playlists, categories, stages, addCategory, addPlaylist, deleteItem, items, tags: allTags, addTag: createGlobalTag } = useLibrary();
+  const { playlists, categories, stages, addCategory, addPlaylist, deleteItem, items, tags: allTags, addTag: createGlobalTag, updateItem } = useLibrary();
 
   
   const [title, setTitle] = useState(item.title || '');
@@ -105,6 +106,48 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [showNewPlaylist, setShowNewPlaylist] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  // ---- Modo sin conexión (pestaña ⓘ) -------------------------------------
+  // Descarga los archivos del libro al caché 'offline-books' del dispositivo;
+  // el Service Worker los sirve desde ahí cuando no hay internet.
+  // Se persiste con updateItem directamente (NO con onSave: en el modo inline
+  // el onSave del padre además cierra la pestaña y volvería al lector).
+  const offlineUrls = useMemo(
+    () => bookOfflineUrls({ pdfSource, epubSource, source: item.source, thumbnailUrl: item.thumbnailUrl }),
+    [pdfSource, epubSource, item.source, item.thumbnailUrl]
+  );
+  const [offlineOn, setOfflineOn] = useState(!!item.offlineAvailable);
+  const [offlineProgress, setOfflineProgress] = useState<number | null>(null);
+  const [offlineError, setOfflineError] = useState('');
+
+  // El flag guardado puede quedar desfasado del caché real (el navegador puede
+  // vaciarlo, u otro dispositivo marcó la descarga): al abrir se verifica.
+  useEffect(() => {
+    let active = true;
+    isBookOffline(offlineUrls).then((ok) => { if (active) setOfflineOn(ok); });
+    return () => { active = false; };
+  }, [offlineUrls]);
+
+  const handleToggleOffline = async () => {
+    if (offlineProgress !== null) return; // descarga en curso
+    setOfflineError('');
+    try {
+      if (offlineOn) {
+        await removeBookOffline(offlineUrls);
+        setOfflineOn(false);
+        updateItem(item.id, { offlineAvailable: false });
+      } else {
+        setOfflineProgress(0);
+        await downloadBookOffline(offlineUrls, setOfflineProgress);
+        setOfflineOn(true);
+        updateItem(item.id, { offlineAvailable: true });
+      }
+    } catch (err: any) {
+      setOfflineError(err?.message || 'No se pudo completar la operación.');
+    } finally {
+      setOfflineProgress(null);
+    }
+  };
 
   const handleSave = () => {
     // La fuente "principal" (source/type) se deriva para retrocompatibilidad:
@@ -578,6 +621,62 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                      <input type="file" ref={epubInputRef} onChange={(e) => handleSlotUpload(e, 'epub')} accept=".epub" className="hidden" />
                   </div>
                </div>
+
+               {/* Modo sin conexión: descarga el archivo al dispositivo para
+                   abrirlo y escucharlo sin internet. Solo aplica a archivos
+                   subidos al servidor (/api/files/...). */}
+               {offlineSupported() && (
+                  <div className={cn(
+                     'rounded-xl border p-3 flex flex-col gap-2 transition-colors',
+                     offlineOn ? 'bg-sky-50 border-sky-300' : 'bg-[var(--bg-card)] border-slate-200'
+                  )}>
+                     <div className="flex items-center justify-between gap-2">
+                        <span className="flex items-center gap-2 text-xs font-bold text-[var(--text-main)]">
+                           <WifiOff className={cn('w-4 h-4 shrink-0', offlineOn ? 'text-sky-600' : 'text-slate-400')} />
+                           Leer sin conexión
+                        </span>
+                        {offlineProgress !== null ? (
+                           <Loader2 className="w-5 h-5 animate-spin text-sky-600 shrink-0" />
+                        ) : (
+                           <button
+                              type="button"
+                              onClick={handleToggleOffline}
+                              disabled={offlineUrls.length === 0}
+                              title={offlineOn ? 'Quitar la descarga del dispositivo' : 'Descargar al dispositivo'}
+                              className={cn(
+                                 'relative w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed',
+                                 offlineOn ? 'bg-sky-500' : 'bg-slate-300'
+                              )}
+                           >
+                              <span className={cn(
+                                 'absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all',
+                                 offlineOn ? 'left-[22px]' : 'left-0.5'
+                              )} />
+                           </button>
+                        )}
+                     </div>
+                     {offlineProgress !== null && (
+                        <div className="flex items-center gap-2">
+                           <div className="flex-1 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                              <div className="h-full bg-sky-500 rounded-full transition-all" style={{ width: `${offlineProgress}%` }} />
+                           </div>
+                           <span className="text-[10px] font-bold text-sky-700 tabular-nums shrink-0">{offlineProgress}%</span>
+                        </div>
+                     )}
+                     <p className="text-[10px] leading-snug text-slate-500">
+                        {offlineUrls.length === 0
+                           ? 'Sube un PDF o EPUB al servidor para poder descargarlo al dispositivo.'
+                           : offlineProgress !== null
+                              ? 'Descargando el libro al dispositivo…'
+                              : offlineOn
+                                 ? 'Descargado: este libro se puede abrir y leer sin internet en este dispositivo.'
+                                 : 'Descarga el archivo al dispositivo para abrirlo y escucharlo sin internet.'}
+                     </p>
+                     {offlineError && (
+                        <p className="text-[10px] font-medium text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1">{offlineError}</p>
+                     )}
+                  </div>
+               )}
 
                {/* Enlace externo / TXT. Los formatos PDF y EPUB ya tienen su
                    propio slot independiente arriba — este bloque solo debe
