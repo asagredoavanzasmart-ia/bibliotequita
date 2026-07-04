@@ -11,10 +11,20 @@ export default defineConfig(() => {
       tailwindcss(),
       // PWA: la app se instala en el teléfono y abre SIN conexión.
       // - precache: el shell completo (JS/CSS/HTML) queda en el dispositivo.
-      // - /api/files/* (los archivos de libro): CacheFirst contra el caché
-      //   'offline-books' — el MISMO caché donde el botón "Leer sin conexión"
-      //   (pestaña ⓘ) guarda la descarga explícita. rangeRequests sirve las
-      //   peticiones parciales de pdf.js desde la respuesta completa cacheada.
+      // - /api/files/* (los archivos de libro): NetworkFirst contra
+      //   'offline-books' CON ESCRITURA DESACTIVADA (cacheWillUpdate → null).
+      //   Con red: siempre pide el archivo al servidor (comportamiento normal
+      //   de lectura), y JAMÁS lo guarda por su cuenta. Sin red: cae a lo que
+      //   ya hubiera en el caché — que solo puede haber llegado ahí por
+      //   downloadBookOffline() (src/lib/offlineBooks.ts), la única función
+      //   que escribe, disparada por el interruptor "Leer sin conexión" de la
+      //   pestaña ⓘ. Antes esta regla era CacheFirst: Workbox cacheaba en
+      //   segundo plano CUALQUIER libro con solo abrirlo para leer, y el
+      //   interruptor terminaba apareciendo activado en todos los libros sin
+      //   que el usuario lo pidiera — ese fue el bug reportado. (CacheOnly no
+      //   sirve aquí: al no encontrar la entrada lanza un error de red en vez
+      //   de dejar pasar la petición normal, rompiendo la lectura con red de
+      //   cualquier libro no descargado.)
       // - /api/library*: NetworkFirst — con red usa el servidor; sin red
       //   muestra la última biblioteca conocida (sin esto, la app abriría
       //   offline pero con la biblioteca vacía y ningún libro que abrir).
@@ -47,11 +57,17 @@ export default defineConfig(() => {
           runtimeCaching: [
             {
               urlPattern: ({url}) => url.pathname.startsWith('/api/files/'),
-              handler: 'CacheFirst',
+              handler: 'NetworkFirst',
               options: {
                 cacheName: 'offline-books',
-                rangeRequests: true,
-                cacheableResponse: {statuses: [200]},
+                // Sin networkTimeoutSeconds a propósito: los archivos de
+                // libro pueden pesar decenas de MB — con un timeout corto,
+                // una red buena pero lenta caería al caché antes de tiempo.
+                // Solo debe usarse el caché cuando la red falla de verdad.
+                // null → Workbox nunca escribe la respuesta de red en el
+                // caché. Es justo lo que se necesita: leer con red no debe
+                // "descargar" nada; solo downloadBookOffline() escribe aquí.
+                plugins: [{cacheWillUpdate: async () => null}],
               },
             },
             {

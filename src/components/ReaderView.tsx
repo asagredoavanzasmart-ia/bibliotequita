@@ -367,6 +367,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Utterance en curso de la voz LOCAL del navegador (speechSynthesis) — el
   // respaldo sin conexión del TTS. null = se está usando la voz del servidor.
   const browserUtterRef = useRef<SpeechSynthesisUtterance | null>(null);
+  // Última página pedida a startReadingPdfPage: invalida reintentos en vuelo
+  // de una llamada anterior si el usuario cambia de página varias veces seguidas.
+  const pdfPageStartTokenRef = useRef<number | null>(null);
 
   // Texto visible en los iframes internos de la rendition de epubjs (vista
   // de página única o doble — concatena todas las páginas activas).
@@ -928,10 +931,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         } catch { /* el nodo pudo mutar entre la extracción y el pintado */ }
       }
       if (firstDiv) {
-        // 'nearest': solo desplaza lo mínimo para que la frase entre en vista.
-        // En repintados (p. ej. tras un cambio de zoom) no se desplaza nada:
-        // el usuario está justamente ajustando su encuadre.
-        if (scrollToMatch) firstDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        // 'center': la frase leída siempre queda centrada en el área visible
+        // (no solo "al ras" cuando se sale de pantalla), en una posición
+        // predecible para seguir la lectura. En repintados (p. ej. tras un
+        // cambio de zoom) no se desplaza nada: el usuario está justamente
+        // ajustando su encuadre.
+        if (scrollToMatch) firstDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
         highlightedAny = true;
       }
       if (highlightedAny) break;
@@ -1055,22 +1060,15 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               const iframeRect = iframeEl.getBoundingClientRect();
               const containerRect = scrollContainer.getBoundingClientRect();
               const markTop = iframeRect.top + markRect.top;
-              const markBottom = markTop + markRect.height;
-              // Igual que 'nearest' en scrollIntoView: si la frase ya está
-              // dentro del área visible del contenedor, no se mueve nada. Solo
-              // si queda por encima o por debajo se desplaza lo justo para que
-              // su borde más cercano quede al ras del viewport — nunca se
-              // fuerza al centro (eso producía un salto grande en cada Play
-              // aunque el texto ya estuviera a la vista).
-              let delta = 0;
-              if (markTop < containerRect.top) {
-                delta = markTop - containerRect.top;
-              } else if (markBottom > containerRect.bottom) {
-                delta = markBottom - containerRect.bottom;
-              }
-              if (delta !== 0) scrollContainer.scrollBy({ top: delta, behavior: 'smooth' });
+              const markCenter = markTop + markRect.height / 2;
+              const containerCenter = containerRect.top + containerRect.height / 2;
+              // Siempre centrado en el área visible del contenedor (no solo
+              // "al ras" cuando se sale) para que la frase leída quede en una
+              // posición predecible, ni pegada arriba ni abajo de la pantalla.
+              const delta = markCenter - containerCenter;
+              if (Math.abs(delta) > 1) scrollContainer.scrollBy({ top: delta, behavior: 'smooth' });
             } else {
-              mark.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
             highlightedAny = true;
           }
@@ -1653,6 +1651,36 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // segmentación punto-a-punto y el resaltado se degradaban por completo
   // (frases cortadas en abreviaturas, números de página leídos, resaltado
   // que no coincidía con el texto de la página).
+  // Extrae y arranca la lectura de `newPage`, reintentando si la página
+  // todavía no terminó de montarse en el DOM (virtualización de PDFReader:
+  // el <Page> real tarda un poco en aparecer tras cambiar renderRange). Antes
+  // se esperaba un único timeout fijo de 800ms y, si la extracción salía
+  // vacía justo en ese instante (PDF pesado, página con imágenes, dispositivo
+  // lento), la sesión se cortaba en silencio — como handleTtsStop ya había
+  // puesto ttsActiveRef en false, el audio simplemente se detenía y, al
+  // volver a pulsar Play, releía la página en la que el scroll se hubiera
+  // quedado, dando la sensación de "vuelve al inicio de la página".
+  const startReadingPdfPage = useCallback(async (newPage: number, retriesLeft: number = 6) => {
+    // Invalida reintentos obsoletos si mientras tanto se pidió otra página
+    // (el usuario pulsó "siguiente/anterior" varias veces seguidas).
+    pdfPageStartTokenRef.current = newPage;
+    const token = newPage;
+    const text = getPdfPageStructuredText(newPage) || await getPageTextWithOcrFallback(newPage);
+    if (pdfPageStartTokenRef.current !== token) return;
+    const phraseList = splitIntoPhrases(text);
+    if (phraseList.length > 0) {
+      setPhrases(phraseList);
+      setTtsTextSource('page');
+      playPhrase(0, phraseList, true);
+      return;
+    }
+    if (retriesLeft > 0) {
+      setTimeout(() => {
+        if (pdfPageStartTokenRef.current === token) startReadingPdfPage(newPage, retriesLeft - 1);
+      }, 300);
+    }
+  }, [getPdfPageStructuredText, getPageTextWithOcrFallback, splitIntoPhrases, playPhrase]);
+
   const handleTtsPrevPage = useCallback(async () => {
     handleTtsStop();
     if (item?.type === 'epub') {
@@ -1672,16 +1700,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     const newPage = page - 1;
     setTargetPage({ page: newPage, t: Date.now() });
     setCurrentPage(newPage);
-    setTimeout(async () => {
-      const text = getPdfPageStructuredText(newPage) || await getPageTextWithOcrFallback(newPage);
-      const phraseList = splitIntoPhrases(text);
-      if (phraseList.length > 0) {
-        setPhrases(phraseList);
-        setTtsTextSource('page');
-        playPhrase(0, phraseList, true);
-      }
-    }, 800);
-  }, [currentPage, item?.type, handleTtsStop, playPhrase, getPdfPageStructuredText, getPageTextWithOcrFallback, getEpubVisibleText, waitForEpubRelocated, splitIntoPhrases]);
+    setTimeout(() => startReadingPdfPage(newPage), 800);
+  }, [currentPage, item?.type, handleTtsStop, playPhrase, startReadingPdfPage, getEpubVisibleText, waitForEpubRelocated, splitIntoPhrases]);
 
   const handleTtsNextPage = useCallback(async () => {
     handleTtsStop();
@@ -1702,16 +1722,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     const newPage = page + 1;
     setTargetPage({ page: newPage, t: Date.now() });
     setCurrentPage(newPage);
-    setTimeout(async () => {
-      const text = getPdfPageStructuredText(newPage) || await getPageTextWithOcrFallback(newPage);
-      const phraseList = splitIntoPhrases(text);
-      if (phraseList.length > 0) {
-        setPhrases(phraseList);
-        setTtsTextSource('page');
-        playPhrase(0, phraseList, true);
-      }
-    }, 800);
-  }, [currentPage, totalPages, item?.type, handleTtsStop, playPhrase, getPdfPageStructuredText, getPageTextWithOcrFallback, getEpubVisibleText, waitForEpubRelocated, splitIntoPhrases]);
+    setTimeout(() => startReadingPdfPage(newPage), 800);
+  }, [currentPage, totalPages, item?.type, handleTtsStop, playPhrase, startReadingPdfPage, getEpubVisibleText, waitForEpubRelocated, splitIntoPhrases]);
 
   // Ref estable para encadenar el avance de página desde onended sin closures stale.
   handleTtsNextPageRef.current = handleTtsNextPage;
