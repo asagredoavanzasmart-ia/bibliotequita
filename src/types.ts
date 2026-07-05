@@ -100,6 +100,8 @@ export interface BookItem {
   ownedDigital?: boolean;
   pinned?: boolean;             // Aparece en la vista "Destacados" (chincheta)
   offlineAvailable?: boolean;   // El archivo está descargado en el dispositivo (caché 'offline-books')
+  collectionName?: string;      // Serie/saga/colección a la que pertenece (los miembros se muestran juntos)
+  collectionVolume?: string;    // Volumen/tomo dentro de la colección (texto libre: "1", "2.5", "III")
   favorite?: boolean;           // Aparece en la vista "Favoritos" (estrella)
   toRead?: boolean;             // Aparece en la vista "Por Leer" (reloj de arena)
   subject?: string;

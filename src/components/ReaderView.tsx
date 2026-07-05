@@ -2625,6 +2625,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                {ttsErrorMessage}
                             </div>
                          )}
+
+                         {/* Sello de build: verifica en el dispositivo qué versión
+                             corre realmente (diagnóstico de despliegues/caché PWA). */}
+                         <p className="text-[9px] text-right text-[var(--text-muted)]/50 select-all">build {__BUILD_TAG__}</p>
                       </div>
                    )}
 

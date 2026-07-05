@@ -457,7 +457,29 @@ export function BookGrid({ category, viewMode, sortBy, stageFilter, playlistFilt
       return 0;
     });
 
-    return result;
+    // Colecciones/sagas: los miembros de una misma colección se muestran
+    // SIEMPRE juntos, anclados a la posición del primero según el orden
+    // vigente y ordenados entre sí por volumen. Excepción: un miembro
+    // fijado con pin se destaca por su cuenta al inicio (el pin gana) y no
+    // arrastra al resto de la colección.
+    const volNum = (v: string | undefined) => {
+      const n = parseFloat(String(v ?? '').replace(',', '.'));
+      return Number.isFinite(n) ? n : Infinity;
+    };
+    const collectionKey = (i: BookItem) => (i.collectionName || '').trim().toLowerCase();
+    const grouped: BookItem[] = [];
+    const emittedCollections = new Set<string>();
+    for (const it of result) {
+      const key = collectionKey(it);
+      if (!key || it.pinned) { grouped.push(it); continue; }
+      if (emittedCollections.has(key)) continue; // ya salió junto a su colección
+      emittedCollections.add(key);
+      const members = result.filter(x => !x.pinned && collectionKey(x) === key);
+      members.sort((a, b) => volNum(a.collectionVolume) - volNum(b.collectionVolume));
+      grouped.push(...members);
+    }
+
+    return grouped;
   }, [items, category, stageFilter, playlistFilter, sortBy, filters, searchQuery]);
 
   if (filteredItems.length === 0) {

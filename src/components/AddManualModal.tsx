@@ -97,6 +97,13 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
   const [newCategoryName, setNewCategoryName] = useState('');
   const [showNewCategory, setShowNewCategory] = useState(false);
 
+  // Colección/Saga: el switch habilita nombre + volumen. En la biblioteca,
+  // los miembros de una misma colección se muestran siempre juntos (ver
+  // agrupado en BookGrid), salvo el que esté fijado con pin.
+  const [collectionOn, setCollectionOn] = useState(false);
+  const [collectionName, setCollectionName] = useState('');
+  const [collectionVolume, setCollectionVolume] = useState('');
+
   // Estado local = IDs de TagData asignados a este libro (no nombres).
   const [tagIds, setTagIds] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState('');
@@ -487,7 +494,9 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       ownedDigital: formData.ownedDigital,
       toBuy: formData.toBuy,
       progress: 0,   // todo libro importado empieza en 0% de lectura
-      tags: tagIds
+      tags: tagIds,
+      collectionName: collectionOn && collectionName.trim() ? collectionName.trim() : undefined,
+      collectionVolume: collectionOn && collectionVolume.trim() ? collectionVolume.trim() : undefined,
     });
   };
 
@@ -666,6 +675,42 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
                          {formData.toBuy && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                       </button>
                    </div>
+                </div>
+
+                {/* Colección / Saga: switch que habilita nombre + volumen. Los
+                    miembros de una misma colección se muestran juntos en la
+                    biblioteca (ordenados por volumen), salvo el fijado con pin. */}
+                <div className="pt-3 border-t border-slate-200/50 w-full">
+                   <div className="flex items-center justify-between gap-2">
+                      <label className="text-[11px] font-semibold text-[var(--text-muted)]">Colección / Saga</label>
+                      <button
+                         type="button"
+                         onClick={() => setCollectionOn(v => !v)}
+                         title={collectionOn ? 'Quitar de colección' : 'Pertenece a una colección o saga'}
+                         className={cn('relative w-8 h-[18px] rounded-full transition-colors shrink-0', collectionOn ? 'bg-[var(--primary)]' : 'bg-slate-300')}
+                      >
+                         <span className={cn('absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-all', collectionOn ? 'left-[15px]' : 'left-0.5')} />
+                      </button>
+                   </div>
+                   {collectionOn && (
+                      <div className="mt-2 flex gap-2">
+                         <input
+                            type="text"
+                            value={collectionName}
+                            onChange={e => setCollectionName(e.target.value)}
+                            placeholder="Nombre de la colección"
+                            className="flex-1 min-w-0 text-sm px-3 py-1.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-sm text-[var(--text-main)]"
+                         />
+                         <input
+                            type="text"
+                            value={collectionVolume}
+                            onChange={e => setCollectionVolume(e.target.value)}
+                            placeholder="Vol."
+                            title="Volumen / tomo (ej. 1, 2, 3…)"
+                            className="w-16 text-sm px-2 py-1.5 text-center bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-sm text-[var(--text-main)]"
+                         />
+                      </div>
+                   )}
                 </div>
              </div>
 

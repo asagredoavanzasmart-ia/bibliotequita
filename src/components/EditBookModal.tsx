@@ -87,6 +87,11 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     setTagIds(prev => prev.filter(t => t !== tagId));
   };
   
+  // Colección/Saga (miembros se agrupan juntos en la biblioteca; ver BookGrid)
+  const [collectionOn, setCollectionOn] = useState(!!item.collectionName);
+  const [collectionName, setCollectionName] = useState(item.collectionName || '');
+  const [collectionVolume, setCollectionVolume] = useState(item.collectionVolume || '');
+
   const [digitalSource, setDigitalSource] = useState(item.source || '');
   // Slots independientes PDF/EPUB (retrocompatibles con source/type legacy).
   const [pdfSource, setPdfSource] = useState(
@@ -189,6 +194,11 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
       type: primaryType,
       rating,
       tags: tagIds,
+      // '' (no undefined): el servidor hace merge del JSON y las claves
+      // undefined se descartan al serializar — con undefined, apagar el
+      // switch jamás limpiaría una colección ya guardada.
+      collectionName: collectionOn && collectionName.trim() ? collectionName.trim() : '',
+      collectionVolume: collectionOn && collectionVolume.trim() ? collectionVolume.trim() : '',
     });
     onClose();
   };
@@ -545,6 +555,45 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   >
                      <ShoppingBag className="w-4 h-4" /> Wishlist
                   </button>
+               </div>
+
+               {/* Colección / Saga: los miembros de una misma colección se
+                   muestran juntos en la biblioteca (ordenados por volumen),
+                   salvo el que esté fijado con pin. Guardar con el botón
+                   Guardar de la pestaña, como el resto de metadatos. */}
+               <div className="flex flex-col gap-2 px-0.5">
+                  <div className="flex items-center justify-between gap-2">
+                     <span className="text-[11px] font-semibold text-slate-500 flex items-center gap-1.5">
+                        <Library className="w-3.5 h-3.5" /> Colección / Saga
+                     </span>
+                     <button
+                        type="button"
+                        onClick={() => setCollectionOn(v => !v)}
+                        title={collectionOn ? 'Quitar de colección' : 'Pertenece a una colección o saga'}
+                        className={cn('relative w-8 h-[18px] rounded-full transition-colors shrink-0', collectionOn ? 'bg-[var(--primary)]' : 'bg-slate-200')}
+                     >
+                        <span className={cn('absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-all', collectionOn ? 'left-[15px]' : 'left-0.5')} />
+                     </button>
+                  </div>
+                  {collectionOn && (
+                     <div className="flex gap-2">
+                        <input
+                           type="text"
+                           value={collectionName}
+                           onChange={e => setCollectionName(e.target.value)}
+                           placeholder="Nombre de la colección"
+                           className="flex-1 min-w-0 text-xs px-3 py-2 bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
+                        />
+                        <input
+                           type="text"
+                           value={collectionVolume}
+                           onChange={e => setCollectionVolume(e.target.value)}
+                           placeholder="Vol."
+                           title="Volumen / tomo (ej. 1, 2, 3…)"
+                           className="w-14 text-xs px-2 py-2 text-center bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
+                        />
+                     </div>
+                  )}
                </div>
 
                {/* Slots independientes: PDF y EPUB pueden coexistir en el mismo libro.

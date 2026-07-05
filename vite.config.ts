@@ -6,6 +6,12 @@ import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
+    // Sello de build visible en la UI (panel de config del TTS): permite
+    // verificar en el dispositivo QUÉ versión está corriendo realmente —
+    // varios "sigue igual" reportados eran despliegues/cachés viejos, no bugs.
+    define: {
+      __BUILD_TAG__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC'),
+    },
     plugins: [
       react(),
       tailwindcss(),
