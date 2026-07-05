@@ -139,15 +139,47 @@ function safeExt(name: string): string {
   return m ? "." + m[1].toLowerCase() : "";
 }
 
-const ALLOWED_MIME_TYPES = new Set([
-  "application/pdf",
-  "application/epub+zip",
-  "text/plain",
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/gif",
-]);
+// Tipos de subida permitidos: la EXTENSIÓN manda (whitelist estricta) y el
+// MIME declarado debe ser coherente con ella.
+//
+// Seguridad — por qué así y no solo por MIME: el MIME lo declara el
+// navegador del cliente y es falsificable; la extensión, en cambio, decide
+// con qué Content-Type se SERVIRÁ el archivo después (res.sendFile en
+// GET /api/files). El riesgo real es servir contenido activo en el origen
+// de la app: un ".html" o ".svg" subido se ejecutaría como script al
+// abrirse inline (XSS almacenado). Por eso ni .html, ni .svg, ni .js, ni
+// ningún otro tipo activo están en la lista, y todo lo servido lleva además
+// X-Content-Type-Options: nosniff (default de helmet), que impide que el
+// navegador "adivine" un tipo distinto al declarado.
+//
+// Para binarios no ejecutables (EPUB, audio, video) se acepta también
+// application/octet-stream: varios navegadores móviles lo mandan en vez del
+// MIME real, y servirlos con su Content-Type de extensión es inofensivo
+// (si el contenido no es lo que dice, el reproductor simplemente falla).
+const ALLOWED_UPLOAD_TYPES: Record<string, Set<string>> = {
+  ".pdf": new Set(["application/pdf"]),
+  ".epub": new Set(["application/epub+zip", "application/octet-stream"]),
+  ".txt": new Set(["text/plain"]),
+  ".jpg": new Set(["image/jpeg"]),
+  ".jpeg": new Set(["image/jpeg"]),
+  ".png": new Set(["image/png"]),
+  ".webp": new Set(["image/webp"]),
+  ".gif": new Set(["image/gif"]),
+  // Audio
+  ".mp3": new Set(["audio/mpeg", "audio/mp3", "application/octet-stream"]),
+  ".m4a": new Set(["audio/mp4", "audio/x-m4a", "audio/m4a", "audio/aac", "application/octet-stream"]),
+  ".aac": new Set(["audio/aac", "application/octet-stream"]),
+  ".ogg": new Set(["audio/ogg", "application/ogg", "application/octet-stream"]),
+  ".opus": new Set(["audio/opus", "audio/ogg", "application/octet-stream"]),
+  ".wav": new Set(["audio/wav", "audio/x-wav", "audio/wave", "application/octet-stream"]),
+  ".flac": new Set(["audio/flac", "audio/x-flac", "application/octet-stream"]),
+  ".weba": new Set(["audio/webm", "application/octet-stream"]),
+  // Video
+  ".mp4": new Set(["video/mp4", "application/octet-stream"]),
+  ".m4v": new Set(["video/mp4", "video/x-m4v", "application/octet-stream"]),
+  ".webm": new Set(["video/webm", "audio/webm", "application/octet-stream"]),
+  ".mov": new Set(["video/quicktime", "application/octet-stream"]),
+};
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -156,11 +188,19 @@ const upload = multer({
   }),
   limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (ALLOWED_MIME_TYPES.has(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error(`Tipo de archivo no permitido: ${file.mimetype}`));
+    const ext = safeExt(file.originalname);
+    const allowedMimes = ALLOWED_UPLOAD_TYPES[ext];
+    if (!allowedMimes) {
+      const err: any = new Error(`Tipo de archivo no permitido: ${ext || "(sin extensión)"}. Formatos aceptados: PDF, EPUB, TXT, imágenes, audio y video.`);
+      err.code = "UNSUPPORTED_FILE_TYPE";
+      return cb(err);
     }
+    if (!allowedMimes.has(file.mimetype)) {
+      const err: any = new Error(`El contenido del archivo (${file.mimetype}) no coincide con su extensión ${ext}.`);
+      err.code = "UNSUPPORTED_FILE_TYPE";
+      return cb(err);
+    }
+    cb(null, true);
   },
 });
 
@@ -325,6 +365,12 @@ async function startServer() {
         : false, // En dev, deshabilitado para que Vite HMR funcione.
       crossOriginEmbedderPolicy: false,
       crossOriginResourcePolicy: { policy: "cross-origin" },
+      // El default de helmet es Referrer-Policy: no-referrer, y el validador
+      // de incrustaciones de YouTube rechaza iframes que llegan SIN Referer
+      // ("Video no disponible", Error 153). Con strict-origin-when-cross-origin
+      // el iframe envía solo el origen (sin ruta) — suficiente para que
+      // YouTube valide quién incrusta, sin filtrar URLs internas de la app.
+      referrerPolicy: { policy: "strict-origin-when-cross-origin" },
     }),
   );
 
@@ -2958,6 +3004,12 @@ SECCIÓN guia_de_aprendizaje:
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     if (err && err.code === "LIMIT_FILE_SIZE") {
       return res.status(413).json({ error: `Archivo demasiado grande (máx ${MAX_UPLOAD_MB} MB)` });
+    }
+    // Rechazo del fileFilter de multer: tipo/extensión no permitidos. Antes
+    // caía al 500 genérico ("error de servidor") y el usuario no sabía que
+    // el problema era el formato del archivo.
+    if (err && err.code === "UNSUPPORTED_FILE_TYPE") {
+      return res.status(415).json({ error: err.message, code: "UNSUPPORTED_FILE_TYPE" });
     }
     console.error("Unhandled error:", err);
     if (!res.headersSent) {

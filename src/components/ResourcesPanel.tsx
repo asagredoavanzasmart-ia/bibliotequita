@@ -43,22 +43,31 @@ function fileTypeFromName(name: string): ResourceType {
 // Detecta YouTube/Vimeo en una URL de video y devuelve su URL de embed.
 // Si no coincide con ninguno, se asume un archivo de video directo (.mp4 etc.)
 // y se reproduce con <video> nativo.
+//
+// Parámetros del embed de YouTube (ver guía oficial de la IFrame API):
+//  - playsinline=1: crítico en iOS/Safari — reproduce dentro del recuadro en
+//    vez de forzar el reproductor de pantalla completa del sistema.
+//  - rel=0: las sugerencias al terminar salen solo del mismo canal, no de
+//    toda la plataforma (menos distracción dentro de la biblioteca).
+// El dominio youtube-nocookie.com (Privacidad Mejorada) difiere las cookies
+// de seguimiento hasta que el usuario da play.
 function getVideoEmbedUrl(url: string): string | null {
+  const ytEmbed = (id: string) => `https://www.youtube-nocookie.com/embed/${id}?playsinline=1&rel=0`;
   try {
     const u = new URL(url);
     if (u.hostname.includes('youtube.com')) {
       const id = u.searchParams.get('v');
-      if (id) return `https://www.youtube.com/embed/${id}`;
+      if (id) return ytEmbed(id);
       const shortMatch = u.pathname.match(/^\/(shorts|embed)\/([^/?]+)/);
-      if (shortMatch) return `https://www.youtube.com/embed/${shortMatch[2]}`;
+      if (shortMatch) return ytEmbed(shortMatch[2]);
     }
     if (u.hostname.includes('youtu.be')) {
       const id = u.pathname.slice(1);
-      if (id) return `https://www.youtube.com/embed/${id}`;
+      if (id) return ytEmbed(id);
     }
     if (u.hostname.includes('vimeo.com')) {
       const id = u.pathname.split('/').filter(Boolean).pop();
-      if (id) return `https://player.vimeo.com/video/${id}`;
+      if (id) return `https://player.vimeo.com/video/${id}?playsinline=1`;
     }
   } catch {
     return null;
@@ -308,6 +317,11 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                         className="w-full aspect-video bg-black"
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                         allowFullScreen
+                        // YouTube exige un Referer con el origen para validar
+                        // quién incrusta; sin él responde "Video no disponible"
+                        // (Error 153). Complementa el Referrer-Policy global
+                        // del servidor (antes era no-referrer, la causa raíz).
+                        referrerPolicy="strict-origin-when-cross-origin"
                       />
                       {/* YouTube/Vimeo a veces rechazan el embed dentro del WebView de la
                           app (Error 153 y similares: restricción del proveedor, no un bug
