@@ -174,6 +174,9 @@ const ALLOWED_UPLOAD_TYPES: Record<string, Set<string>> = {
   ".wav": new Set(["audio/wav", "audio/x-wav", "audio/wave", "application/octet-stream"]),
   ".flac": new Set(["audio/flac", "audio/x-flac", "application/octet-stream"]),
   ".weba": new Set(["audio/webm", "application/octet-stream"]),
+  // Grabadoras de Android suelen producir AMR/3GP.
+  ".amr": new Set(["audio/amr", "audio/3gpp", "application/octet-stream"]),
+  ".3gp": new Set(["audio/3gpp", "video/3gpp", "application/octet-stream"]),
   // Video
   ".mp4": new Set(["video/mp4", "application/octet-stream"]),
   ".m4v": new Set(["video/mp4", "video/x-m4v", "application/octet-stream"]),

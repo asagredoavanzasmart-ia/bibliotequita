@@ -2004,6 +2004,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setTotalPages(100);
     setTargetPage(undefined);
     setActiveTab('reader');
+    // Un recurso de texto se abre para LEER Y ESCUCHAR: el reproductor TTS
+    // aparece abierto de inmediato (con la voz por defecto), listo para dar
+    // Play — el autoplay real del audio lo bloquearía el navegador por no
+    // venir de un toque directo sobre el reproductor.
+    setShowTtsWidget(true);
   }, [handleTtsClose, clearPersistentHighlights]);
 
   // Al cerrar: se vuelve a la pestaña Recursos y se restaura la posición de

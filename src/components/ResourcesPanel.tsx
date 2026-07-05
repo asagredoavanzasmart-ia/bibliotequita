@@ -20,7 +20,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, Minimize2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { uploadFile } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
@@ -365,10 +365,11 @@ function MediaPlayer({ resource, kind, onPlayingChange, apiRef, onTimeChange, ta
 // para que NotesPanel siga siendo un componente de presentación puro.
 // currentPage = segundo actual del medio → las notas quedan con marca de
 // tiempo; onNavigateToPage = seek → tocar la nota salta a ese momento.
-function ResourceNotesPanel({ documentId, currentPage, onNavigateToPage }: {
+function ResourceNotesPanel({ documentId, currentPage, onNavigateToPage, timeReferences }: {
   documentId: string;
   currentPage?: number | string;
   onNavigateToPage?: (page: number | string) => void;
+  timeReferences?: boolean;
 }) {
   const { notes, addNote, addBookmark, editNote, deleteNote } = useDocumentNotes(documentId);
   return (
@@ -381,6 +382,7 @@ function ResourceNotesPanel({ documentId, currentPage, onNavigateToPage }: {
       deleteNote={deleteNote}
       currentPage={currentPage}
       onNavigateToPage={onNavigateToPage}
+      timeReferences={timeReferences}
     />
   );
 }
@@ -401,8 +403,10 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
   const [linkValue, setLinkValue] = useState('');
   // Menú lateral de tipos colapsable (manija con chevrón en la orilla).
   const [kindMenuOpen, setKindMenuOpen] = useState(true);
-  // Recurso en modo pantalla completa (media + notas, sin menús).
-  const [fullscreenId, setFullscreenId] = useState<string | null>(null);
+  // Pantalla completa del PANEL (mismo botón ⛶ que el resto de la app): el
+  // panel entero se porta a un overlay sobre todo — desaparecen el menú
+  // superior del lector y, colapsando la manija, también el lateral.
+  const [panelFullscreen, setPanelFullscreen] = useState(false);
 
   // Nº de medios (video/audio) reproduciéndose ahora mismo. Mientras haya
   // alguno, mantenemos la pantalla encendida para que el móvil no se bloquee.
@@ -421,7 +425,6 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
 
   const current = resources.filter((r) => r.kind === activeKind);
   const activeMeta = KINDS.find((k) => k.id === activeKind)!;
-  const fullscreenRes = fullscreenId ? resources.find(r => r.id === fullscreenId) ?? null : null;
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -458,7 +461,11 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
     const url = linkValue.trim();
     if (!url) return;
     try {
-      await addResource({ kind: 'video', title: url, source: url });
+      // Título legible en vez de la URL cruda (la URL no aporta al usuario;
+      // los títulos-URL existentes se ocultan al mostrarse — ver el pie).
+      let title = 'Video';
+      try { title = `Video de ${new URL(url).hostname.replace(/^www\./, '')}`; } catch { /* URL rara: título genérico */ }
+      await addResource({ kind: 'video', title, source: url });
       setLinkValue('');
       setShowLinkInput(false);
     } catch (err) {
@@ -473,17 +480,11 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
     setRenamingId(null);
   };
 
-  const openFullscreen = (r: ResourceItem) => {
-    if (r.kind === 'text') {
-      // Para textos, la "pantalla completa" ES el lector principal.
-      onOpenTextResource(r);
-      return;
-    }
-    setFullscreenId(r.id);
-  };
-
-  return (
-    <div className="w-full h-full flex bg-[var(--bg-app)] overflow-hidden">
+  // En pantalla completa, el panel entero se porta a un overlay fijo sobre
+  // toda la app (desaparece el menú superior del lector); vía portal para
+  // escapar del stacking context del contenedor de pestañas.
+  const panel = (
+    <div className={cn('flex bg-[var(--bg-app)] overflow-hidden', panelFullscreen ? 'fixed inset-0 z-[9990]' : 'w-full h-full')}>
       {/* Menú lateral de categorías (colapsable) */}
       {kindMenuOpen && (
         <div className="w-16 sm:w-44 shrink-0 border-r border-slate-200 bg-white flex flex-col py-2">
@@ -542,6 +543,16 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
               {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
               {uploading ? 'Subiendo…' : 'Subir'}
             </button>
+            {/* Pantalla completa del panel (mismo botón ⛶ del resto de la app):
+                oculta el menú superior del lector; el lateral se colapsa con
+                su manija. */}
+            <button
+              onClick={() => setPanelFullscreen(v => !v)}
+              className={cn('p-2 rounded-lg border transition-colors shrink-0', panelFullscreen ? 'bg-[var(--primary)] text-white border-[var(--primary)]' : 'bg-white text-slate-600 border-slate-200 hover:text-[var(--primary)] hover:border-[var(--primary)]/40')}
+              title={panelFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'}
+            >
+              {panelFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </button>
           </div>
           <input ref={fileInputRef} type="file" accept={activeMeta.accept} className="hidden" onChange={handleUpload} />
         </div>
@@ -597,23 +608,15 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
           <div className={cn('grid gap-3', activeKind === 'image' ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4' : 'grid-cols-1')}>
             {current.map((r) => (
               <div key={r.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm flex flex-col">
-                {/* Vista/reproductor embebido por tipo. El reproductor NO se
-                    monta si este recurso está en pantalla completa (evita
-                    audio duplicado con el reproductor del overlay). */}
+                {/* Vista/reproductor embebido por tipo */}
                 {(r.kind === 'video' || r.kind === 'audio') && (
-                  fullscreenId === r.id ? (
-                    <div className="w-full aspect-video bg-slate-900 flex items-center justify-center text-white/60 text-xs font-bold">
-                      Reproduciendo en pantalla completa…
-                    </div>
-                  ) : (
-                    <MediaPlayer
-                      resource={r}
-                      kind={r.kind}
-                      onPlayingChange={handlePlayingChange}
-                      apiRef={notesResourceId === r.id ? mediaApiRef : undefined}
-                      onTimeChange={notesResourceId === r.id ? setMediaTimeSec : undefined}
-                    />
-                  )
+                  <MediaPlayer
+                    resource={r}
+                    kind={r.kind}
+                    onPlayingChange={handlePlayingChange}
+                    apiRef={notesResourceId === r.id ? mediaApiRef : undefined}
+                    onTimeChange={notesResourceId === r.id ? setMediaTimeSec : undefined}
+                  />
                 )}
                 {r.kind === 'image' && (
                   <a href={r.source} target="_blank" rel="noreferrer" className="block aspect-square bg-slate-100">
@@ -631,7 +634,6 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                     )}
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-bold text-slate-800 truncate">{r.title}{r.isSummary && <span className="ml-2 text-[9px] uppercase font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">Resumen</span>}</p>
-                      <p className="text-[10px] uppercase text-slate-400 font-bold">{r.fileType} · leer · citar · escuchar</p>
                     </div>
                     <Play className="w-4 h-4 text-slate-400 shrink-0" />
                   </button>
@@ -650,27 +652,15 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                     />
                   ) : (
                     <span onClick={() => startRename(r)} className="flex-1 min-w-0 text-xs text-slate-600 truncate cursor-text hover:text-slate-900" title="Renombrar">
-                      {r.title}
+                      {/* Las URLs crudas como título no aportan nada: se
+                          muestra un nombre genérico (tocar para renombrar). */}
+                      {/^https?:\/\//i.test(r.title) ? <span className="text-slate-400 italic">Video · toca para renombrar</span> : r.title}
                     </span>
                   )}
-                  {/* Pantalla completa: para textos abre el lector principal;
-                      para video/audio/imagen abre el overlay sin menús. */}
-                  <button
-                    onClick={() => openFullscreen(r)}
-                    className="p-1 shrink-0 text-slate-400 hover:text-[var(--primary)] transition-colors"
-                    title="Pantalla completa"
-                  >
-                    <Maximize2 className="w-4 h-4" />
-                  </button>
-                  {r.kind === 'text' ? (
-                    <button
-                      onClick={() => onOpenTextResource(r)}
-                      className="p-1 shrink-0 text-slate-400 hover:text-[var(--primary)] transition-colors"
-                      title="Abrir en el lector (leer y escuchar)"
-                    >
-                      <Play className="w-4 h-4" />
-                    </button>
-                  ) : (
+                  {/* Texto: el único Play es el de la tarjeta (abre el lector
+                      con el TTS listo); su pie queda solo con descargar y
+                      eliminar. Video/audio/imagen conservan el botón de notas. */}
+                  {r.kind !== 'text' && (
                     <button
                       onClick={() => setNotesResourceId(notesResourceId === r.id ? null : r.id)}
                       className={cn('p-1 shrink-0 transition-colors', notesResourceId === r.id ? 'text-[var(--primary)]' : 'text-slate-400 hover:text-[var(--primary)]')}
@@ -714,6 +704,7 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                         onNavigateToPage={(r.kind === 'video' || r.kind === 'audio')
                           ? (page) => mediaApiRef.current?.seekTo(Number(page) || 0)
                           : undefined}
+                        timeReferences={r.kind === 'video' || r.kind === 'audio'}
                       />
                     </div>
                   </div>
@@ -724,59 +715,8 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
         )}
       </div>
 
-      {/* ------------------ Pantalla completa de un recurso ------------------
-          Overlay total (portal a body, por encima del header del lector y del
-          menú lateral): media arriba + notas abajo, como pidió el usuario. */}
-      {fullscreenRes && createPortal(
-        <div className="fixed inset-0 z-[9990] bg-[var(--bg-app)] flex flex-col">
-          <div className="flex items-center gap-2 px-3 h-12 border-b border-slate-200 bg-white shrink-0">
-            <span className="font-bold text-sm text-slate-800 truncate flex-1">{fullscreenRes.title}</span>
-            <button
-              onClick={() => setFullscreenId(null)}
-              className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 shrink-0"
-              title="Salir de pantalla completa"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-
-          <div className="shrink-0">
-            {(fullscreenRes.kind === 'video' || fullscreenRes.kind === 'audio') && (
-              <MediaPlayer
-                key={`fs-${fullscreenRes.id}`}
-                resource={fullscreenRes}
-                kind={fullscreenRes.kind}
-                onPlayingChange={handlePlayingChange}
-                apiRef={mediaApiRef}
-                onTimeChange={setMediaTimeSec}
-                tall
-              />
-            )}
-            {fullscreenRes.kind === 'image' && (
-              <div className="max-h-[60dvh] bg-black flex items-center justify-center">
-                <img src={fullscreenRes.source} alt={fullscreenRes.title} className="max-h-[60dvh] w-auto object-contain" />
-              </div>
-            )}
-          </div>
-
-          {/* Notas a pantalla completa (con marca de tiempo para video/audio) */}
-          <div className="flex-1 min-h-0 flex flex-col">
-            <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 border-b border-slate-100 shrink-0">
-              <span className="text-[10px] font-bold uppercase text-slate-500">Notas</span>
-            </div>
-            <div className="flex-1 overflow-hidden">
-              <ResourceNotesPanel
-                documentId={`${bookId}::res::${fullscreenRes.id}`}
-                currentPage={(fullscreenRes.kind === 'video' || fullscreenRes.kind === 'audio') ? mediaTimeSec : undefined}
-                onNavigateToPage={(fullscreenRes.kind === 'video' || fullscreenRes.kind === 'audio')
-                  ? (page) => mediaApiRef.current?.seekTo(Number(page) || 0)
-                  : undefined}
-              />
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
     </div>
   );
+
+  return panelFullscreen ? createPortal(panel, document.body) : panel;
 }

@@ -46,9 +46,23 @@ interface NotesPanelProps {
   // (a diferencia de onNavigateToCitation, que sí centra). Se usa al recolorear.
   onRecolorCitation?: (note: Note) => void;
   currentPage?: number | string;
+  // true cuando el "documento" es un medio (video/audio): pageReference son
+  // SEGUNDOS y se muestran como tiempo H:MM:SS en vez de "pág. N".
+  timeReferences?: boolean;
 }
 
-export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, deleteNote, onNavigateToPage, onNavigateToCitation, onRecolorCitation, currentPage }: NotesPanelProps) {
+export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, deleteNote, onNavigateToPage, onNavigateToCitation, onRecolorCitation, currentPage, timeReferences = false }: NotesPanelProps) {
+  // Formatea una referencia para mostrarla: página tal cual, o segundos como
+  // tiempo H:MM:SS (p. ej. 34 → "0:00:34") cuando el documento es un medio.
+  const formatRef = (v: number | string | undefined): string => {
+    if (v === undefined || v === null) return '';
+    if (!timeReferences) return String(v);
+    const s = parsePageNum(v);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  };
   const [editorContent, setEditorContent] = useState('');
   const [showSavedFeedback, setShowSavedFeedback] = useState(false);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
@@ -250,7 +264,7 @@ export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, 
                        />
                        <div className="flex items-center justify-between mt-1">
                           <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-md px-2 py-1 shadow-sm w-32">
-                             <span className="text-xs text-slate-500 font-medium">Pág:</span>
+                             <span className="text-xs text-slate-500 font-medium">{timeReferences ? 'Seg:' : 'Pág:'}</span>
                              <input 
                                type="text" 
                                value={editPage} 
@@ -281,7 +295,7 @@ export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, 
                        <span className="text-xs font-semibold truncate text-white">{note.content}</span>
                        {note.pageReference && parsePageNum(note.pageReference) > 0 && (
                          <span className="text-[10px] font-bold text-white/95 shrink-0 bg-white/20 px-1.5 py-0.5 rounded ml-1">
-                           pág. {note.pageReference}
+                           {timeReferences ? formatRef(note.pageReference) : `pág. ${note.pageReference}`}
                          </span>
                        )}
                      </div>
@@ -382,7 +396,7 @@ export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, 
                               }}
                               className="text-xs text-[#00558F] font-semibold hover:underline inline"
                             >
-                              (pag.{note.pageReference})
+                              {timeReferences ? `(${formatRef(note.pageReference)})` : `(pag.${note.pageReference})`}
                             </button>
                           </>
                         )}
