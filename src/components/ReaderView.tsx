@@ -270,7 +270,26 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     const synth = window.speechSynthesis;
     if (!synth) return;
     const all = synth.getVoices();
-    if (all.length > 0) setOfflineVoices(filterAndSortVoices(all));
+    if (all.length > 0) {
+      setOfflineVoices(filterAndSortVoices(all));
+      return;
+    }
+    // Truco Android documentado: varios Chrome NO pueblan getVoices() hasta
+    // el primer speak() de la página. Utterance de un espacio con volumen 0
+    // + cancel inmediato: inaudible, pero "despierta" el motor TTS. Solo si
+    // no hay lectura en curso (cancel() mataría la frase que está sonando).
+    if (!synth.speaking && !browserUtterRef.current) {
+      try {
+        const u = new SpeechSynthesisUtterance(' ');
+        u.volume = 0;
+        synth.speak(u);
+        synth.cancel();
+      } catch { /* motor sin soporte: el sondeo periódico sigue intentando */ }
+    }
+    setTimeout(() => {
+      const later = synth.getVoices();
+      if (later.length > 0) setOfflineVoices(filterAndSortVoices(later));
+    }, 300);
   }, [filterAndSortVoices]);
 
   useEffect(() => {
@@ -2557,6 +2576,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                                    {offlineVoices.length === 0 && (
                                                       <p className="text-[10px] leading-snug text-[var(--text-muted)] px-2 py-1.5">
                                                          El navegador aún no entrega la lista de voces del sistema. Cierra y vuelve a abrir este menú; si sigue vacío, revisa que el motor "Salida de texto a voz" de Google esté activo en Ajustes → Accesibilidad.
+                                                         {/* Diagnóstico en vivo: dónde se corta la cadena Android→Chrome→app.
+                                                             "sin soporte" = este navegador no expone speechSynthesis. */}
+                                                         <span className="block mt-1 font-mono opacity-70">
+                                                            Diagnóstico: {typeof window !== 'undefined' && window.speechSynthesis
+                                                               ? `motor OK · voces expuestas por el navegador: ${window.speechSynthesis.getVoices().length}`
+                                                               : 'sin soporte de speechSynthesis en este navegador'}
+                                                         </span>
                                                       </p>
                                                    )}
                                                 </div>
