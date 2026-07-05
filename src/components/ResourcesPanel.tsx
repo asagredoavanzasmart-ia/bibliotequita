@@ -3,27 +3,27 @@
 // -----------------------------------------------------------------------------
 // Menú lateral por tipo (Videos, Audios, Textos, Imágenes). Permite subir,
 // renombrar, borrar y reproducir/visualizar recursos. Los recursos de Texto
-// abren el lector interno (PDF/EPUB/TXT) con su propio documentId para que el
-// motor de citas funcione de forma separada al libro.
+// se abren en el LECTOR PRINCIPAL (vía onOpenTextResource → ReaderView), que
+// aporta el mismo motor de citas y lector de voz (TTS) que el libro; sus
+// notas/citas viven separadas bajo documentId `<bookId>::res::<id>`.
 // =============================================================================
 
 import { useState, useRef } from 'react';
-import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, ChevronLeft, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, ExternalLink as ExternalLinkIcon } from 'lucide-react';
+import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, ExternalLink as ExternalLinkIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { uploadFile } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { useDocumentNotes } from '../hooks/useDocumentNotes';
 import { ResourceItem, ResourceKind, ResourceType } from '../types';
-import { PDFReader } from './PDFReader';
-import { EPUBReader } from './EPUBReader';
-import { TxtReader } from './TxtReader';
 import { NotesPanel } from './NotesPanel';
 import { pdfjs } from 'react-pdf';
 import ePub from 'epubjs';
 
 interface ResourcesPanelProps {
   bookId: string;
+  // Abre un recurso de texto en el lector principal (con TTS y citas).
+  onOpenTextResource: (resource: ResourceItem) => void;
 }
 
 const KINDS: { id: ResourceKind; label: string; Icon: any; accept: string }[] = [
@@ -121,7 +121,7 @@ function ResourceNotesPanel({ documentId }: { documentId: string }) {
   );
 }
 
-export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
+export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelProps) {
   const { resources, addResource, updateResource, deleteResource } = useResources(bookId);
   const [activeKind, setActiveKind] = useState<ResourceKind>('video');
   const [uploading, setUploading] = useState(false);
@@ -130,7 +130,6 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
   // seguía subiendo o se había quedado pegado.
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [openTextResource, setOpenTextResource] = useState<ResourceItem | null>(null);
   const [notesResourceId, setNotesResourceId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -197,27 +196,6 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
     if (t && t !== r.title) updateResource(r.id, { title: t });
     setRenamingId(null);
   };
-
-  // --- Lector de un recurso de texto (citas separadas vía documentId con sufijo) ---
-  if (openTextResource) {
-    const docId = `${bookId}::res::${openTextResource.id}`;
-    return (
-      <div className="w-full h-full flex flex-col bg-[var(--bg-app)]">
-        <div className="flex items-center gap-2 px-3 h-12 border-b border-slate-200 bg-white shrink-0">
-          <button onClick={() => setOpenTextResource(null)} className="p-2 rounded-lg text-slate-500 hover:bg-slate-100" title="Volver a recursos">
-            <ChevronLeft className="w-5 h-5" />
-          </button>
-          <span className="font-bold text-sm text-slate-800 truncate">{openTextResource.title}</span>
-          <span className="text-[10px] uppercase font-bold text-[var(--primary)] bg-[var(--primary)]/10 px-1.5 py-0.5 rounded ml-auto shrink-0">{openTextResource.fileType}</span>
-        </div>
-        <div className="flex-1 overflow-hidden" data-resource-doc-id={docId}>
-          {openTextResource.fileType === 'pdf' && <PDFReader url={openTextResource.source} />}
-          {openTextResource.fileType === 'epub' && <EPUBReader url={openTextResource.source} />}
-          {openTextResource.fileType === 'txt' && <TxtReader url={openTextResource.source} />}
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="w-full h-full flex bg-[var(--bg-app)] overflow-hidden">
@@ -359,7 +337,7 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
                   </a>
                 )}
                 {r.kind === 'text' && (
-                  <button onClick={() => setOpenTextResource(r)} className="flex items-center gap-3 p-3 hover:bg-slate-50 transition-colors text-left">
+                  <button onClick={() => onOpenTextResource(r)} className="flex items-center gap-3 p-3 hover:bg-slate-50 transition-colors text-left">
                     {r.thumbnailUrl ? (
                       <img src={r.thumbnailUrl} alt={r.title} className="w-10 h-14 rounded-md object-cover shrink-0 border border-slate-200" />
                     ) : (
@@ -369,7 +347,7 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
                     )}
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-bold text-slate-800 truncate">{r.title}{r.isSummary && <span className="ml-2 text-[9px] uppercase font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">Resumen</span>}</p>
-                      <p className="text-[10px] uppercase text-slate-400 font-bold">{r.fileType} · abrir y citar</p>
+                      <p className="text-[10px] uppercase text-slate-400 font-bold">{r.fileType} · leer · citar · escuchar</p>
                     </div>
                     <Play className="w-4 h-4 text-slate-400 shrink-0" />
                   </button>
@@ -391,13 +369,27 @@ export function ResourcesPanel({ bookId }: ResourcesPanelProps) {
                       {r.title}
                     </span>
                   )}
-                  <button
-                    onClick={() => setNotesResourceId(notesResourceId === r.id ? null : r.id)}
-                    className={cn('p-1 shrink-0 transition-colors', notesResourceId === r.id ? 'text-[var(--primary)]' : 'text-slate-400 hover:text-[var(--primary)]')}
-                    title="Notas de este recurso"
-                  >
-                    <MessageSquareQuote className="w-4 h-4" />
-                  </button>
+                  {/* Texto: botón Play que abre el lector principal (allí se
+                      cita y se activa el lector de voz). El icono de notas/citas
+                      solo tiene sentido para video/audio/imagen, que no pasan
+                      por el lector. */}
+                  {r.kind === 'text' ? (
+                    <button
+                      onClick={() => onOpenTextResource(r)}
+                      className="p-1 shrink-0 text-slate-400 hover:text-[var(--primary)] transition-colors"
+                      title="Abrir en el lector (leer y escuchar)"
+                    >
+                      <Play className="w-4 h-4" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setNotesResourceId(notesResourceId === r.id ? null : r.id)}
+                      className={cn('p-1 shrink-0 transition-colors', notesResourceId === r.id ? 'text-[var(--primary)]' : 'text-slate-400 hover:text-[var(--primary)]')}
+                      title="Notas de este recurso"
+                    >
+                      <MessageSquareQuote className="w-4 h-4" />
+                    </button>
+                  )}
                   {r.source.startsWith('/api/files/') && (
                     <a
                       href={r.source}

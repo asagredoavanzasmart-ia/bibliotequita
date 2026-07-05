@@ -23,7 +23,7 @@ import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote,
 import { useState, useRef, FormEvent, ChangeEvent, useEffect, useCallback, useMemo } from 'react';
 import type { Rendition } from 'epubjs';
 import { cn, getBookSources, resolvePrimarySource } from '../lib/utils';
-import type { ResourceType } from '../types';
+import type { ResourceItem, ResourceType } from '../types';
 import { PDFReader } from './PDFReader';
 import { EPUBReader } from './EPUBReader';
 import { TxtReader } from './TxtReader';
@@ -100,11 +100,40 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Registra tiempo de lectura diario mientras este libro está abierto.
   useReadingTimeTracker(!!item);
 
-  // Fuente única de verdad de notas/citas y paleta de colores del libro: vive
-  // aquí (mismo ciclo de vida que el lector) para que crear una cita NO
-  // dependa de que el panel de Anotaciones esté montado — antes, las citas
-  // creadas durante la lectura por voz (TTS) con el panel cerrado se perdían
-  // porque la persistencia ocurría en un efecto dentro de NotesPanel.
+  // --- Recurso de texto abierto en el lector principal ------------------------
+  // Un recurso de texto de la pestaña Recursos (p.ej. un resumen IA) se abre
+  // aquí mismo, en el lector principal, para que tenga el mismo motor de
+  // lectura, citas y lector de voz (TTS) que el libro. Mientras está abierto,
+  // todo el estado por-documento (notas, marcadores, posición TTS) usa su
+  // documentId propio `<bookId>::res::<id>` — el mismo contrato que ya usaba
+  // ResourcesPanel — para no mezclarse con el del libro.
+  const [activeResource, setActiveResource] = useState<ResourceItem | null>(null);
+  const activeDocId = activeResource ? `${bookId}::res::${activeResource.id}` : bookId;
+
+  // Fuentes del libro (PDF/EPUB/TXT/externa) de forma retrocompatible.
+  const bookSources = useMemo(() => getBookSources(item), [item]);
+  const availableFormats = useMemo(
+    () => (['pdf', 'epub', 'txt', 'externa'] as ResourceType[]).filter(t => bookSources[t as keyof typeof bookSources]),
+    [bookSources]
+  );
+  // Versión seleccionada por el usuario cuando el libro tiene varias (PDF+EPUB).
+  const [activeFormat, setActiveFormat] = useState<ResourceType | undefined>(undefined);
+  // Documento realmente mostrado: el recurso abierto (si lo hay) o el libro.
+  const primary = useMemo(
+    () => activeResource
+      ? { source: activeResource.source, type: (activeResource.fileType || 'txt') as ResourceType }
+      : (resolvePrimarySource(bookSources, activeFormat) ?? { source: item.source, type: item.type }),
+    [activeResource, bookSources, activeFormat, item.source, item.type]
+  );
+  const activeSource = primary.source;
+  const activeType = primary.type;
+
+  // Fuente única de verdad de notas/citas y paleta de colores del documento
+  // activo (libro o recurso abierto): vive aquí (mismo ciclo de vida que el
+  // lector) para que crear una cita NO dependa de que el panel de Anotaciones
+  // esté montado — antes, las citas creadas durante la lectura por voz (TTS)
+  // con el panel cerrado se perdían porque la persistencia ocurría en un
+  // efecto dentro de NotesPanel.
   const {
     notes: documentNotes,
     activePalette,
@@ -115,7 +144,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     addBookmark: addDocumentBookmark,
     editNote: editDocumentNote,
     deleteNote: deleteDocumentNote,
-  } = useDocumentNotes(bookId);
+  } = useDocumentNotes(activeDocId);
 
   const [activeTab, setActiveTab ] = useState<'reader' | 'edit' | 'citations' | 'auditor' | 'resources'>('reader');
   
@@ -357,17 +386,17 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Guarda en localStorage la última frase reproducida (página/CFI + índice +
   // texto) para que, al volver a presionar "Play", la lectura continúe donde
   // quedó en vez de reiniciar siempre desde el primer párrafo visible.
-  const ttsPositionKey = `tts-position-${bookId}`;
+  const ttsPositionKey = `tts-position-${activeDocId}`;
 
   const saveTtsPosition = useCallback((phraseIndex: number, phraseText: string) => {
     try {
       localStorage.setItem(ttsPositionKey, JSON.stringify({
-        page: item?.type === 'epub' ? null : currentPage,
+        page: activeType === 'epub' ? null : currentPage,
         phraseIndex,
         phraseText,
       }));
     } catch { /* localStorage no disponible */ }
-  }, [ttsPositionKey, item?.type, currentPage]);
+  }, [ttsPositionKey, activeType, currentPage]);
 
   const loadTtsPosition = useCallback((phraseList: string[]): number => {
     try {
@@ -377,13 +406,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       // Para PDF/TXT la posición solo aplica si seguimos en la misma página;
       // para EPUB (sin páginas) basta con que la frase exacta siga presente
       // en el texto visible actual.
-      if (item?.type !== 'epub' && String(saved.page) !== String(currentPage)) return 0;
+      if (activeType !== 'epub' && String(saved.page) !== String(currentPage)) return 0;
       if (saved.phraseIndex >= 0 && saved.phraseIndex < phraseList.length && phraseList[saved.phraseIndex] === saved.phraseText) {
         return saved.phraseIndex;
       }
     } catch { /* posición inválida o inexistente */ }
     return 0;
-  }, [ttsPositionKey, item?.type, currentPage]);
+  }, [ttsPositionKey, activeType, currentPage]);
 
   // Referencia para la precarga (pre-fetching) de la siguiente frase de audio
   const preloadedAudioRef = useRef<{ index: number; audio: HTMLAudioElement; url: string } | null>(null);
@@ -572,20 +601,20 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   // Función para extraer texto del DOM de la página activa del PDF, TXT o EPUB
   const getActivePageText = useCallback(() => {
-    if (item?.type === 'pdf') {
+    if (activeType === 'pdf') {
       return getPdfPageStructuredText(currentPage);
     }
-    if (item?.type === 'txt') {
+    if (activeType === 'txt') {
       const el = document.getElementById('txt-content');
       if (!el) return '';
       // En TXT los saltos de línea reales ya están en el innerText; se conservan.
       return ((el as HTMLElement).innerText || el.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
     }
-    if (item?.type === 'epub') {
+    if (activeType === 'epub') {
       return getEpubVisibleText();
     }
     return '';
-  }, [item?.type, currentPage, getEpubVisibleText, getPdfPageStructuredText]);
+  }, [activeType, currentPage, getEpubVisibleText, getPdfPageStructuredText]);
 
   // Divide el texto en unidades de lectura SIEMPRE de punto a punto (seguido
   // o aparte — ambos son el mismo carácter ".", la diferencia es de formato
@@ -790,7 +819,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Determina el índice de la frase visible actualmente en pantalla para
   // comenzar la lectura desde ahí en vez de desde el inicio de la página.
   const getVisiblePhraseStartIndex = useCallback(async (phraseList: string[]): Promise<number> => {
-    if (item?.type === 'pdf') {
+    if (activeType === 'pdf') {
       const container = containerRef.current;
       if (!container) return 0;
       const viewportRect = container.getBoundingClientRect();
@@ -800,7 +829,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       return findPhraseIndexForSnippet(phraseList, snippet);
     }
 
-    if (item?.type === 'txt') {
+    if (activeType === 'txt') {
       const container = containerRef.current;
       if (!container) return 0;
       const viewportRect = container.getBoundingClientRect();
@@ -810,7 +839,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       return findPhraseIndexForSnippet(phraseList, snippet);
     }
 
-    if (item?.type === 'epub') {
+    if (activeType === 'epub') {
       // phraseList para EPUB ya se construye a partir de getEpubVisibleText()
       // (todo el texto actualmente visible en los iframes de epub.js), así que
       // la frase 0 de esa lista YA ES la primera frase en pantalla — no hace
@@ -821,7 +850,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
 
     return 0;
-  }, [item?.type, currentPage, getFirstVisibleTextSnippet, findPhraseIndexForSnippet]);
+  }, [activeType, currentPage, getFirstVisibleTextSnippet, findPhraseIndexForSnippet]);
 
   // Para EPUB: navega la rendition al inicio del capítulo actual usando la
   // tabla de contenidos (TOC) del libro. Devuelve true si pudo navegar.
@@ -1153,7 +1182,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     // overlay son píxeles absolutos y quedan corridos al re-renderizarse la
     // capa de texto). El EPUB usa <mark> en el flujo del documento y refluye
     // solo, no necesita registro.
-    if (item?.type !== 'epub') {
+    if (activeType !== 'epub') {
       if (persistent && phraseText) {
         const hex = color || '#fbbf24';
         paintedCitationsRef.current = [
@@ -1164,12 +1193,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         lastTtsHighlightRef.current = phraseText ? { phrase: phraseText, hex: color } : null;
       }
     }
-    if (item?.type === 'epub') {
+    if (activeType === 'epub') {
       highlightPhraseInEpub(phraseText, color, 3, persistent);
     } else {
       highlightPhraseInDOM(phraseText, color, persistent);
     }
-  }, [item?.type, highlightPhraseInEpub, highlightPhraseInDOM]);
+  }, [activeType, highlightPhraseInEpub, highlightPhraseInDOM]);
 
   // Borra TODOS los resaltados de cita persistentes (data-citation-highlight en
   // PDF, mark.__citation-highlight__ en EPUB). El resaltado normal de
@@ -1178,7 +1207,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // si no, el color de la cita anterior queda pegado y se ve un color distinto
   // al de la cita destino.
   const clearPersistentHighlights = useCallback(() => {
-    if (item?.type === 'epub') {
+    if (activeType === 'epub') {
       const contentsList = (epubRenditionRef.current as any)?.manager?.getContents?.() || [];
       contentsList.forEach((contents: any) => {
         const doc: Document = contents?.document;
@@ -1206,7 +1235,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         delete span.dataset.citationHighlight;
       });
     }
-  }, [item?.type]);
+  }, [activeType]);
 
   // Al cambiar la escala del PDF los rects del overlay (píxeles absolutos)
   // quedan corridos respecto al texto re-renderizado. Se espera a que el zoom
@@ -1248,13 +1277,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     addCitation({
       text: phraseText,
       color,
-      page: item?.type === 'epub' ? undefined : currentPage,
+      page: activeType === 'epub' ? undefined : currentPage,
     });
 
     // Resalta visualmente la frase en el color elegido de forma persistente,
     // para que no se borre cuando el TTS avance a la siguiente frase.
     highlightCurrentPhrase(phraseText, hex, true);
-  }, [phrases, currentPhraseIndex, item?.type, currentPage, highlightCurrentPhrase, addCitation]);
+  }, [phrases, currentPhraseIndex, activeType, currentPage, highlightCurrentPhrase, addCitation]);
 
   // Detener la reproducción de voz
   const handleTtsStop = useCallback(() => {
@@ -1674,7 +1703,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     // EPUB: epubjs renderiza cada "página" visible dentro de uno o más iframes
     // internos (vista de página única o doble). Leemos el texto visible de todos
     // los iframes activos de la rendition actual.
-    if (item?.type === 'epub') {
+    if (activeType === 'epub') {
       return getEpubVisibleText();
     }
     const pageEl = document.getElementById(`pdf-page-${pageNum}`);
@@ -1684,8 +1713,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       if (domText.length > 0) return domText;
     }
     // Fallback OCR para PDFs escaneados
-    if (item?.type === 'pdf' && item.source?.startsWith('/api/files/')) {
-      const fileName = item.source.replace('/api/files/', '');
+    if (activeType === 'pdf' && activeSource?.startsWith('/api/files/')) {
+      const fileName = activeSource.replace('/api/files/', '');
       try {
         const ocrRes = await fetch('/api/ocr-page', {
           method: 'POST',
@@ -1700,7 +1729,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       } catch { /* no-op */ }
     }
     return '';
-  }, [item?.type, item?.source, getEpubVisibleText]);
+  }, [activeType, activeSource, getEpubVisibleText]);
 
   // Cambio de página desde el widget TTS con auto-lectura. Orden estricto
   // para EPUB: primero cambiar de sección y esperar a que epubjs confirme el
@@ -1747,7 +1776,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   const handleTtsPrevPage = useCallback(async () => {
     handleTtsStop();
-    if (item?.type === 'epub') {
+    if (activeType === 'epub') {
       epubRenditionRef.current?.prev();
       await waitForEpubRelocated();
       const text = getEpubVisibleText();
@@ -1765,11 +1794,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setTargetPage({ page: newPage, t: Date.now() });
     setCurrentPage(newPage);
     setTimeout(() => startReadingPdfPage(newPage), 800);
-  }, [currentPage, item?.type, handleTtsStop, playPhrase, startReadingPdfPage, getEpubVisibleText, waitForEpubRelocated, splitIntoPhrases]);
+  }, [currentPage, activeType, handleTtsStop, playPhrase, startReadingPdfPage, getEpubVisibleText, waitForEpubRelocated, splitIntoPhrases]);
 
   const handleTtsNextPage = useCallback(async () => {
     handleTtsStop();
-    if (item?.type === 'epub') {
+    if (activeType === 'epub') {
       epubRenditionRef.current?.next();
       await waitForEpubRelocated();
       const text = getEpubVisibleText();
@@ -1787,7 +1816,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setTargetPage({ page: newPage, t: Date.now() });
     setCurrentPage(newPage);
     setTimeout(() => startReadingPdfPage(newPage), 800);
-  }, [currentPage, totalPages, item?.type, handleTtsStop, playPhrase, startReadingPdfPage, getEpubVisibleText, waitForEpubRelocated, splitIntoPhrases]);
+  }, [currentPage, totalPages, activeType, handleTtsStop, playPhrase, startReadingPdfPage, getEpubVisibleText, waitForEpubRelocated, splitIntoPhrases]);
 
   // Ref estable para encadenar el avance de página desde onended sin closures stale.
   handleTtsNextPageRef.current = handleTtsNextPage;
@@ -1844,7 +1873,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       // "Inicio del capítulo" en EPUB requiere navegar la rendition al inicio
       // del capítulo actual ANTES de extraer el texto visible, ya que el
       // contenido renderizado cambia tras la navegación.
-      if (item?.type === 'epub' && !selectionSnippet && ttsStartSource === 'chapter') {
+      if (activeType === 'epub' && !selectionSnippet && ttsStartSource === 'chapter') {
         await navigateEpubToChapterStart();
         // Esperar a que epub.js termine de renderizar el nuevo contenido
         await new Promise(resolve => setTimeout(resolve, 400));
@@ -1855,8 +1884,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
     if (!textToRead || textToRead.length === 0) {
       // Fallback OCR para PDFs escaneados (sin text layer)
-      if (item?.type === 'pdf' && item.source?.startsWith('/api/files/')) {
-        const fileName = item.source.replace('/api/files/', '');
+      if (activeType === 'pdf' && activeSource?.startsWith('/api/files/')) {
+        const fileName = activeSource.replace('/api/files/', '');
         const pageNum = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
         try {
           const ocrRes = await fetch('/api/ocr-page', {
@@ -1905,7 +1934,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         case 'chapter':
           // EPUB ya navegó al inicio del capítulo; el texto extraído ya
           // corresponde a ese punto, así que empezamos desde lo visible ahí.
-          startIndex = item?.type === 'epub' ? await getVisiblePhraseStartIndex(phraseList) : getChapterStartIndexInPage(phraseList);
+          startIndex = activeType === 'epub' ? await getVisiblePhraseStartIndex(phraseList) : getChapterStartIndexInPage(phraseList);
           break;
         case 'lastRead':
           startIndex = loadTtsPosition(phraseList);
@@ -1924,6 +1953,37 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     handleTtsStop();
     setShowTtsWidget(false);
   }, [handleTtsStop]);
+
+  // --- Abrir/cerrar un recurso de texto en el lector principal ----------------
+  // Al abrir: se detiene el TTS y se limpia todo resaltado del documento
+  // anterior, y la paginación se reinicia (el recurso empieza en su página 1).
+  // El guardado de progreso/marcador del libro queda pausado mientras el
+  // recurso está abierto (ver efecto de autoguardado más abajo).
+  const handleOpenTextResource = useCallback((resource: ResourceItem) => {
+    handleTtsClose();
+    clearPersistentHighlights();
+    setPendingHighlight(null);
+    setPdfOutlineOpen(false);
+    setActiveResource(resource);
+    setCurrentPage(1);
+    setTotalPages(100);
+    setTargetPage(undefined);
+    setActiveTab('reader');
+  }, [handleTtsClose, clearPersistentHighlights]);
+
+  // Al cerrar: se vuelve a la pestaña Recursos y se restaura la posición de
+  // lectura guardada del libro (bookmarkPage), como al abrir el lector.
+  const handleCloseTextResource = useCallback(() => {
+    handleTtsClose();
+    clearPersistentHighlights();
+    setPendingHighlight(null);
+    setPdfOutlineOpen(false);
+    setActiveResource(null);
+    setCurrentPage(item?.bookmarkPage || 1);
+    setTotalPages(100);
+    setTargetPage(item?.bookmarkPage ? { page: Number(item.bookmarkPage), t: Date.now() } : undefined);
+    setActiveTab('resources');
+  }, [handleTtsClose, clearPersistentHighlights, item?.bookmarkPage]);
 
   useEffect(() => {
     return () => {
@@ -1957,22 +2017,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     // sección destino termina de montarse, así que se puede llamar de inmediato.
     highlightCurrentPhrase(text, color, true);
     setPendingHighlight(null);
-  }, [pendingHighlight, item?.type, highlightCurrentPhrase, clearPersistentHighlights]);
-
-  // Fuentes del libro (PDF/EPUB/TXT/externa) de forma retrocompatible.
-  const bookSources = useMemo(() => getBookSources(item), [item]);
-  const availableFormats = useMemo(
-    () => (['pdf', 'epub', 'txt', 'externa'] as ResourceType[]).filter(t => bookSources[t as keyof typeof bookSources]),
-    [bookSources]
-  );
-  // Versión seleccionada por el usuario cuando el libro tiene varias (PDF+EPUB).
-  const [activeFormat, setActiveFormat] = useState<ResourceType | undefined>(undefined);
-  const primary = useMemo(
-    () => resolvePrimarySource(bookSources, activeFormat) ?? { source: item.source, type: item.type },
-    [bookSources, activeFormat, item.source, item.type]
-  );
-  const activeSource = primary.source;
-  const activeType = primary.type;
+  }, [pendingHighlight, activeType, highlightCurrentPhrase, clearPersistentHighlights]);
 
   // New states for fullscreen and split view
   const [isFullscreen, setIsFullscreen] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
@@ -2217,7 +2262,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     // y 'click' de la rendition (la selección real vive dentro del iframe y
     // window.getSelection() del documento principal siempre está vacío aquí,
     // lo que borraría la toolbar de citas en cada mouseup).
-    if (item?.type === 'epub') return;
+    if (activeType === 'epub') return;
 
     const captureSelection = () => {
       const selection = window.getSelection();
@@ -2263,7 +2308,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
        document.removeEventListener('touchend', handleMouseUp);
        document.removeEventListener('selectionchange', handleSelectionChange);
     };
-  }, [selectionRect, item?.type]);
+  }, [selectionRect, activeType]);
 
 
 
@@ -2313,7 +2358,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   };
 
   const renderReader = () => {
-    if (isPhysicalOnly) {
+    // Un recurso de texto abierto siempre se muestra, aunque el libro sea
+    // solo físico (sus resúmenes/textos adjuntos sí son digitales).
+    if (isPhysicalOnly && !activeResource) {
       return renderPhysicalBookDashboard();
     }
     return (
@@ -2322,9 +2369,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         onClick={handleScreenClick}
      >
         <div className="flex-1 overflow-hidden pointer-events-auto">
-          {activeType === 'pdf' && <PDFReader url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} controlsVisible={pageControlsVisible} outlineOpen={pdfOutlineOpen} onToggleOutline={() => setPdfOutlineOpen(v => !v)} generatedToc={item.generatedToc} onGenerateToc={handleGenerateToc} generatingToc={generatingToc} hideOwnBar={showTtsWidget} mergedBarPortalTarget={showTtsWidget ? mergedBarSlotEl : null} onScaleChange={handlePdfScaleChange} />}
+          {/* key={activeSource}: al alternar libro ↔ recurso se remonta el lector
+              desde cero (página, zoom y estado interno limpios). El índice IA
+              (generatedToc) es del libro: no se ofrece con un recurso abierto. */}
+          {activeType === 'pdf' && <PDFReader key={activeSource} url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} controlsVisible={pageControlsVisible} outlineOpen={pdfOutlineOpen} onToggleOutline={() => setPdfOutlineOpen(v => !v)} generatedToc={activeResource ? undefined : item.generatedToc} onGenerateToc={activeResource ? undefined : handleGenerateToc} generatingToc={generatingToc} hideOwnBar={showTtsWidget} mergedBarPortalTarget={showTtsWidget ? mergedBarSlotEl : null} onScaleChange={handlePdfScaleChange} />}
           {activeType === 'epub' && (
             <EPUBReader
+              key={activeSource}
               url={activeSource}
               controlsVisible={pageControlsVisible}
               hideOwnBar={showTtsWidget}
@@ -2363,7 +2414,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               }}
             />
           )}
-          {activeType === 'txt' && <TxtReader url={activeSource} />}
+          {activeType === 'txt' && <TxtReader key={activeSource} url={activeSource} />}
           {activeType === 'externa' && (
             <div className="w-full h-full flex flex-col pointer-events-auto">
               <div className="bg-[#FFA300]/10 text-[#FFA300] p-3 text-sm font-medium text-center shadow-inner">
@@ -2611,7 +2662,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
                       {/* Página anterior — triángulo+línea izquierda */}
                       <button
-                        disabled={item?.type !== 'epub' && (typeof currentPage === 'number' ? currentPage <= 1 : parseInt(String(currentPage)) <= 1)}
+                        disabled={activeType !== 'epub' && (typeof currentPage === 'number' ? currentPage <= 1 : parseInt(String(currentPage)) <= 1)}
                         onClick={handleTtsPrevPage}
                         className={cn(ttsBtnPad, "bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm")}
                         title="Página Anterior"
@@ -2674,7 +2725,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
                       {/* Página siguiente — triángulo+línea derecha */}
                       <button
-                        disabled={item?.type !== 'epub' && (typeof currentPage === 'number' ? currentPage >= totalPages : parseInt(String(currentPage)) >= totalPages)}
+                        disabled={activeType !== 'epub' && (typeof currentPage === 'number' ? currentPage >= totalPages : parseInt(String(currentPage)) >= totalPages)}
                         onClick={handleTtsNextPage}
                         className={cn(ttsBtnPad, "bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm")}
                         title="Página Siguiente"
@@ -2741,7 +2792,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         className="w-full h-full relative bg-white flex flex-col pointer-events-auto overflow-hidden text-sm"
      >
         <NotesPanel
-            documentId={bookId}
+            documentId={activeDocId}
             notes={documentNotes}
             addNote={addDocumentNote}
             addBookmark={addDocumentBookmark}
@@ -2754,7 +2805,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               if (note.quote) {
                 setPendingHighlight({ text: note.quote, color: colorDef?.hex || '#fbbf24' });
               }
-              if (item?.type !== 'epub' && note.pageReference) {
+              if (activeType !== 'epub' && note.pageReference) {
                 setTargetPage({ page: Number(note.pageReference), t: Date.now() });
               }
             }}
@@ -2795,6 +2846,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // la página. Comparamos también bookmarkPage para evitar escrituras redundantes.
   useEffect(() => {
     if (!item || !totalPages) return;
+    // Con un recurso de texto abierto, currentPage es la página del RECURSO:
+    // no debe pisar el progreso ni el marcador de lectura del libro.
+    if (activeResource) return;
     const pageNum = Number(currentPage);
     if (!Number.isFinite(pageNum) || pageNum < 1) return;
     const calculatedProgress = Math.min(100, Math.max(0, Math.round((pageNum / totalPages) * 100)));
@@ -2802,7 +2856,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     if (calculatedProgress !== item.progress || pageChanged) {
       updateItem(item.id, { progress: calculatedProgress, bookmarkPage: currentPage });
     }
-  }, [currentPage, totalPages, item, updateItem]);
+  }, [currentPage, totalPages, item, updateItem, activeResource]);
 
   return (
     <div
@@ -2819,6 +2873,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
             <div className="flex items-center gap-2 sm:gap-4 shrink-0">
             <button
                 onClick={() => {
+                  // Con un recurso de texto abierto, "Volver" regresa a la
+                  // pestaña Recursos del libro, no cierra el lector.
+                  if (activeResource) {
+                    handleCloseTextResource();
+                    return;
+                  }
                   fullscreenIntentRef.current = false;
                   const doc: any = document;
                   if (doc.fullscreenElement || doc.webkitFullscreenElement) {
@@ -2829,18 +2889,23 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                   else onClose();
                 }}
                 className="flex items-center text-slate-500 hover:text-[var(--primary)] transition-colors shrink-0 bg-slate-100/50 hover:bg-slate-100 p-2 rounded-lg"
-                title="Volver"
+                title={activeResource ? 'Volver a Recursos' : 'Volver'}
             >
                 <ChevronLeft className="w-5 h-5" />
             </button>
             <div className="h-6 w-px bg-slate-200 mx-1 shrink-0 hidden sm:block" />
             <div className="flex-1 min-w-0 flex items-center pr-2 hidden md:flex">
                 <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight leading-tight truncate">
-                {item.title}
+                {activeResource ? activeResource.title : item.title}
                 </h2>
+                {activeResource && (
+                  <span className="ml-2 text-[9px] uppercase font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded shrink-0">
+                    {activeResource.isSummary ? 'Resumen' : 'Recurso'}
+                  </span>
+                )}
             </div>
             {/* Selector de versión PDF/EPUB cuando el libro tiene ambos formatos */}
-            {availableFormats.filter(f => f === 'pdf' || f === 'epub' || f === 'txt').length > 1 && (
+            {!activeResource && availableFormats.filter(f => f === 'pdf' || f === 'epub' || f === 'txt').length > 1 && (
               <div className="flex bg-slate-100 p-0.5 rounded-lg shrink-0 gap-0.5 items-center">
                 {availableFormats.filter(f => f === 'pdf' || f === 'epub' || f === 'txt').map(f => (
                   <button
@@ -2908,7 +2973,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
  
              {/* Fixed right tools */}
              {activeTab === 'reader' && (
-               isPhysicalOnly ? (
+               (isPhysicalOnly && !activeResource) ? (
                  // Libro solo físico: mismo motor que el digital, solo se
                  // desactiva lo que no aplica sin texto digital (TTS, brillo
                  // y Marcadores, ya que sin archivo no hay páginas reales que
@@ -2964,13 +3029,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                   
                   {/* Multi-bookmark: lista desplegable + modal de nombre. */}
                   <BookmarksMenu
-                     documentId={bookId}
+                     documentId={activeDocId}
                      currentPage={currentPage}
-                     isEpub={item?.type === 'epub'}
+                     isEpub={activeType === 'epub'}
                      getEpubAnchor={getEpubBookmarkAnchor}
                      onNavigate={(page) => {
                        // EPUB: el "page" guardado es un CFI → navegar por CFI.
-                       if (item?.type === 'epub' && typeof page === 'string' && page.startsWith('epubcfi(')) {
+                       if (activeType === 'epub' && typeof page === 'string' && page.startsWith('epubcfi(')) {
                          navigateEpubToCfi(page);
                        } else {
                          setTargetPage({ page: Number(page), t: Date.now() });
@@ -3024,7 +3089,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                          // (currentPage queda fijo en el bookmark inicial), así
                          // que omitimos la referencia de página para no guardar
                          // un dato incorrecto.
-                         addCitation({ text: selectedText, color: colorItem.color, page: item?.type === 'epub' ? undefined : currentPage });
+                         addCitation({ text: selectedText, color: colorItem.color, page: activeType === 'epub' ? undefined : currentPage });
                          // Abrir el panel ya es solo una decisión de UX (feedback
                          // visual inmediato), no una condición para que la cita
                          // se guarde — addCitation() ya la persistió.
@@ -3109,14 +3174,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           {/* Recursos (videos, audios, textos, imágenes) */}
           {activeTab === 'resources' && (
             <div className="absolute inset-0 z-40 bg-white animate-in fade-in slide-in-from-bottom-5 duration-300 shadow-2xl">
-              <ResourcesPanel bookId={item.id} />
+              <ResourcesPanel bookId={item.id} onOpenTextResource={handleOpenTextResource} />
             </div>
           )}
 
           {/* Citations Administration View */}
           {activeTab === 'citations' && (
              <CitationsManager
-               documentId={item.id}
+               documentId={activeDocId}
                notes={documentNotes}
                activePalette={activePalette}
                savePalette={savePalette}
@@ -3131,7 +3196,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                  if (note.quote) {
                    setPendingHighlight({ text: note.quote, color: colorDef?.hex || '#fbbf24' });
                  }
-                 if (item?.type !== 'epub' && note.pageReference) {
+                 if (activeType !== 'epub' && note.pageReference) {
                    setTargetPage({ page: Number(note.pageReference), t: Date.now() });
                  }
                  setActiveTab('reader');
