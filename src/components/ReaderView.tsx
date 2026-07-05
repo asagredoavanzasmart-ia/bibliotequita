@@ -241,32 +241,63 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     try { return localStorage.getItem('tts-offline-voice-uri') || ''; } catch { return ''; }
   });
 
-  // getVoices() puede devolver [] en la primera llamada y poblarse async
-  // (sobre todo en Chrome/Android) — se relee al montar y en 'voiceschanged'.
+  // Filtro y orden de las voces del sistema. Solo español e inglés — pero
+  // aceptando también los códigos ISO de 3 letras que reportan algunos
+  // Android ("spa-ESP", "eng-USA") además de "es-ES"/"en-US"; con el filtro
+  // estricto anterior, en esos dispositivos TODAS las voces en español se
+  // descartaban y el desplegable quedaba solo con "Automática". Y si aun
+  // así ninguna voz pasa el filtro pero el sistema SÍ tiene voces, se
+  // muestran todas antes que dejar la lista vacía.
+  const filterAndSortVoices = useCallback((all: SpeechSynthesisVoice[]): SpeechSynthesisVoice[] => {
+    const isEs = (v: SpeechSynthesisVoice) => { const l = v.lang?.toLowerCase() || ''; return l.startsWith('es') || l.startsWith('spa'); };
+    const isEn = (v: SpeechSynthesisVoice) => { const l = v.lang?.toLowerCase() || ''; return l.startsWith('en') || l.startsWith('eng'); };
+    const relevant = all.filter(v => isEs(v) || isEn(v));
+    const pool = relevant.length > 0 ? relevant : all;
+    return [...pool].sort((a, b) => {
+      const aEs = isEs(a) ? 0 : 1;
+      const bEs = isEs(b) ? 0 : 1;
+      return aEs - bEs || a.name.localeCompare(b.name);
+    });
+  }, []);
+
+  // getVoices() puede devolver [] en la primera llamada y poblarse DESPUÉS,
+  // y en Chrome/Android el evento 'voiceschanged' no siempre se dispara —
+  // además del listener, se sondea con reintentos crecientes hasta obtener
+  // algo (o agotar los intentos), y refreshOfflineVoices permite reintentar
+  // al abrir el desplegable (dentro de un gesto del usuario, donde algunos
+  // Android sí entregan la lista).
+  const refreshOfflineVoices = useCallback(() => {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    const all = synth.getVoices();
+    if (all.length > 0) setOfflineVoices(filterAndSortVoices(all));
+  }, [filterAndSortVoices]);
+
   useEffect(() => {
     const synth = window.speechSynthesis;
     if (!synth) return;
-    const loadVoices = () => {
-      // Solo español e inglés: el navegador puede exponer decenas de voces
-      // (una por cada idioma instalado en el sistema), y la inmensa mayoría
-      // no sirve para leer libros en español — la lista quedaba enorme e
-      // irrelevante para elegir una favorita.
-      const relevant = synth.getVoices().filter(v => {
-        const lang = v.lang?.toLowerCase() || '';
-        return lang.startsWith('es') || lang.startsWith('en');
-      });
-      // Español primero, luego inglés; alfabético dentro de cada grupo.
-      const sorted = relevant.sort((a, b) => {
-        const aEs = a.lang?.toLowerCase().startsWith('es') ? 0 : 1;
-        const bEs = b.lang?.toLowerCase().startsWith('es') ? 0 : 1;
-        return aEs - bEs || a.name.localeCompare(b.name);
-      });
-      setOfflineVoices(sorted);
+    let cancelled = false;
+    let attempts = 0;
+    const tryLoad = () => {
+      if (cancelled) return;
+      const all = synth.getVoices();
+      if (all.length > 0) {
+        setOfflineVoices(filterAndSortVoices(all));
+        return;
+      }
+      if (attempts < 20) {
+        attempts += 1;
+        setTimeout(tryLoad, 500);
+      }
     };
-    loadVoices();
-    synth.addEventListener('voiceschanged', loadVoices);
-    return () => synth.removeEventListener('voiceschanged', loadVoices);
-  }, []);
+    const onChanged = () => tryLoad();
+    tryLoad();
+    synth.addEventListener('voiceschanged', onChanged);
+    return () => {
+      cancelled = true;
+      synth.removeEventListener('voiceschanged', onChanged);
+    };
+  }, [filterAndSortVoices]);
 
   const setPreferredOfflineVoice = useCallback((uri: string) => {
     setPreferredOfflineVoiceURI(uri);
@@ -2478,15 +2509,17 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                     <span className="text-[var(--text-muted)] font-semibold shrink-0">Voz:</span>
                                     <button
                                        ref={voiceButtonRef}
-                                       disabled={isOffline && offlineVoices.length === 0}
                                        onClick={() => {
+                                          // Dentro del gesto del usuario algunos Android recién
+                                          // entregan getVoices(): reintenta la carga al abrir.
+                                          if (isOffline) refreshOfflineVoices();
                                           if (!showVoiceDropdown) computeVoiceDropdownPos();
                                           setShowVoiceDropdown(v => !v);
                                        }}
-                                       className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 font-bold text-slate-800 dark:text-slate-100 cursor-pointer transition-colors shadow-sm max-w-[170px] truncate disabled:opacity-50 disabled:cursor-not-allowed"
+                                       className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 font-bold text-slate-800 dark:text-slate-100 cursor-pointer transition-colors shadow-sm max-w-[170px] truncate"
                                     >
                                        {isFavorite && <span className="text-yellow-400 text-[10px]">★</span>}
-                                       <span className="truncate">{isOffline && offlineVoices.length === 0 ? 'No disponible' : currentVoiceName}</span>
+                                       <span className="truncate">{currentVoiceName}</span>
                                        <ChevronUp className="w-3 h-3 shrink-0 opacity-50" />
                                     </button>
                                  </div>
@@ -2510,6 +2543,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                                    >
                                                       <span className="truncate text-xs">Automática (recomendada)</span>
                                                    </button>
+                                                   {offlineVoices.length === 0 && (
+                                                      <p className="text-[10px] leading-snug text-[var(--text-muted)] px-2 py-1.5">
+                                                         El navegador aún no entrega la lista de voces del sistema. Cierra y vuelve a abrir este menú; si sigue vacío, revisa que el motor "Salida de texto a voz" de Google esté activo en Ajustes → Accesibilidad.
+                                                      </p>
+                                                   )}
                                                 </div>
                                              )}
                                              {favorites.length > 0 && (
@@ -2536,6 +2574,20 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                                          <span onClick={(e) => toggleFavoriteEntry(v.id, e)} className="text-slate-300 hover:text-yellow-400 shrink-0 px-1 cursor-pointer">☆</span>
                                                       </button>
                                                    ))}
+                                                </div>
+                                             )}
+                                             {/* Guía para instalar más voces: la lista viene del motor
+                                                 TTS del sistema (via Chrome). Una web no puede abrir la
+                                                 pantalla de ajustes de Android (eso es un Intent nativo,
+                                                 como hace ReadEra), pero las voces que el usuario
+                                                 descargue ahí aparecen aquí solas ('voiceschanged').
+                                                 Las voces "-local" funcionan sin internet; las
+                                                 "-network" requieren conexión aunque sean del sistema. */}
+                                             {isOffline && (
+                                                <div className="px-3 py-2 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
+                                                   <p className="text-[10px] leading-snug text-[var(--text-muted)]">
+                                                      Para instalar más voces: <span className="font-semibold">Ajustes → Accesibilidad → Salida de texto a voz → ⚙ Motor de Google → Instalar datos de voz</span>. Las nuevas aparecen aquí automáticamente. Prefiere voces <span className="font-semibold">-local</span>: funcionan sin internet (las -network requieren conexión).
+                                                   </p>
                                                 </div>
                                              )}
                                           </div>
