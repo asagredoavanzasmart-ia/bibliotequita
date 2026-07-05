@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { BookItem, PlaylistData, StageData } from '../types';
 import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag, Download, Camera, WifiOff, Loader2 } from 'lucide-react';
 import { bookOfflineUrls, downloadBookOffline, removeBookOffline, isBookOffline, offlineSupported } from '../lib/offlineBooks';
-import { ImageCropModal } from './ImageCropModal';
+import { ImageEditorModal } from './ImageEditorModal';
 import { cn, colorSwatchProps } from '../lib/utils';
 import { useLibrary } from '../hooks/useLibrary';
 import { StarRating } from './StarRating';
@@ -57,6 +57,14 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   const [folderIds, setFolderIds] = useState<string[]>(item.folderIds || []);
   const [stageIds, setStageIds] = useState<string[]>(item.stageIds || []);
   const [coverUrl, setCoverUrl] = useState(item.thumbnailUrl || '');
+  // Portada SIN editar, conservada para poder reabrir el editor (ver
+  // ImageEditorModal / botón "Reeditar portada" más abajo).
+  const [coverOriginalUrl, setCoverOriginalUrl] = useState(item.coverOriginalUrl || '');
+  // Blob del original en curso de reedición: se pasa como `file` al editor
+  // cuando el usuario pulsa "Reeditar portada" (se descarga desde
+  // coverOriginalUrl bajo demanda, no se mantiene cargado siempre).
+  const [reeditingOriginal, setReeditingOriginal] = useState<Blob | null>(null);
+  const [loadingOriginal, setLoadingOriginal] = useState(false);
   const [type, setType] = useState(item.type || 'externa');
   const [rating, setRating] = useState(item.rating || 0);
   // Estado local = IDs de TagData asignados a este libro (no nombres).
@@ -191,6 +199,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
       pdfSource: pdfSource || undefined,
       epubSource: epubSource || undefined,
       thumbnailUrl: coverUrl,
+      coverOriginalUrl: coverOriginalUrl || undefined,
       type: primaryType,
       rating,
       tags: tagIds,
@@ -254,19 +263,29 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
       }
   };
 
-  // Acepta File (input normal) o Blob (resultado del editor de recorte tras
-  // tomar la foto con la cámara). Centraliza subida + borrado del huérfano +
-  // análisis IA para reusarse en ambos flujos.
-  const uploadCover = async (file: File | Blob) => {
+  // Acepta File (input normal) o Blob (resultado del editor tras tomar la
+  // foto con la cámara, o de una reedición). Centraliza subida + borrado del
+  // huérfano + análisis IA para reusarse en todos los flujos. `original`
+  // (solo cuando viene del editor) se sube aparte y se guarda en
+  // coverOriginalUrl — un archivo subido directamente no tiene original propio.
+  const uploadCover = async (file: File | Blob, original?: Blob) => {
     const previousUrl = coverUrl;
+    const previousOriginalUrl = coverOriginalUrl;
     const previewUrl = URL.createObjectURL(file);
     setCoverUrl(previewUrl);
     try {
       const { url } = await uploadFile(file, `cover-${Date.now()}.jpg`);
       setCoverUrl(url);
       URL.revokeObjectURL(previewUrl);
-      if (previousUrl?.startsWith('/api/files/')) {
+      if (previousUrl?.startsWith('/api/files/') && previousUrl !== url) {
         deleteUploadedFile(previousUrl);
+      }
+      if (original) {
+        const { url: originalUrl } = await uploadFile(original, `cover-original-${Date.now()}.jpg`);
+        setCoverOriginalUrl(originalUrl);
+        if (previousOriginalUrl?.startsWith('/api/files/') && previousOriginalUrl !== originalUrl) {
+          deleteUploadedFile(previousOriginalUrl);
+        }
       }
     } catch (err) {
       console.error('Error subiendo portada al servidor:', err);
@@ -283,6 +302,22 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     const file = e.target.files?.[0];
     if (!file) return;
     await uploadCover(file);
+  };
+
+  // Descarga el original guardado y reabre el editor desde cero (sin los
+  // ajustes previos, que ya quedaron "quemados" en la portada actual).
+  const handleReeditCover = async () => {
+    if (!coverOriginalUrl) return;
+    setLoadingOriginal(true);
+    try {
+      const res = await fetch(coverOriginalUrl);
+      const blob = await res.blob();
+      setReeditingOriginal(blob);
+    } catch (err) {
+      console.error('No se pudo descargar la portada original:', err);
+    } finally {
+      setLoadingOriginal(false);
+    }
   };
 
   // Foto tomada con la cámara: se abre el editor de recorte/rotación antes
@@ -516,6 +551,23 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   </button>
                   <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handleCameraCapture} />
                </div>
+
+               {/* Reeditar: solo aparece si hay un original guardado (portadas
+                   subidas antes de este cambio, o vía "Cambiar portada" sin
+                   pasar por el editor, no lo tienen). Descarga el original y
+                   reabre el editor desde cero, sin los ajustes ya quemados
+                   en la portada actual. */}
+               {coverOriginalUrl && (
+                  <button
+                     type="button"
+                     onClick={handleReeditCover}
+                     disabled={loadingOriginal}
+                     className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200 hover:border-[var(--primary)]/50 disabled:opacity-50 transition-colors"
+                  >
+                     {loadingOriginal ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Pencil className="w-3.5 h-3.5" />}
+                     Reeditar portada
+                  </button>
+               )}
 
                {/* Posesión: físico / digital / wishlist */}
                <div className="grid grid-cols-3 gap-2">
@@ -1541,16 +1593,29 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   );
 
   const cropModal = pendingCameraFile && (
-    <ImageCropModal
+    <ImageEditorModal
       file={pendingCameraFile}
       onCancel={() => setPendingCameraFile(null)}
-      onConfirm={(blob) => { setPendingCameraFile(null); uploadCover(blob); }}
+      onConfirm={(edited, original) => { setPendingCameraFile(null); uploadCover(edited, original); }}
+    />
+  );
+
+  // Reedición: reabre el editor con el original guardado, sin los ajustes
+  // anteriores (ya quemados en la portada actual). Al confirmar, sube el
+  // nuevo resultado editado — el original NO se vuelve a subir (sigue siendo
+  // el mismo archivo), pero uploadCover igual recibe `original` para poder
+  // reemplazarlo si en el futuro se editara desde ahí un archivo distinto.
+  const reeditModal = reeditingOriginal && (
+    <ImageEditorModal
+      file={reeditingOriginal}
+      onCancel={() => setReeditingOriginal(null)}
+      onConfirm={(edited) => { setReeditingOriginal(null); uploadCover(edited); }}
     />
   );
 
   if (inline) {
-    return <>{modalContent}{cropModal}</>;
+    return <>{modalContent}{cropModal}{reeditModal}</>;
   }
 
-  return createPortal(<>{modalContent}{cropModal}</>, document.body);
+  return createPortal(<>{modalContent}{cropModal}{reeditModal}</>, document.body);
 }

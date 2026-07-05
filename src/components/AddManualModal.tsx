@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { BookItem } from '../types';
 import { UploadCloud, X, Plus, CheckCircle2, Link as LinkIcon, Tag, Sparkles, Loader2, Camera, Image as ImageIcon } from 'lucide-react';
-import { ImageCropModal } from './ImageCropModal';
+import { ImageEditorModal } from './ImageEditorModal';
 import { useLibrary } from '../hooks/useLibrary';
 import { cn, colorSwatchProps } from '../lib/utils';
 import { pdfjs } from 'react-pdf';
@@ -72,6 +72,9 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
   const [digitalType, setDigitalType] = useState<'externa' | 'pdf' | 'epub' | 'txt'>('externa');
 
   const [coverUrl, setCoverUrl] = useState('');
+  // Portada SIN editar, conservada para poder reabrir el editor más adelante
+  // (ver ImageEditorModal). Solo existe si la portada pasó por el editor.
+  const [coverOriginalUrl, setCoverOriginalUrl] = useState('');
   const coverInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -161,11 +164,15 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       }
   };
 
-  // Acepta File (input normal) o Blob (resultado del editor de recorte tras
-  // tomar la foto con la cámara). Centraliza subida + borrado del huérfano +
-  // análisis IA para reusarse en ambos flujos.
-  const uploadCover = async (file: File | Blob) => {
+  // Acepta File (input normal) o Blob (resultado del editor tras tomar la
+  // foto con la cámara). Centraliza subida + borrado del huérfano + análisis
+  // IA para reusarse en ambos flujos. `original` (solo cuando viene del
+  // editor) se sube aparte y se guarda en coverOriginalUrl para poder
+  // reabrir el editor más adelante — un archivo subido directamente (sin
+  // pasar por ImageEditorModal) no tiene original propio.
+  const uploadCover = async (file: File | Blob, original?: Blob) => {
     const previousCoverUrl = coverUrl;
+    const previousOriginalUrl = coverOriginalUrl;
     const previewUrl = URL.createObjectURL(file);
     setCoverUrl(previewUrl);
     try {
@@ -174,6 +181,15 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       URL.revokeObjectURL(previewUrl);
       if (previousCoverUrl?.startsWith('/api/files/') && previousCoverUrl !== url) {
         deleteUploadedFile(previousCoverUrl);
+      }
+      if (original) {
+        const { url: originalUrl } = await uploadFile(original, `cover-original-${Date.now()}.jpg`);
+        setCoverOriginalUrl(originalUrl);
+        if (previousOriginalUrl?.startsWith('/api/files/') && previousOriginalUrl !== originalUrl) {
+          deleteUploadedFile(previousOriginalUrl);
+        }
+      } else {
+        setCoverOriginalUrl('');
       }
     } catch (err) {
       console.error('Error subiendo portada al servidor:', err);
@@ -484,6 +500,7 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
       pdfSource: digitalType === 'pdf' ? digitalSource || undefined : undefined,
       epubSource: digitalType === 'epub' ? digitalSource || undefined : undefined,
       thumbnailUrl: coverUrl,
+      coverOriginalUrl: coverOriginalUrl || undefined,
       folderIds: selectedFolderIds,
       stageIds: [],
       subject: formData.subject,
@@ -904,10 +921,10 @@ export function AddManualModal({ onClose, onAdd, demoQuota }: AddManualModalProp
     <>
       {modalContent}
       {pendingCameraFile && (
-        <ImageCropModal
+        <ImageEditorModal
           file={pendingCameraFile}
           onCancel={() => setPendingCameraFile(null)}
-          onConfirm={(blob) => { setPendingCameraFile(null); uploadCover(blob); }}
+          onConfirm={(edited, original) => { setPendingCameraFile(null); uploadCover(edited, original); }}
         />
       )}
     </>,
