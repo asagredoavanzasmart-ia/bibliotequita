@@ -25,7 +25,8 @@ import type { Rendition } from 'epubjs';
 import { cn, getBookSources, resolvePrimarySource } from '../lib/utils';
 import type { ResourceItem, ResourceType } from '../types';
 import { PDFReader } from './PDFReader';
-import { EPUBReader } from './EPUBReader';
+import { EPUBReader as EPUBReaderLegacy } from './EPUBReaderLegacy';
+import { EpubHtmlReader, EpubReaderHandle, serializeAnchor, parseAnchor } from './EpubHtmlReader';
 import { TxtReader } from './TxtReader';
 import { FolderManagerModal } from './FolderManagerModal';
 import { NotesPanel } from './NotesPanel';
@@ -157,6 +158,23 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Referencia a la Rendition de epubjs — necesaria para acceder al contenido
   // del iframe interno (selección de texto para citas y extracción para TTS).
   const epubRenditionRef = useRef<Rendition | null>(null);
+
+  // --- Motor EPUB v2 (sin iframes, ver EpubHtmlReader) ----------------------
+  // Si el parser nuevo falla con un libro concreto, epubV2Failed activa el
+  // lector legacy (iframes) SOLO para ese documento — nada se rompe.
+  // Todas las funciones epub-específicas de este archivo consultan PRIMERO
+  // epubReaderRef (contrato v2) y solo si es null caen al camino legacy.
+  const epubReaderRef = useRef<EpubReaderHandle | null>(null);
+  const [epubV2Failed, setEpubV2Failed] = useState(false);
+  // El fallback es por documento: al cambiar de fuente se reintenta con v2.
+  useEffect(() => { setEpubV2Failed(false); }, [activeSource]);
+  // Ancla actual (para citas con posición exacta). Función simple, no hook.
+  const currentEpubAnchorString = (): string | undefined => {
+    const h = epubReaderRef.current;
+    if (!h) return undefined;
+    const a = h.getCurrentAnchor();
+    return a ? serializeAnchor(a) : undefined;
+  };
   
   // Start from bookmark page if saved to re-resume exactly where reader left off 
   const [currentPage, setCurrentPage ] = useState<number | string>(item?.bookmarkPage || 1);
@@ -455,6 +473,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Texto visible en los iframes internos de la rendition de epubjs (vista
   // de página única o doble — concatena todas las páginas activas).
   const getEpubVisibleText = useCallback(() => {
+    // Motor v2: visibilidad y texto salen del MISMO DOM (contrato). Con esto
+    // muere el bug "el TTS empieza leyendo texto que no está en pantalla".
+    const h = epubReaderRef.current;
+    if (h) return h.getVisibleText();
     const contentsList = (epubRenditionRef.current as any)?.manager?.getContents?.() || [];
     return contentsList
       .map((c: any) => c?.document?.body?.textContent || '')
@@ -494,6 +516,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // se muestra la sección que lo contiene; después el resaltado con
   // reintentos la encuentra ya renderizada y la centra en pantalla.
   const navigateEpubToQuote = useCallback(async (quote: string): Promise<void> => {
+    // Motor v2: todo el libro ya está renderizado — búsqueda directa y
+    // centrado síncrono, sin cargar secciones fuera de pantalla.
+    const h = epubReaderRef.current;
+    if (h) {
+      h.goToText(quote, true);
+      return;
+    }
     const rendition = epubRenditionRef.current as any;
     const book = rendition?.book;
     if (!book) return;
@@ -830,6 +859,15 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // el CFI de epubjs (posición exacta) + un fragmento de texto (primera palabra/
   // frase visible) como etiqueta legible. No usa número de página.
   const getEpubBookmarkAnchor = useCallback(async (): Promise<{ cfi: string; label: string } | null> => {
+    // Motor v2: el "cfi" del marcador pasa a ser el ancla topológica propia
+    // ("sN:oM") — navigateEpubToCfi la entiende (parseAnchor).
+    const h = epubReaderRef.current;
+    if (h) {
+      const a = h.getCurrentAnchor();
+      if (!a) return null;
+      const label = h.getVisibleText().slice(0, 80).trim();
+      return { cfi: serializeAnchor(a), label };
+    }
     const rendition = epubRenditionRef.current as any;
     if (!rendition) return null;
     try {
@@ -843,8 +881,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
   }, [getEpubVisibleTextFromLocation]);
 
-  // Navega a una posición del EPUB a partir de su CFI.
+  // Navega a una posición del EPUB a partir de su referencia guardada:
+  // ancla propia "sN:oM" (motor v2) o CFI de epubjs (marcadores antiguos).
   const navigateEpubToCfi = useCallback((cfi: string) => {
+    const anchor = parseAnchor(cfi);
+    if (anchor && epubReaderRef.current) {
+      epubReaderRef.current.goToAnchor(anchor, true);
+      return;
+    }
     const rendition = epubRenditionRef.current as any;
     if (rendition && cfi) {
       try { rendition.display(cfi); } catch { /* CFI inválido: se ignora */ }
@@ -890,6 +934,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Para EPUB: navega la rendition al inicio del capítulo actual usando la
   // tabla de contenidos (TOC) del libro. Devuelve true si pudo navegar.
   const navigateEpubToChapterStart = useCallback(async (): Promise<boolean> => {
+    // Motor v2: inicio del capítulo = inicio de la sección del ancla actual.
+    const h = epubReaderRef.current;
+    if (h) {
+      const a = h.getCurrentAnchor();
+      h.goToAnchor({ s: a?.s ?? 0, o: 0 });
+      return true;
+    }
     const rendition = epubRenditionRef.current as any;
     if (!rendition) return false;
     try {
@@ -1083,6 +1134,21 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       epubHighlightRetryRef.current = null;
     }
 
+    // Motor v2: el resaltado vive en el contrato (marks en flujo que
+    // refluyen solos con el zoom). Reintentos solo por si el DOM aún se
+    // está montando.
+    const h = epubReaderRef.current;
+    if (h) {
+      const ok = h.highlightText(phraseText, color, persistent);
+      if (!ok && retriesLeft > 0 && phraseText && phraseText.trim().length >= 3) {
+        epubHighlightRetryRef.current = setTimeout(() => {
+          epubHighlightRetryRef.current = null;
+          highlightPhraseInEpub(phraseText, color, retriesLeft - 1, persistent);
+        }, 400);
+      }
+      return;
+    }
+
     const contentsList = (epubRenditionRef.current as any)?.manager?.getContents?.() || [];
     let matchedInAnySection = false;
 
@@ -1243,6 +1309,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // al de la cita destino.
   const clearPersistentHighlights = useCallback(() => {
     if (activeType === 'epub') {
+      // Motor v2: los marks viven en el contenedor propio.
+      epubReaderRef.current?.clearHighlights(true);
       const contentsList = (epubRenditionRef.current as any)?.manager?.getContents?.() || [];
       contentsList.forEach((contents: any) => {
         const doc: Document = contents?.document;
@@ -1312,7 +1380,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     addCitation({
       text: phraseText,
       color,
-      page: activeType === 'epub' ? undefined : currentPage,
+      // EPUB v2: la cita guarda el ANCLA topológica ("sN:oM") — al tocarla
+      // se navega exacto aunque el texto se repita en el libro.
+      page: activeType === 'epub' ? currentEpubAnchorString() : currentPage,
     });
 
     // Resalta visualmente la frase en el color elegido de forma persistente,
@@ -1812,6 +1882,19 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const handleTtsPrevPage = useCallback(async () => {
     handleTtsStop();
     if (activeType === 'epub') {
+      const h = epubReaderRef.current;
+      if (h) {
+        // Motor v2: retroceder una página FIJA (por palabras) — síncrono,
+        // el libro entero ya está renderizado.
+        h.scrollByViewport(-1);
+        const phraseList = splitIntoPhrases(h.getVisibleText());
+        if (phraseList.length > 0) {
+          setPhrases(phraseList);
+          setTtsTextSource('page');
+          playPhrase(0, phraseList, true);
+        }
+        return;
+      }
       epubRenditionRef.current?.prev();
       await waitForEpubRelocated();
       const text = getEpubVisibleText();
@@ -1834,6 +1917,17 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const handleTtsNextPage = useCallback(async () => {
     handleTtsStop();
     if (activeType === 'epub') {
+      const h = epubReaderRef.current;
+      if (h) {
+        h.scrollByViewport(1);
+        const phraseList = splitIntoPhrases(h.getVisibleText());
+        if (phraseList.length > 0) {
+          setPhrases(phraseList);
+          setTtsTextSource('page');
+          playPhrase(0, phraseList, true);
+        }
+        return;
+      }
       epubRenditionRef.current?.next();
       await waitForEpubRelocated();
       const text = getEpubVisibleText();
@@ -2298,11 +2392,13 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   };
 
   useEffect(() => {
-    // El EPUB gestiona su propia selección/limpieza vía los eventos 'selected'
-    // y 'click' de la rendition (la selección real vive dentro del iframe y
-    // window.getSelection() del documento principal siempre está vacío aquí,
-    // lo que borraría la toolbar de citas en cada mouseup).
-    if (activeType === 'epub') return;
+    // SOLO el EPUB legacy (iframes) gestiona su propia selección vía los
+    // eventos 'selected'/'click' de la rendition — en ese modo la selección
+    // vive dentro del iframe y window.getSelection() del documento principal
+    // está vacío (capturarla aquí borraría la toolbar en cada mouseup).
+    // El motor v2 renderiza en el documento principal: este handler lo cubre
+    // igual que a PDF y TXT (una unificación clave del rediseño).
+    if (activeType === 'epub' && epubV2Failed) return;
 
     const captureSelection = () => {
       const selection = window.getSelection();
@@ -2348,7 +2444,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
        document.removeEventListener('touchend', handleMouseUp);
        document.removeEventListener('selectionchange', handleSelectionChange);
     };
-  }, [selectionRect, activeType]);
+  }, [selectionRect, activeType, epubV2Failed]);
 
 
 
@@ -2413,8 +2509,39 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               desde cero (página, zoom y estado interno limpios). El índice IA
               (generatedToc) es del libro: no se ofrece con un recurso abierto. */}
           {activeType === 'pdf' && <PDFReader key={activeSource} url={activeSource} hideControls={isFullscreen && !showControls} onPageChange={handlePageChange} targetPage={targetPage} controlsVisible={pageControlsVisible} outlineOpen={pdfOutlineOpen} onToggleOutline={() => setPdfOutlineOpen(v => !v)} generatedToc={activeResource ? undefined : item.generatedToc} onGenerateToc={activeResource ? undefined : handleGenerateToc} generatingToc={generatingToc} hideOwnBar={showTtsWidget} mergedBarPortalTarget={showTtsWidget ? mergedBarSlotEl : null} onScaleChange={handlePdfScaleChange} />}
-          {activeType === 'epub' && (
-            <EPUBReader
+          {/* EPUB: motor v2 sin iframes (EpubHtmlReader). Si el parser nuevo
+              falla con un libro concreto, se cae automáticamente al lector
+              legacy (react-reader/iframes) SOLO para ese documento. */}
+          {activeType === 'epub' && !epubV2Failed && (
+            <EpubHtmlReader
+              ref={epubReaderRef}
+              key={`v2-${activeSource}`}
+              url={activeSource}
+              controlsVisible={pageControlsVisible}
+              hideOwnBar={showTtsWidget}
+              mergedBarPortalTarget={showTtsWidget ? mergedBarSlotEl : null}
+              onContentTap={() => { if (isFullscreen) setShowControls(prev => !prev); }}
+              onParseError={() => setEpubV2Failed(true)}
+              onReady={() => {
+                // Reanudar en el ancla guardada ("sN:oM"); los CFI legacy se ignoran.
+                const a = parseAnchor(item?.bookmarkPage);
+                if (a) setTimeout(() => epubReaderRef.current?.goToAnchor(a), 60);
+              }}
+              onRelocate={(anchor, p) => {
+                setCurrentPage(p.current);
+                setTotalPages(p.total);
+                if (anchor && item && !activeResource) {
+                  const anchorStr = serializeAnchor(anchor);
+                  const progress = Math.min(100, Math.max(0, Math.round((p.current / Math.max(1, p.total)) * 100)));
+                  if (progress !== item.progress || anchorStr !== item.bookmarkPage) {
+                    updateItem(item.id, { progress, bookmarkPage: anchorStr });
+                  }
+                }
+              }}
+            />
+          )}
+          {activeType === 'epub' && epubV2Failed && (
+            <EPUBReaderLegacy
               key={activeSource}
               url={activeSource}
               controlsVisible={pageControlsVisible}
@@ -2844,10 +2971,15 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               const colorDef = activePalette.find(c => c.id === note.color);
               const hex = colorDef?.hex || '#fbbf24';
               if (activeType === 'epub' && note.quote) {
-                // Primero navegar al capítulo que contiene la cita (puede no
-                // estar renderizado) y RECIÉN entonces disparar el resaltado,
-                // que la centra en pantalla.
                 const quote = note.quote;
+                // Con ancla guardada (motor v2): salto EXACTO aunque el texto
+                // se repita; el resaltado centra y pinta después.
+                const anchor = parseAnchor(note.pageReference);
+                if (anchor && epubReaderRef.current) {
+                  epubReaderRef.current.goToAnchor(anchor, true);
+                  setPendingHighlight({ text: quote, color: hex });
+                  return;
+                }
                 (async () => {
                   await navigateEpubToQuote(quote);
                   setPendingHighlight({ text: quote, color: hex });
@@ -2901,6 +3033,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     // Con un recurso de texto abierto, currentPage es la página del RECURSO:
     // no debe pisar el progreso ni el marcador de lectura del libro.
     if (activeResource) return;
+    // EPUB v2: el progreso y el marcador se guardan como ANCLA topológica
+    // desde onRelocate del propio lector — este efecto (numérico) los
+    // pisaría con un número de página, que es justo lo prohibido.
+    if (activeType === 'epub') return;
     const pageNum = Number(currentPage);
     if (!Number.isFinite(pageNum) || pageNum < 1) return;
     const calculatedProgress = Math.min(100, Math.max(0, Math.round((pageNum / totalPages) * 100)));
@@ -3087,7 +3223,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                      getEpubAnchor={getEpubBookmarkAnchor}
                      onNavigate={(page) => {
                        // EPUB: el "page" guardado es un CFI → navegar por CFI.
-                       if (activeType === 'epub' && typeof page === 'string' && page.startsWith('epubcfi(')) {
+                       if (activeType === 'epub' && typeof page === 'string' && (page.startsWith('epubcfi(') || /^s\d+:o\d+$/.test(page))) {
                          navigateEpubToCfi(page);
                        } else {
                          setTargetPage({ page: Number(page), t: Date.now() });
@@ -3141,7 +3277,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                          // (currentPage queda fijo en el bookmark inicial), así
                          // que omitimos la referencia de página para no guardar
                          // un dato incorrecto.
-                         addCitation({ text: selectedText, color: colorItem.color, page: activeType === 'epub' ? undefined : currentPage });
+                         addCitation({ text: selectedText, color: colorItem.color, page: activeType === 'epub' ? currentEpubAnchorString() : currentPage });
                          // Abrir el panel ya es solo una decisión de UX (feedback
                          // visual inmediato), no una condición para que la cita
                          // se guarde — addCitation() ya la persistió.
@@ -3247,9 +3383,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                  const colorDef = activePalette.find(c => c.id === note.color);
                  const hex = colorDef?.hex || '#fbbf24';
                  if (activeType === 'epub' && note.quote) {
-                   // Igual que en NotesPanel: navegar al capítulo de la cita
-                   // (buscándola en todo el libro) antes de resaltar/centrar.
                    const quote = note.quote;
+                   const anchor = parseAnchor(note.pageReference);
+                   if (anchor && epubReaderRef.current) {
+                     epubReaderRef.current.goToAnchor(anchor, true);
+                     setPendingHighlight({ text: quote, color: hex });
+                     setActiveTab('reader');
+                     return;
+                   }
                    (async () => {
                      await navigateEpubToQuote(quote);
                      setPendingHighlight({ text: quote, color: hex });

@@ -396,7 +396,11 @@ export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, 
                               }}
                               className="text-xs text-[#00558F] font-semibold hover:underline inline"
                             >
-                              {timeReferences ? `(${formatRef(note.pageReference)})` : `(pag.${note.pageReference})`}
+                              {timeReferences
+                                ? `(${formatRef(note.pageReference)})`
+                                : /^s\d+:o\d+$/.test(String(note.pageReference))
+                                  ? '(ver)' /* ancla topológica EPUB: el crudo "sN:oM" no aporta */
+                                  : `(pag.${note.pageReference})`}
                             </button>
                           </>
                         )}
