@@ -486,6 +486,41 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     });
   }, []);
 
+  // Navega el EPUB hasta el capítulo que contiene una cita guardada. El
+  // resaltado (highlightPhraseInEpub) solo puede buscar en las secciones YA
+  // renderizadas — si la cita vive en un capítulo aún no montado, "no
+  // funcionaba": ni saltaba ni marcaba nada. Aquí se busca el texto en TODO
+  // el libro (spine, sección por sección, cargándolas fuera de pantalla) y
+  // se muestra la sección que lo contiene; después el resaltado con
+  // reintentos la encuentra ya renderizada y la centra en pantalla.
+  const navigateEpubToQuote = useCallback(async (quote: string): Promise<void> => {
+    const rendition = epubRenditionRef.current as any;
+    const book = rendition?.book;
+    if (!book) return;
+    const clean = quote.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (clean.length < 3) return;
+    // Si la cita ya está en el contenido visible/renderizado, no hay que
+    // navegar: el resaltado la encontrará y centrará directamente.
+    const visible = getEpubVisibleText().normalize('NFKC').replace(/\s+/g, ' ').toLowerCase();
+    if (visible.includes(clean)) return;
+    try {
+      const spineItems: any[] = book.spine?.spineItems || [];
+      for (const section of spineItems) {
+        try {
+          await section.load(book.load.bind(book));
+          const text = (section.document?.body?.textContent || '').normalize('NFKC').replace(/\s+/g, ' ').toLowerCase();
+          const found = text.includes(clean);
+          section.unload();
+          if (found) {
+            await rendition.display(section.href);
+            await waitForEpubRelocated();
+            return;
+          }
+        } catch { /* sección ilegible: probar con la siguiente */ }
+      }
+    } catch { /* spine no disponible: el resaltado intentará sobre lo visible */ }
+  }, [getEpubVisibleText, waitForEpubRelocated]);
+
   // Agrupa los spans de la capa de texto de pdf.js en LÍNEAS reales (por
   // posición vertical) y cada línea conserva sus spans en orden. Es la ÚNICA
   // función que decide "qué es una línea" — la usan tanto getActivePageText
@@ -2802,8 +2837,20 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
             onNavigateToPage={(page) => setTargetPage({ page: Number(page), t: Date.now() })}
             onNavigateToCitation={(note) => {
               const colorDef = activePalette.find(c => c.id === note.color);
+              const hex = colorDef?.hex || '#fbbf24';
+              if (activeType === 'epub' && note.quote) {
+                // Primero navegar al capítulo que contiene la cita (puede no
+                // estar renderizado) y RECIÉN entonces disparar el resaltado,
+                // que la centra en pantalla.
+                const quote = note.quote;
+                (async () => {
+                  await navigateEpubToQuote(quote);
+                  setPendingHighlight({ text: quote, color: hex });
+                })();
+                return;
+              }
               if (note.quote) {
-                setPendingHighlight({ text: note.quote, color: colorDef?.hex || '#fbbf24' });
+                setPendingHighlight({ text: note.quote, color: hex });
               }
               if (activeType !== 'epub' && note.pageReference) {
                 setTargetPage({ page: Number(note.pageReference), t: Date.now() });
@@ -3193,8 +3240,20 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                }}
                onNavigateToCitation={(note) => {
                  const colorDef = activePalette.find(c => c.id === note.color);
+                 const hex = colorDef?.hex || '#fbbf24';
+                 if (activeType === 'epub' && note.quote) {
+                   // Igual que en NotesPanel: navegar al capítulo de la cita
+                   // (buscándola en todo el libro) antes de resaltar/centrar.
+                   const quote = note.quote;
+                   (async () => {
+                     await navigateEpubToQuote(quote);
+                     setPendingHighlight({ text: quote, color: hex });
+                   })();
+                   setActiveTab('reader');
+                   return;
+                 }
                  if (note.quote) {
-                   setPendingHighlight({ text: note.quote, color: colorDef?.hex || '#fbbf24' });
+                   setPendingHighlight({ text: note.quote, color: hex });
                  }
                  if (activeType !== 'epub' && note.pageReference) {
                    setTargetPage({ page: Number(note.pageReference), t: Date.now() });
