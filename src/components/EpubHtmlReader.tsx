@@ -45,7 +45,11 @@ export interface EpubReaderHandle {
   clearHighlights(includePersistent: boolean): void;
   setFontScale(pct: number): void;       // se mapea al preset chica/grande más cercano
   pageBy(delta: number): void;           // salto a corte de página FIJO (por palabras)
-  scrollByViewport(delta: number): void; // avance de LECTURA continua (TTS), sin saltarse texto
+  scrollByViewport(delta: number): void; // salto manual de página del TTS
+  // Texto que SIGUE al último resaltado TTS (dominio del texto, no píxeles):
+  // el avance automático del audiolibro continúa exactamente donde quedó,
+  // sin repetir ni saltarse nada aunque un párrafo ocupe varias pantallas.
+  getContinuationText(maxWords: number): string;
 }
 
 export const serializeAnchor = (a: EpubAnchor): string => `s${a.s}:o${a.o}`;
@@ -507,6 +511,48 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     return !!firstMark;
   }, [clearHighlights, findInBook]);
 
+  // Texto que sigue al último resaltado TTS (o, si no hay, al ancla visible).
+  // Trabaja SOLO sobre sections[].text (strings puros): el punto de partida
+  // es el fin del último <mark> no persistente — la última frase que el
+  // audiolibro realmente leyó — así el avance automático nunca repite ni se
+  // salta texto, aunque un párrafo ocupe varias pantallas.
+  const getContinuationText = useCallback((maxWords: number): string => {
+    const secs = sectionsRef.current;
+    if (!secs || secs.length === 0) return '';
+    let s = -1, o = -1;
+    const marks = contentRef.current?.querySelectorAll<HTMLElement>(`mark.${HL_CLASS}:not([data-persistent])`);
+    const lastMark = marks && marks.length > 0 ? marks[marks.length - 1] : null;
+    if (lastMark) {
+      const ms = sectionIndexOfNode(lastMark);
+      const sectionEl = ms >= 0 ? getSectionEl(ms) : null;
+      if (sectionEl) {
+        const { map } = buildSectionCharMap(sectionEl);
+        for (let k = map.length - 1; k >= 0; k--) {
+          if (lastMark.contains(map[k].node)) { s = ms; o = k + 1; break; }
+        }
+      }
+    }
+    if (s < 0 || o < 0) {
+      const a = getCurrentAnchor();
+      if (!a) return '';
+      s = a.s; o = a.o;
+    }
+    // Juntar texto desde (s, o) hacia adelante hasta cubrir maxWords…
+    let raw = secs[s] ? secs[s].text.slice(o) : '';
+    for (let si = s + 1; si < secs.length && countWords(raw) < maxWords + 80; si++) {
+      raw += (raw ? ' ' : '') + secs[si].text;
+    }
+    const words = raw.trim() ? raw.trim().split(/\s+/) : [];
+    if (words.length <= maxWords) return words.join(' ');
+    // …y extender hasta cerrar la oración en curso (tope +80 palabras) para
+    // no cortar una frase a la mitad entre lote y lote.
+    let end = maxWords;
+    const limit = Math.min(words.length, maxWords + 80);
+    const endsSentence = (w: string) => /[.!?…]["»”')\]]*$/.test(w);
+    while (end < limit && !endsSentence(words[end - 1])) end++;
+    return words.slice(0, end).join(' ');
+  }, [getCurrentAnchor]);
+
   // ----- Paginación por PALABRAS FIJAS ---------------------------------------
   // El total de páginas depende SOLO del texto (ceil(palabras/300)). En modo
   // vertical, cada corte se materializa UNA vez partiendo el flujo en el
@@ -711,7 +757,8 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     setFontScale,
     pageBy,
     scrollByViewport,
-  }), [getVisibleText, getFullText, getCurrentAnchor, goToAnchor, goToText, highlightText, clearHighlights, setFontScale, pageBy, scrollByViewport]);
+    getContinuationText,
+  }), [getVisibleText, getFullText, getCurrentAnchor, goToAnchor, goToText, highlightText, clearHighlights, setFontScale, pageBy, scrollByViewport, getContinuationText]);
 
   // ----- Cortes iniciales + scroll → página actual + onRelocate --------------
   const relocateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

@@ -446,7 +446,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const playPhraseRef = useRef<((index: number, phraseList: string[]) => Promise<void>) | null>(null);
   // Ref estable a "avanzar página y seguir leyendo" para encadenar al terminar
   // la página actual sin que la lectura se detenga (lectura continua).
-  const handleTtsNextPageRef = useRef<(() => void | Promise<void>) | null>(null);
+  const handleTtsNextPageRef = useRef<((auto?: boolean) => void | Promise<void>) | null>(null);
   // true mientras hay una sesión de lectura activa: distingue "se acabó la
   // página" (debe avanzar a la siguiente) de "el usuario detuvo" (no avanza).
   const ttsActiveRef = useRef(false);
@@ -1470,7 +1470,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       if (nextIndex < phraseList.length) {
         playPhraseRef.current?.(nextIndex, phraseList);
       } else if (ttsTextSource === 'page' && ttsActiveRef.current) {
-        handleTtsNextPageRef.current?.();
+        handleTtsNextPageRef.current?.(true); // avance automático: continuar tras la última frase leída
       } else {
         handleTtsStop();
       }
@@ -1638,7 +1638,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           // o hasta que el usuario detenga manualmente. handleTtsNextPage ya
           // comprueba si es la última página (y entonces no hace nada → la
           // reproducción simplemente termina).
-          handleTtsNextPageRef.current?.();
+          handleTtsNextPageRef.current?.(true); // avance automático: continuar tras la última frase leída
         } else {
           handleTtsStop();
         }
@@ -1914,11 +1914,33 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setTimeout(() => startReadingPdfPage(newPage), 800);
   }, [currentPage, activeType, handleTtsStop, playPhrase, startReadingPdfPage, getEpubVisibleText, waitForEpubRelocated, splitIntoPhrases]);
 
-  const handleTtsNextPage = useCallback(async () => {
-    handleTtsStop();
+  // `auto=true` cuando lo invoca el fin de la lista de frases (avance del
+  // audiolibro); false cuando el usuario toca el botón de página siguiente.
+  const handleTtsNextPage = useCallback(async (auto = false) => {
     if (activeType === 'epub') {
       const h = epubReaderRef.current;
       if (h) {
+        if (auto) {
+          // Avance AUTOMÁTICO: continuar exactamente después de la última
+          // frase leída (fin del último resaltado TTS), en dominio del
+          // TEXTO. El avance por viewport repetía la página cuando un
+          // párrafo ocupaba más de una pantalla: getVisibleText devuelve
+          // bloques COMPLETOS, así que el mismo párrafo gigante volvía a
+          // encabezar la lista y la lectura entraba en bucle.
+          // OJO: capturar ANTES de handleTtsStop (que limpia el resaltado).
+          const cont = h.getContinuationText(300);
+          handleTtsStop();
+          const phraseList = splitIntoPhrases(cont);
+          if (phraseList.length > 0) {
+            setPhrases(phraseList);
+            setTtsTextSource('page');
+            // Sin scroll manual: el resaltado de la primera frase centra la
+            // vista solo (highlightText → scrollIntoView center).
+            playPhrase(0, phraseList, true);
+          }
+          return;
+        }
+        handleTtsStop();
         h.scrollByViewport(1);
         const phraseList = splitIntoPhrases(h.getVisibleText());
         if (phraseList.length > 0) {
@@ -1928,6 +1950,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         }
         return;
       }
+      handleTtsStop();
       epubRenditionRef.current?.next();
       await waitForEpubRelocated();
       const text = getEpubVisibleText();
@@ -1939,6 +1962,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       }
       return;
     }
+    handleTtsStop();
     const page = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
     if (page >= totalPages) return;
     const newPage = page + 1;
@@ -2899,7 +2923,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                       {/* Página siguiente — triángulo+línea derecha */}
                       <button
                         disabled={activeType !== 'epub' && (typeof currentPage === 'number' ? currentPage >= totalPages : parseInt(String(currentPage)) >= totalPages)}
-                        onClick={handleTtsNextPage}
+                        onClick={() => handleTtsNextPage()} /* wrapper: si se pasara el evento como 1er arg, auto sería truthy */
                         className={cn(ttsBtnPad, "bg-[var(--bg-app)] hover:bg-slate-200/50 border border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--primary)] disabled:opacity-30 disabled:pointer-events-none rounded-full transition-all active:scale-95 shadow-sm")}
                         title="Página Siguiente"
                       >
