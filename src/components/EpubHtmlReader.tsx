@@ -12,8 +12,11 @@
 //    de página como referencia persistente.
 //  - Scroll 100% nativo: PROHIBIDO registrar touchstart/move/end propios,
 //    hacer preventDefault del scroll o paginar con columnas CSS/translateX.
-//  - "Páginas" = rebanadas visuales del lienzo vertical (cortes cada
-//    viewportHeight px), no una estructura de layout.
+//  - "Páginas" = cortes FIJOS por cantidad de palabras (propiedad del texto,
+//    no del viewport): mismo total de páginas en cualquier dispositivo. En
+//    vertical, cada corte parte el flujo con una banda gris con sombra
+//    (aspecto de páginas separadas, como el visor de PDF). En horizontal,
+//    columnas CSS + scroll-snap NATIVO (cero JS táctil).
 //  - Render completo al abrir con overlay de carga: el texto SIEMPRE está
 //    disponible (búsquedas, citas y TTS nunca fallan por contenido no
 //    montado).
@@ -24,7 +27,7 @@ import { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHand
 import { createPortal } from 'react-dom';
 import ePub from 'epubjs';
 import { get } from 'idb-keyval';
-import { List, ChevronDown, ChevronLeft, Loader2 } from 'lucide-react';
+import { List, ChevronDown, ChevronLeft, Loader2, GalleryHorizontal, GalleryVertical } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 // ---------------------------------------------------------------------------
@@ -74,6 +77,10 @@ interface SectionData { html: string; text: string; href: string; words: number 
 const FONT_PRESETS = [100, 140] as const; // [letra chica, letra grande]
 const WORDS_PER_PAGE = 300;
 const HL_CLASS = '__epub-hl__';
+const GAP_CLASS = '__epub-gap__';   // banda gris entre "páginas" (modo vertical)
+const H_COLUMN_GAP = 48;            // separación entre columnas-página (modo horizontal)
+
+type ViewMode = 'v' | 'h';
 
 const countWords = (s: string): number => {
   const t = s.trim();
@@ -160,7 +167,13 @@ async function sanitizeSection(body: HTMLElement, sectionHref: string, book: any
 interface CharMapEntry { node: Text; offset: number }
 
 function buildSectionCharMap(sectionEl: HTMLElement): { text: string; map: CharMapEntry[] } {
-  const walker = document.createTreeWalker(sectionEl, NodeFilter.SHOW_TEXT);
+  // Las etiquetas "pág. N" de las bandas de corte viven DENTRO de la sección
+  // pero no son texto del libro: excluirlas mantiene el mapa idéntico a
+  // sections[].text (si entraran, todas las búsquedas/anclas se correrían).
+  const walker = document.createTreeWalker(sectionEl, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) =>
+      n.parentElement?.closest(`.${GAP_CLASS}`) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+  });
   let text = '';
   const map: CharMapEntry[] = [];
   let prevSpace = true;
@@ -235,11 +248,19 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
   });
   const [manuallyHidden, setManuallyHidden] = useState(false);
   const [page, setPage] = useState({ current: 1, total: 1 });
-  // offsetTop (px, coords del scroller) de cada corte de página por palabras.
-  // Se recalcula tras cargar, cambiar tamaño de letra o redimensionar — el
-  // NÚMERO de páginas nunca cambia, solo la posición vertical de los cortes.
+  // offsetTop (px, coords del scroller) de cada banda de corte (modo
+  // vertical). Se re-MIDE tras cargar, cambiar letra o redimensionar — el
+  // NÚMERO de páginas nunca cambia (es por palabras), solo la posición.
   const pageBoundaryTopsRef = useRef<number[]>([]);
-  const [boundaryTops, setBoundaryTops] = useState<number[]>([]);
+  // Modo de lectura: 'v' scroll vertical con cortes tipo PDF; 'h' páginas
+  // deslizables al costado (columnas CSS + scroll-snap, cero JS táctil).
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    try { return window.localStorage.getItem('epub-view-mode') === 'h' ? 'h' : 'v'; } catch { return 'v'; }
+  });
+  const viewModeRef = useRef<ViewMode>(viewMode);
+  useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
+  const [scrollerW, setScrollerW] = useState(0);   // ancho útil del visor (px)
+  const [hPages, setHPages] = useState(1);         // nº de columnas-página en modo horizontal
   const [toc, setToc] = useState<{ label: string; href: string; sub?: boolean }[]>([]);
   const [showToc, setShowToc] = useState(false);
 
@@ -336,16 +357,18 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     return sec ? Number((sec as HTMLElement).dataset.spineIdx) : -1;
   };
 
-  // Primer bloque visible dentro del viewport del contenedor.
+  // Primer bloque visible dentro del viewport del contenedor. El chequeo es
+  // en ambos ejes: en vertical todo bloque cruza horizontalmente (inocuo);
+  // en horizontal (columnas) descarta los de columnas ya pasadas.
   const firstVisibleBlock = (): HTMLElement | null => {
     const scroller = scrollRef.current;
     const content = contentRef.current;
     if (!scroller || !content) return null;
-    const top = scroller.getBoundingClientRect().top;
-    const blocks = content.querySelectorAll<HTMLElement>('p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, td, section > div');
+    const sr = scroller.getBoundingClientRect();
+    const blocks = content.querySelectorAll<HTMLElement>(`p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, td, section > div:not(.${GAP_CLASS})`);
     for (const el of Array.from(blocks)) {
       const r = el.getBoundingClientRect();
-      if (r.height > 0 && r.bottom > top + 1 && (el.textContent || '').trim().length > 0) return el;
+      if (r.height > 0 && r.bottom > sr.top + 1 && r.right > sr.left + 1 && (el.textContent || '').trim().length > 0) return el;
     }
     return null;
   };
@@ -360,7 +383,7 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     const blockSel = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre';
     content.querySelectorAll<HTMLElement>('section[data-spine-idx]').forEach(sec => {
       const sr = sec.getBoundingClientRect();
-      if (sr.bottom < rect.top || sr.top > rect.bottom) return;
+      if (sr.bottom < rect.top || sr.top > rect.bottom || sr.right < rect.left || sr.left > rect.right) return;
       sec.querySelectorAll<HTMLElement>(blockSel).forEach(el => {
         // Si el elemento contiene otro bloque anidado (p. ej. <li><p>…</p></li>
         // o <blockquote><p>…</p></blockquote>, frecuente en EPUB exportados
@@ -369,7 +392,9 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
         // Solo cuenta el bloque más interno.
         if (el.querySelector(blockSel)) return;
         const r = el.getBoundingClientRect();
-        if (r.bottom > rect.top && r.top < rect.bottom && r.height > 0) {
+        // Intersección en AMBOS ejes: en modo horizontal (columnas) un bloque
+        // de otra columna comparte franja vertical pero no horizontal.
+        if (r.bottom > rect.top && r.top < rect.bottom && r.right > rect.left && r.left < rect.right && r.height > 0) {
           const t = normalize(el.textContent || '').trim();
           if (t) parts.push(t);
         }
@@ -411,12 +436,13 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
       range.collapse(true);
       const span = document.createElement('span');
       range.insertNode(span);
-      span.scrollIntoView({ block: center ? 'center' : 'start' });
+      // block gobierna el modo vertical; inline el horizontal (columnas).
+      span.scrollIntoView({ block: center ? 'center' : 'start', inline: center ? 'center' : 'start' });
       const parent = span.parentNode;
       parent?.removeChild(span);
       parent?.normalize();
     } catch {
-      sectionEl.scrollIntoView({ block: 'start' });
+      sectionEl.scrollIntoView({ block: 'start', inline: 'start' });
     }
   }, []);
 
@@ -446,13 +472,13 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
       range.collapse(true);
       const span = document.createElement('span');
       range.insertNode(span);
-      span.scrollIntoView({ block: center ? 'center' : 'start' });
+      span.scrollIntoView({ block: center ? 'center' : 'start', inline: center ? 'center' : 'start' });
       const parent = span.parentNode;
       parent?.removeChild(span);
       parent?.normalize();
       return true;
     } catch {
-      found.sectionEl.scrollIntoView({ block: 'start' });
+      found.sectionEl.scrollIntoView({ block: 'start', inline: 'start' });
       return true;
     }
   }, [findInBook]);
@@ -477,31 +503,70 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     const found = findInBook(text);
     if (!found) return false;
     const firstMark = wrapMarks(found.map, found.from, found.from + found.len, colorHex, persistent);
-    if (firstMark) firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (firstMark) firstMark.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
     return !!firstMark;
   }, [clearHighlights, findInBook]);
 
   // ----- Paginación por PALABRAS FIJAS ---------------------------------------
-  // Recorre el DOM contando inicios de palabra (misma normalización que
-  // sections[].text) y registra el offsetTop de cada corte k*WORDS_PER_PAGE.
-  // El TOTAL de páginas depende solo del texto; los cortes solo cambian de
-  // posición vertical al cambiar letra/ancho.
+  // El total de páginas depende SOLO del texto (ceil(palabras/300)). En modo
+  // vertical, cada corte se materializa UNA vez partiendo el flujo en el
+  // inicio exacto de la palabra k*300 e insertando una banda gris con sombra
+  // (aspecto "páginas separadas" del visor PDF). Los splits son posiciones
+  // de TEXTO: no se rehacen al cambiar letra/ancho — solo se re-MIDE dónde
+  // quedaron las bandas.
   const totalPagesRef = useRef(1);
-  const computePageLayout = useCallback(() => {
+
+  // Página actual = 1 + nº de bandas por encima del punto de referencia
+  // (un tercio superior del viewport: lo que el lector "está leyendo").
+  const updateCurrentPage = useCallback(() => {
     const scroller = scrollRef.current;
-    const secs = sectionsRef.current;
-    if (!scroller || !secs) return;
-    const totalWords = secs.reduce((a, s) => a + s.words, 0);
-    const totalPages = Math.max(1, Math.ceil(totalWords / WORDS_PER_PAGE));
-    totalPagesRef.current = totalPages;
+    if (!scroller || viewModeRef.current === 'h') return;
+    const refY = scroller.scrollTop + scroller.clientHeight * 0.35;
+    const tops = pageBoundaryTopsRef.current;
+    let lo = 0, hi = tops.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (tops[mid] <= refY) lo = mid + 1; else hi = mid; }
+    const current = Math.min(totalPagesRef.current, lo + 1);
+    setPage(prev => (prev.current === current && prev.total === totalPagesRef.current) ? prev : { current, total: totalPagesRef.current });
+  }, []);
+
+  // Re-mide la posición vertical de las bandas ya insertadas (tras reflow
+  // por cambio de letra o de ancho). No toca el DOM.
+  const measureGapTops = useCallback(() => {
+    const scroller = scrollRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content || viewModeRef.current === 'h') return;
     const scrollerTop = scroller.getBoundingClientRect().top;
     const tops: number[] = [];
-    let wordsAcc = 0;             // palabras completas ya vistas
+    content.querySelectorAll<HTMLElement>(`.${GAP_CLASS}`).forEach(g => {
+      tops.push(Math.max(0, g.getBoundingClientRect().top - scrollerTop + scroller.scrollTop));
+    });
+    pageBoundaryTopsRef.current = tops;
+    updateCurrentPage();
+  }, [updateCurrentPage]);
+
+  // Inserta los cortes de página REALES (una sola vez por libro montado):
+  // 1) recorre el DOM contando inicios de palabra (misma normalización que
+  //    sections[].text); 2) en cada múltiplo de WORDS_PER_PAGE parte el
+  //    bloque con Range.extractContents (clona los ancestros parciales,
+  //    igual que hace un paginador real) e inserta la banda divisoria.
+  const applyPageBreaks = useCallback(() => {
+    const content = contentRef.current;
+    const secs = sectionsRef.current;
+    if (!content || !secs) return;
+    if (content.querySelector(`.${GAP_CLASS}`)) { measureGapTops(); return; } // ya aplicado
+    const totalWords = secs.reduce((a, s) => a + s.words, 0);
+    totalPagesRef.current = Math.max(1, Math.ceil(totalWords / WORDS_PER_PAGE));
+    // Publicar el total apenas se conoce (en horizontal updateCurrentPage no
+    // corre y el contador quedaría en 1/1 hasta el primer scroll).
+    setPage(prev => prev.total === totalPagesRef.current ? prev : { current: Math.min(prev.current, totalPagesRef.current), total: totalPagesRef.current });
+
+    // Fase A: recolectar los puntos de corte {nodo, offset} sin mutar nada.
+    const cuts: { node: Text; offset: number; page: number }[] = [];
+    let wordsAcc = 0;
     let nextBoundary = WORDS_PER_PAGE;
-    for (let s = 0; s < secs.length && tops.length < totalPages - 1; s++) {
+    for (let s = 0; s < secs.length; s++) {
       const sectionEl = getSectionEl(s);
       if (!sectionEl) {
-        // Sección sin DOM (vacía): avanza el contador sin marcar corte visual.
         wordsAcc += secs[s].words;
         while (wordsAcc >= nextBoundary) nextBoundary += WORDS_PER_PAGE;
         continue;
@@ -514,62 +579,104 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
         for (let i = 0; i < raw.length; i++) {
           const isSpace = /\s/.test(raw[i]);
           if (!isSpace && prevSpace) {
-            // Inicio de palabra. Si es la primera palabra que EXCEDE el cupo
-            // de la página en curso, aquí empieza la página siguiente.
             if (wordsAcc === nextBoundary) {
-              try {
-                const r = document.createRange();
-                r.setStart(tn, i);
-                r.collapse(true);
-                const rect = r.getBoundingClientRect();
-                tops.push(Math.max(0, rect.top - scrollerTop + scroller.scrollTop));
-              } catch { /* nodo mutado: corte omitido, el conteo sigue */ }
+              cuts.push({ node: tn, offset: i, page: cuts.length + 2 });
               nextBoundary += WORDS_PER_PAGE;
-              if (tops.length >= totalPages - 1) break;
             }
             wordsAcc++;
           }
           prevSpace = isSpace;
         }
-        if (tops.length >= totalPages - 1) break;
       }
     }
-    pageBoundaryTopsRef.current = tops;
-    setBoundaryTops(tops);
-    updateCurrentPage();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
-  // Página actual = 1 + nº de cortes por encima del punto de referencia
-  // (un tercio superior del viewport: lo que el lector "está leyendo").
-  const updateCurrentPage = useCallback(() => {
-    const scroller = scrollRef.current;
-    if (!scroller) return;
-    const refY = scroller.scrollTop + scroller.clientHeight * 0.35;
-    const tops = pageBoundaryTopsRef.current;
-    let lo = 0, hi = tops.length;
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (tops[mid] <= refY) lo = mid + 1; else hi = mid; }
-    const current = Math.min(totalPagesRef.current, lo + 1);
-    setPage(prev => (prev.current === current && prev.total === totalPagesRef.current) ? prev : { current, total: totalPagesRef.current });
+    // Fase B: aplicar de ATRÁS hacia adelante — partir un nodo no invalida
+    // los cortes anteriores (que quedan en la mitad intacta).
+    for (let k = cuts.length - 1; k >= 0; k--) {
+      const { node, offset, page: pageNum } = cuts[k];
+      const sectionEl = node.parentElement?.closest('section[data-spine-idx]');
+      if (!sectionEl) continue;
+      // Bloque de nivel superior (hijo directo de la sección) que contiene el corte.
+      let topBlock: Node = node;
+      while (topBlock.parentNode && topBlock.parentNode !== sectionEl) topBlock = topBlock.parentNode;
+
+      const gap = document.createElement('div');
+      gap.className = GAP_CLASS;
+      gap.setAttribute('aria-hidden', 'true');
+      const label = document.createElement('span');
+      label.textContent = `pág. ${pageNum}`;
+      gap.appendChild(label);
+
+      try {
+        // ¿El corte cae justo al inicio del bloque? Entonces basta la banda
+        // ANTES del bloque, sin partir nada.
+        const pre = document.createRange();
+        pre.setStart(topBlock, 0);
+        pre.setEnd(node, offset);
+        if (pre.toString().trim().length === 0) {
+          sectionEl.insertBefore(gap, topBlock);
+        } else {
+          const r = document.createRange();
+          r.setStart(node, offset);
+          r.setEndAfter(topBlock);
+          const frag = r.extractContents();
+          // Mitades marcadas: en modo horizontal la banda se oculta y estas
+          // clases pegan las dos mitades (sin margen de párrafo entre ellas).
+          if (topBlock instanceof HTMLElement) topBlock.classList.add('__epub-head__');
+          Array.from(frag.children).forEach(c => c.classList.add('__epub-cont__'));
+          (topBlock as ChildNode).after(gap, frag);
+        }
+      } catch { /* estructura hostil (tabla rara, etc.): banda omitida; el conteo no cambia */ }
+    }
+    measureGapTops();
+  }, [measureGapTops]);
+
+  // Página (por palabras) en la que cae un ancla — para el contador en modo
+  // horizontal, donde las bandas están ocultas y no hay tops que medir.
+  const wordPageOfAnchor = useCallback((a: EpubAnchor): number => {
+    const secs = sectionsRef.current;
+    if (!secs) return 1;
+    let words = 0;
+    for (let i = 0; i < a.s && i < secs.length; i++) words += secs[i].words;
+    const sec = secs[a.s];
+    if (sec) words += countWords(sec.text.slice(0, a.o));
+    return Math.max(1, Math.min(totalPagesRef.current, Math.floor(words / WORDS_PER_PAGE) + 1));
   }, []);
 
   const setFontScale = useCallback((pct: number): void => {
     const preset: 0 | 1 = pct >= 120 ? 1 : 0;
     try { window.localStorage.setItem('epub-font-preset', String(preset)); } catch { /* modo privado */ }
-    // Re-anclar tras el reflow: capturar ANTES, aplicar, restaurar y
-    // recalcular los cortes en los frames siguientes.
+    // Re-anclar tras el reflow: capturar ANTES, aplicar, restaurar y re-medir
+    // las bandas en los frames siguientes (los cortes NO se mueven de texto).
     const anchor = getCurrentAnchor();
     setFontPreset(preset);
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (anchor) goToAnchor(anchor);
-      computePageLayout();
+      measureGapTops();
     }));
-  }, [getCurrentAnchor, goToAnchor, computePageLayout]);
+  }, [getCurrentAnchor, goToAnchor, measureGapTops]);
 
-  // Avanza/retrocede una página FIJA (por palabras): va al corte exacto.
+  // Alternar vertical ⇄ horizontal conservando la posición de lectura.
+  const toggleViewMode = useCallback(() => {
+    const anchor = getCurrentAnchor();
+    const next: ViewMode = viewModeRef.current === 'v' ? 'h' : 'v';
+    try { window.localStorage.setItem('epub-view-mode', next); } catch { /* modo privado */ }
+    setViewMode(next);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (anchor) goToAnchor(anchor);
+      measureGapTops();
+    }));
+  }, [getCurrentAnchor, goToAnchor, measureGapTops]);
+
+  // Avanza/retrocede una página. Vertical: salto al corte FIJO (por
+  // palabras). Horizontal: una columna-página (el snap la deja alineada).
   const pageBy = useCallback((delta: number): void => {
     const scroller = scrollRef.current;
     if (!scroller) return;
+    if (viewModeRef.current === 'h') {
+      scroller.scrollBy({ left: delta * scroller.clientWidth, behavior: 'auto' });
+      return;
+    }
     const tops = pageBoundaryTopsRef.current;
     const refY = scroller.scrollTop + scroller.clientHeight * 0.35;
     let lo = 0, hi = tops.length;
@@ -580,13 +687,16 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     scroller.scrollTo({ top, behavior: 'auto' });
   }, []);
 
-  // Avance de LECTURA continua (lo usa el TTS al agotar el texto visible):
-  // un viewport casi completo — leve solapamiento para no saltarse líneas
-  // en la frontera. Distinto de pageBy: aquí importa la continuidad del
-  // audio, no aterrizar en un corte de página.
+  // Avance de LECTURA continua (lo usa el TTS al agotar el texto visible).
+  // Vertical: casi un viewport con leve solapamiento para no saltarse líneas.
+  // Horizontal: exactamente una columna (las columnas no comparten texto).
   const scrollByViewport = useCallback((delta: number): void => {
     const scroller = scrollRef.current;
     if (!scroller) return;
+    if (viewModeRef.current === 'h') {
+      scroller.scrollBy({ left: delta * scroller.clientWidth, behavior: 'auto' });
+      return;
+    }
     scroller.scrollBy({ top: delta * scroller.clientHeight * 0.92, behavior: 'auto' });
   }, []);
 
@@ -607,13 +717,35 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
   const relocateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Tras el primer render de las secciones (doble rAF: layout ya estable),
-  // calcular los cortes de página por palabras una única vez.
+  // insertar los cortes de página por palabras una única vez.
   useEffect(() => {
     if (!sections) return;
-    const raf1 = requestAnimationFrame(() => requestAnimationFrame(() => computePageLayout()));
+    const raf1 = requestAnimationFrame(() => requestAnimationFrame(() => {
+      applyPageBreaks();
+      if (scrollRef.current) setScrollerW(scrollRef.current.clientWidth);
+    }));
     return () => cancelAnimationFrame(raf1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sections]);
+
+  // Nº de columnas-página en modo horizontal (tras cada reflow relevante).
+  useEffect(() => {
+    if (!sections || viewMode !== 'h') return;
+    const raf = requestAnimationFrame(() => requestAnimationFrame(() => {
+      const sc = scrollRef.current;
+      if (!sc) return;
+      setHPages(Math.max(1, Math.round(sc.scrollWidth / Math.max(1, sc.clientWidth))));
+    }));
+    return () => cancelAnimationFrame(raf);
+  }, [sections, viewMode, scrollerW, fontPreset]);
+
+  // Al volver a vertical las bandas reaparecen: re-medirlas.
+  useEffect(() => {
+    if (!sections || viewMode !== 'v') return;
+    const raf = requestAnimationFrame(() => requestAnimationFrame(() => measureGapTops()));
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode]);
 
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -623,10 +755,17 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
-        updateCurrentPage();
+        updateCurrentPage(); // barato (binary search); en 'h' retorna solo
         if (relocateTimerRef.current) clearTimeout(relocateTimerRef.current);
         relocateTimerRef.current = setTimeout(() => {
-          onRelocate?.(getCurrentAnchor(), { current: pageFromScroll(), total: totalPagesRef.current });
+          const a = getCurrentAnchor();
+          // En horizontal la página sale del ancla (las bandas están ocultas);
+          // en vertical, de la posición del scroll respecto a las bandas.
+          const current = viewModeRef.current === 'h'
+            ? (a ? wordPageOfAnchor(a) : 1)
+            : pageFromScroll();
+          setPage(prev => (prev.current === current && prev.total === totalPagesRef.current) ? prev : { current, total: totalPagesRef.current });
+          onRelocate?.(a, { current, total: totalPagesRef.current });
         }, 500);
       });
     };
@@ -654,7 +793,13 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
   useEffect(() => {
     const scroller = scrollRef.current;
     if (!scroller || !sections) return;
+    // ResizeObserver SIEMPRE dispara un callback inicial al observar: hay que
+    // ignorarlo. Si se procesara, capturaría el ancla "inicio del libro" y
+    // 250ms después pisaría la restauración del marcador guardado.
+    let initialFire = true;
     const observer = new ResizeObserver(() => {
+      if (initialFire) { initialFire = false; return; }
+      setScrollerW(scroller.clientWidth);
       // Ancla capturada ANTES del primer evento de la ráfaga.
       if (!pendingAnchorRef.current) pendingAnchorRef.current = getCurrentAnchor();
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
@@ -663,9 +808,9 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
         const a = pendingAnchorRef.current;
         pendingAnchorRef.current = null;
         if (a) goToAnchor(a);
-        // Los cortes cambian de posición vertical con el nuevo ancho (el
+        // Las bandas cambian de posición vertical con el nuevo ancho (el
         // TOTAL de páginas no: es por palabras).
-        computePageLayout();
+        measureGapTops();
       }, 250);
     });
     observer.observe(scroller);
@@ -676,7 +821,8 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sections]);
 
-  // ----- Clicks: enlaces internos + tap para controles -----------------------
+  // ----- Clicks: enlaces internos + DOBLE tap para controles -----------------
+  const lastTapRef = useRef(0);
   const handleContentClick = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     const link = target.closest('a[data-internal-href]') as HTMLElement | null;
@@ -688,15 +834,24 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
       if (s >= 0) {
         if (hash) {
           const el = getSectionEl(s)?.querySelector(`[id="${CSS.escape(hash)}"]`);
-          if (el) { el.scrollIntoView({ block: 'start' }); return; }
+          if (el) { el.scrollIntoView({ block: 'start', inline: 'start' }); return; }
         }
         goToAnchor({ s, o: 0 });
       }
       return;
     }
-    // Tap simple (sin selección activa) → alternar controles en fullscreen.
+    // DOBLE tap (sin selección activa) → alternar controles en fullscreen.
+    // Un tap simple no hace nada: leyendo se toca la pantalla sin querer, y
+    // además ReaderView ya no alterna por nosotros (ver handleScreenClick).
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) onContentTap?.();
+    if (sel && !sel.isCollapsed) { lastTapRef.current = 0; return; }
+    const now = Date.now();
+    if (now - lastTapRef.current < 350) {
+      lastTapRef.current = 0;
+      onContentTap?.();
+    } else {
+      lastTapRef.current = now;
+    }
   }, [goToAnchor, onContentTap]);
 
   // ----- Barra propia --------------------------------------------------------
@@ -712,9 +867,19 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
         <List className="w-5 h-5" />
       </button>
       <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
-      <span className="text-xs font-mono font-semibold tabular-nums text-[var(--text-muted)] px-1 min-w-[78px] text-center shrink-0 inline-flex items-center justify-center" title="Página (rebanada del lienzo)">
+      <span className="text-xs font-mono font-semibold tabular-nums text-[var(--text-muted)] px-1 min-w-[78px] text-center shrink-0 inline-flex items-center justify-center" title="Página (fija por palabras: no cambia con letra ni pantalla)">
         {sections ? <>{page.current} / {page.total}</> : <Loader2 className="w-3.5 h-3.5 animate-spin" />}
       </span>
+      <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
+      {/* Alternar lectura vertical (scroll con cortes tipo PDF) ⇄ horizontal
+          (páginas deslizables al costado con snap nativo). */}
+      <button
+        onClick={toggleViewMode}
+        className="p-2 rounded-full text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary)]/10 transition-all"
+        title={viewMode === 'v' ? 'Pasar a páginas deslizables (horizontal)' : 'Pasar a scroll vertical'}
+      >
+        {viewMode === 'v' ? <GalleryHorizontal className="w-5 h-5" /> : <GalleryVertical className="w-5 h-5" />}
+      </button>
       <div className="w-px h-4 bg-[var(--border-card)] hidden sm:block" />
       {/* Solo DOS tamaños de letra: chica y grande. La cantidad de páginas
           no cambia con el tamaño (páginas por palabras fijas). */}
@@ -738,8 +903,9 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
   );
 
   return (
-    <div className="h-full relative bg-[#f8fafc] flex justify-center">
-      <div className="w-full h-full max-w-5xl shadow-xl bg-white border-x border-slate-200 relative flex flex-col">
+    // Fondo gris tipo visor de PDF: las "páginas" blancas flotan sobre él.
+    <div className="h-full relative bg-[#e2e8f0] flex justify-center">
+      <div className="w-full h-full max-w-5xl relative flex flex-col">
         {loadError ? (
           <div className="w-full max-w-[600px] h-[400px] mx-auto mt-20 bg-slate-50 border-2 border-dashed border-slate-300 rounded-lg flex flex-col items-center justify-center p-8 text-center text-slate-500 shadow-sm">
             <div className="w-16 h-16 mb-4 text-slate-300"><List className="w-full h-full" /></div>
@@ -763,25 +929,59 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
               #epub-html-content a[data-internal-href] { color: var(--primary); text-decoration: underline; cursor: pointer; }
               #epub-html-content table { max-width: 100%; overflow-x: auto; display: block; }
               #epub-html-content section[data-spine-idx] { min-height: 1px; }
+              /* Vertical: la columna de texto ES la "página" blanca con sombra
+                 sobre el fondo gris (aspecto del visor de PDF). */
+              #epub-html-content.__epub-vmode { background: #fff; box-shadow: 0 1px 3px rgba(15,23,42,.18), 0 6px 18px rgba(15,23,42,.10); }
+              /* Banda de corte entre páginas: interrumpe la columna blanca de
+                 borde a borde (márgenes negativos = padding de la columna) con
+                 el gris del fondo + sombras internas como filo de página. */
+              .${GAP_CLASS} { height: 30px; background: #e2e8f0; position: relative;
+                margin: 16px -1rem; pointer-events: none;
+                box-shadow: inset 0 7px 7px -5px rgba(15,23,42,.25), inset 0 -7px 7px -5px rgba(15,23,42,.15); }
+              @media (min-width: 640px) { .${GAP_CLASS} { margin-left: -2rem; margin-right: -2rem; } }
+              .${GAP_CLASS} > span { position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+                font-family: ui-monospace, monospace; font-size: 10px; color: #64748b; user-select: none; }
+              /* Horizontal: sin bandas (la página es la columna) y las dos
+                 mitades de un bloque partido se pegan sin margen de párrafo. */
+              #epub-html-content.__epub-hmode .${GAP_CLASS} { display: none; }
+              #epub-html-content.__epub-hmode .__epub-head__ { margin-bottom: 0; }
+              #epub-html-content.__epub-hmode .__epub-cont__ { margin-top: 0; text-indent: 0; }
             `}</style>
 
-            {/* Scroll 100% NATIVO. Sin listeners táctiles, sin transform. */}
-            <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto relative" onClick={handleContentClick}>
-              {/* Cortes de página FIJOS (por palabras): una línea + número en
-                  cada frontera. Un nodo por página — un libro de 400 páginas
-                  son 400 divs estáticos, trivial para el navegador. */}
-              {sections && boundaryTops.map((top, i) => (
-                <div key={i} aria-hidden className="absolute inset-x-0 pointer-events-none border-t border-dashed border-slate-300/80" style={{ top }}>
-                  <span className="absolute right-2 -top-2.5 text-[9px] font-mono text-slate-400 bg-white/85 px-1 rounded select-none">
-                    pág. {i + 2}
-                  </span>
-                </div>
+            {/* Scroll 100% NATIVO en ambos modos. Sin listeners táctiles, sin
+                transform: en horizontal el "pasar página" lo hace scroll-snap
+                del navegador. touch-action: manipulation elimina el zoom por
+                doble tap (el doble tap es nuestro gesto de controles). */}
+            <div
+              ref={scrollRef}
+              className={cn(
+                'flex-1 min-h-0 relative',
+                viewMode === 'v' ? 'overflow-y-auto' : 'overflow-x-auto overflow-y-hidden snap-x snap-mandatory bg-white'
+              )}
+              style={{ touchAction: 'manipulation' }}
+              onClick={handleContentClick}
+            >
+              {/* Guías de snap del modo horizontal: un punto invisible por
+                  columna-página (las columnas CSS no son elementos y no pueden
+                  llevar snap-align propio). */}
+              {viewMode === 'h' && scrollerW > 0 && Array.from({ length: hPages }, (_, k) => (
+                <div key={k} aria-hidden className="absolute top-0 w-px h-px snap-start" style={{ left: k * scrollerW }} />
               ))}
               <div
                 id="epub-html-content"
                 ref={contentRef}
-                className="max-w-3xl mx-auto px-4 sm:px-8 py-6"
-                style={{ fontSize: `${FONT_PRESETS[fontPreset]}%` }}
+                className={viewMode === 'v' ? 'max-w-3xl mx-auto px-4 sm:px-8 py-6 __epub-vmode' : '__epub-hmode'}
+                style={viewMode === 'v'
+                  ? { fontSize: `${FONT_PRESETS[fontPreset]}%` }
+                  : {
+                      fontSize: `${FONT_PRESETS[fontPreset]}%`,
+                      height: '100%',
+                      width: 'max-content',
+                      columnWidth: `${Math.max(160, scrollerW - H_COLUMN_GAP)}px`,
+                      columnGap: `${H_COLUMN_GAP}px`,
+                      columnFill: 'auto',
+                      padding: `20px ${H_COLUMN_GAP / 2}px`,
+                    }}
               >
                 {(sections || []).map((sec, i) => (
                   <section key={i} data-spine-idx={i} dangerouslySetInnerHTML={{ __html: sec.html }} />

@@ -2386,6 +2386,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   // Handle controls disappearing when clicking the screen in fullscreen
   const handleScreenClick = (e: React.MouseEvent) => {
+     // EPUB v2 renderiza en el documento principal: sus clicks BURBUJEAN hasta
+     // aquí (a diferencia del legacy en iframe). Si este handler también
+     // alternara, cada tap haría toggle doble (onContentTap + este) y el
+     // efecto neto sería nulo. El v2 gestiona sus controles con DOBLE tap
+     // dentro del lector.
+     if (activeType === 'epub' && !epubV2Failed) return;
      if (isFullscreen) {
         setShowControls(prev => !prev);
      }

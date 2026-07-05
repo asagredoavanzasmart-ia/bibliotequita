@@ -304,17 +304,21 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     await uploadCover(file);
   };
 
-  // Descarga el original guardado y reabre el editor desde cero (sin los
-  // ajustes previos, que ya quedaron "quemados" en la portada actual).
+  // Abre el editor sobre el original guardado si existe; si no (portada
+  // cargada antes de que existiera el editor, o subida sin pasar por él),
+  // sobre la portada ACTUAL — así cualquier portada ya cargada se puede
+  // editar, no solo las recién subidas.
   const handleReeditCover = async () => {
-    if (!coverOriginalUrl) return;
+    const src = coverOriginalUrl || coverUrl;
+    if (!src) return;
     setLoadingOriginal(true);
     try {
-      const res = await fetch(coverOriginalUrl);
+      const res = await fetch(src);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       setReeditingOriginal(blob);
     } catch (err) {
-      console.error('No se pudo descargar la portada original:', err);
+      console.error('No se pudo descargar la portada para editar:', err);
     } finally {
       setLoadingOriginal(false);
     }
@@ -552,12 +556,12 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handleCameraCapture} />
                </div>
 
-               {/* Reeditar: solo aparece si hay un original guardado (portadas
-                   subidas antes de este cambio, o vía "Cambiar portada" sin
-                   pasar por el editor, no lo tienen). Descarga el original y
-                   reabre el editor desde cero, sin los ajustes ya quemados
-                   en la portada actual. */}
-               {coverOriginalUrl && (
+               {/* Editar la portada existente: con original guardado se parte
+                   de él (sin los ajustes ya "quemados"); sin original (portadas
+                   antiguas o subidas sin pasar por el editor) se parte de la
+                   portada actual, que además queda guardada como original para
+                   futuras reediciones. */}
+               {(coverOriginalUrl || coverUrl) && (
                   <button
                      type="button"
                      onClick={handleReeditCover}
@@ -565,7 +569,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                      className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200 hover:border-[var(--primary)]/50 disabled:opacity-50 transition-colors"
                   >
                      {loadingOriginal ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Pencil className="w-3.5 h-3.5" />}
-                     Reeditar portada
+                     {coverOriginalUrl ? 'Reeditar portada' : 'Editar portada'}
                   </button>
                )}
 
@@ -1609,7 +1613,9 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     <ImageEditorModal
       file={reeditingOriginal}
       onCancel={() => setReeditingOriginal(null)}
-      onConfirm={(edited) => { setReeditingOriginal(null); uploadCover(edited); }}
+      // Si NO había original guardado (se editó la portada actual), esa
+      // imagen de partida se sube como original para futuras reediciones.
+      onConfirm={(edited, original) => { setReeditingOriginal(null); uploadCover(edited, coverOriginalUrl ? undefined : original); }}
     />
   );
 
