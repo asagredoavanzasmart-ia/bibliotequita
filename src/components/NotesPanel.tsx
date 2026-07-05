@@ -321,11 +321,11 @@ export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, 
                     note.color === 'amber-400' ? "border-amber-400 bg-amber-50/50" :
                     "bg-slate-50 border-slate-300"
                  )}>
-                    <div className="flex justify-between items-start mb-0.5">
-                      <div className="flex items-center gap-2">
-                          {/* Normal note header details */}
-                      </div>
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {/* Acciones flotantes (absolute): antes esta fila reservaba
+                        su altura aunque estuviera invisible (opacity-0 hasta
+                        hover), dejando una franja en blanco sin sentido sobre
+                        el texto de cada nota. */}
+                    <div className="absolute top-1.5 right-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 bg-white/85 backdrop-blur-sm rounded-lg px-1 py-0.5 transition-opacity z-10">
                          <>
                              {(['emerald-400', 'amber-400', 'sky-400', 'rose-400'] as const).map((colorId) => {
                                const dot: Record<string, string> = {
@@ -357,7 +357,6 @@ export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, 
                         <button onClick={() => deleteNote(note.id)} className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded">
                           <Trash2 className="w-3 h-3" />
                         </button>
-                      </div>
                     </div>
                     <div className="prose prose-sm prose-slate max-w-none prose-p:my-1 prose-blockquote:my-1 prose-blockquote:border-l-[2px] prose-blockquote:border-[#00558F]/30 prose-blockquote:pl-2 prose-blockquote:text-slate-600 prose-blockquote:italic cursor-text py-1">
                       <div className="inline">

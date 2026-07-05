@@ -1,15 +1,26 @@
 // =============================================================================
 // ResourcesPanel.tsx — Pestaña "Recursos" de un libro.
 // -----------------------------------------------------------------------------
-// Menú lateral por tipo (Videos, Audios, Textos, Imágenes). Permite subir,
-// renombrar, borrar y reproducir/visualizar recursos. Los recursos de Texto
-// se abren en el LECTOR PRINCIPAL (vía onOpenTextResource → ReaderView), que
-// aporta el mismo motor de citas y lector de voz (TTS) que el libro; sus
-// notas/citas viven separadas bajo documentId `<bookId>::res::<id>`.
+// Menú lateral por tipo (Videos, Audios, Textos, Imágenes), colapsable con la
+// manija de la orilla. Permite subir, renombrar, borrar y reproducir recursos.
+// Los recursos de Texto se abren en el LECTOR PRINCIPAL (onOpenTextResource →
+// ReaderView); video/audio se reproducen aquí con controles propios
+// (play/pausa y saltos de ±5s por tap / ±10s por doble tap) y cada recurso
+// tiene modo PANTALLA COMPLETA (media + notas, sin menús).
+//
+// YouTube se controla vía postMessage con el protocolo de la IFrame Player
+// API (enablejsapi=1): NO se carga el script externo iframe_api — el CSP del
+// servidor solo permite script-src 'self', y además el protocolo de mensajes
+// basta para play/pausa/seek/tiempo actual.
+//
+// Las notas de video/audio guardan la MARCA DE TIEMPO (segundos) del momento
+// en que se crearon (via currentPage → pageReference) y al tocarlas el
+// reproductor salta a ese segundo (onNavigateToPage → seekTo).
 // =============================================================================
 
-import { useState, useRef } from 'react';
-import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, ExternalLink as ExternalLinkIcon } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { uploadFile } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
@@ -44,15 +55,14 @@ function fileTypeFromName(name: string): ResourceType {
 // Si no coincide con ninguno, se asume un archivo de video directo (.mp4 etc.)
 // y se reproduce con <video> nativo.
 //
-// Parámetros del embed de YouTube (ver guía oficial de la IFrame API):
-//  - playsinline=1: crítico en iOS/Safari — reproduce dentro del recuadro en
-//    vez de forzar el reproductor de pantalla completa del sistema.
-//  - rel=0: las sugerencias al terminar salen solo del mismo canal, no de
-//    toda la plataforma (menos distracción dentro de la biblioteca).
-// El dominio youtube-nocookie.com (Privacidad Mejorada) difiere las cookies
-// de seguimiento hasta que el usuario da play.
+// Parámetros del embed de YouTube (guía oficial de la IFrame API):
+//  - playsinline=1: crítico en iOS/Safari — reproduce dentro del recuadro.
+//  - rel=0: sugerencias solo del mismo canal.
+//  - enablejsapi=1 + origin: habilita el puente postMessage con el que
+//    nuestros controles mandan play/pausa/seek y reciben el tiempo actual.
 function getVideoEmbedUrl(url: string): string | null {
-  const ytEmbed = (id: string) => `https://www.youtube-nocookie.com/embed/${id}?playsinline=1&rel=0`;
+  const origin = typeof window !== 'undefined' ? encodeURIComponent(window.location.origin) : '';
+  const ytEmbed = (id: string) => `https://www.youtube-nocookie.com/embed/${id}?playsinline=1&rel=0&enablejsapi=1&origin=${origin}`;
   try {
     const u = new URL(url);
     if (u.hostname.includes('youtube.com')) {
@@ -73,6 +83,17 @@ function getVideoEmbedUrl(url: string): string | null {
     return null;
   }
   return null;
+}
+
+const isYouTubeEmbed = (embedUrl: string | null) => !!embedUrl && embedUrl.includes('youtube');
+
+function formatTime(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  const h = Math.floor(m / 60);
+  if (h > 0) return `${h}:${String(m % 60).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
 // Extrae la portada de un PDF (primera página renderizada a canvas) o EPUB
@@ -112,11 +133,243 @@ async function extractCoverForResource(file: File, fileType: ResourceType): Prom
   return undefined;
 }
 
+// API mínima que expone cada reproductor hacia el exterior (notas con marca
+// de tiempo): leer el segundo actual y saltar a un segundo dado.
+export interface MediaApi {
+  getCurrentTime: () => number;
+  seekTo: (seconds: number) => void;
+}
+
+// -----------------------------------------------------------------------------
+// Controles de reproducción compartidos: [⏪] [play/pausa] [⏩] + tiempo.
+// Un TAP en ⏪/⏩ salta 5s; DOBLE tap salta 10s (ventana de 260ms para
+// distinguirlos, como pidió el usuario — mismo patrón que la app de YouTube).
+// -----------------------------------------------------------------------------
+function MediaControls({ playing, timeSec, onToggle, onSeekBy }: {
+  playing: boolean;
+  timeSec: number;
+  onToggle: () => void;
+  onSeekBy: (delta: number) => void;
+}) {
+  const tapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleSeekTap = (dir: 1 | -1) => {
+    if (tapTimerRef.current) {
+      // Segundo tap dentro de la ventana: es doble tap → 10s (se cancela el 5s pendiente).
+      clearTimeout(tapTimerRef.current);
+      tapTimerRef.current = null;
+      onSeekBy(10 * dir);
+    } else {
+      tapTimerRef.current = setTimeout(() => {
+        tapTimerRef.current = null;
+        onSeekBy(5 * dir);
+      }, 260);
+    }
+  };
+  useEffect(() => () => { if (tapTimerRef.current) clearTimeout(tapTimerRef.current); }, []);
+
+  return (
+    <div className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-900/95 text-white">
+      <span className="text-[11px] font-mono tabular-nums text-white/80 min-w-[44px]">{formatTime(timeSec)}</span>
+      <div className="flex-1" />
+      <button
+        type="button"
+        onClick={() => handleSeekTap(-1)}
+        className="p-2 rounded-full hover:bg-white/15 active:scale-95 transition-all"
+        title="Atrás: 1 tap = 5s · 2 taps = 10s"
+      >
+        <Rewind className="w-5 h-5 fill-current" />
+      </button>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="p-2.5 rounded-full bg-white/15 hover:bg-white/25 active:scale-95 transition-all"
+        title={playing ? 'Pausar' : 'Reproducir'}
+      >
+        {playing ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+      </button>
+      <button
+        type="button"
+        onClick={() => handleSeekTap(1)}
+        className="p-2 rounded-full hover:bg-white/15 active:scale-95 transition-all"
+        title="Adelante: 1 tap = 5s · 2 taps = 10s"
+      >
+        <FastForward className="w-5 h-5 fill-current" />
+      </button>
+      <div className="flex-1" />
+      <span className="min-w-[44px]" />
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Reproductor unificado de video/audio con controles propios.
+//  - YouTube: iframe + protocolo postMessage de la IFrame API (sin script
+//    externo). El handshake {event:'listening'} suscribe a 'infoDelivery',
+//    que trae currentTime y playerState continuamente.
+//  - Archivo directo: <video>/<audio> nativos con refs.
+// Publica su MediaApi en apiRef y el segundo actual (entero) en onTimeChange
+// para que las notas guarden la marca de tiempo.
+// -----------------------------------------------------------------------------
+function MediaPlayer({ resource, kind, onPlayingChange, apiRef, onTimeChange, tall = false }: {
+  resource: ResourceItem;
+  kind: 'video' | 'audio';
+  onPlayingChange: (playing: boolean) => void;
+  apiRef?: React.MutableRefObject<MediaApi | null>;
+  onTimeChange?: (seconds: number) => void;
+  // true en pantalla completa: el video puede crecer más allá del aspect-video.
+  tall?: boolean;
+}) {
+  const embedUrl = kind === 'video' ? getVideoEmbedUrl(resource.source) : null;
+  const isYT = isYouTubeEmbed(embedUrl);
+
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [timeSec, setTimeSec] = useState(0);
+  const timeRef = useRef(0);
+
+  // Notificar reproducción (wake lock) solo en las TRANSICIONES reales.
+  const prevPlayingRef = useRef(false);
+  useEffect(() => {
+    if (playing !== prevPlayingRef.current) {
+      prevPlayingRef.current = playing;
+      onPlayingChange(playing);
+    }
+  }, [playing, onPlayingChange]);
+  // Al desmontar sonando, avisar la pausa para no dejar el wake lock tomado.
+  useEffect(() => () => { if (prevPlayingRef.current) onPlayingChange(false); }, [onPlayingChange]);
+
+  const setTimeThrottled = useCallback((t: number) => {
+    timeRef.current = t;
+    // Solo re-renderizar cuando cambia el segundo entero (infoDelivery llega
+    // varias veces por segundo).
+    setTimeSec(prev => (Math.floor(prev) === Math.floor(t) ? prev : Math.floor(t)));
+    onTimeChange?.(Math.floor(t));
+  }, [onTimeChange]);
+
+  // --- Puente postMessage con el iframe de YouTube ---
+  const ytPost = useCallback((func: string, args: unknown[] = []) => {
+    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
+  }, []);
+
+  useEffect(() => {
+    if (!isYT) return;
+    const onMessage = (e: MessageEvent) => {
+      if (e.source !== iframeRef.current?.contentWindow) return;
+      let data: any;
+      try { data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data; } catch { return; }
+      if (data?.event === 'infoDelivery' && data.info) {
+        if (typeof data.info.currentTime === 'number') setTimeThrottled(data.info.currentTime);
+        // playerState 1 = reproduciendo (tabla de estados de la IFrame API).
+        if (typeof data.info.playerState === 'number') setPlaying(data.info.playerState === 1);
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [isYT, setTimeThrottled]);
+
+  const ytHandshake = useCallback(() => {
+    // Suscripción a los eventos del reproductor (infoDelivery). Se manda al
+    // cargar el iframe; si el reproductor aún no está listo la ignora, así
+    // que se repite una vez más a los 700ms por seguridad.
+    const send = () => iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: resource.id, channel: 'widget' }), '*');
+    send();
+    setTimeout(send, 700);
+  }, [resource.id]);
+
+  // --- API pública (notas con marca de tiempo) ---
+  const seekTo = useCallback((seconds: number) => {
+    const t = Math.max(0, seconds);
+    if (isYT) {
+      ytPost('seekTo', [t, true]);
+      ytPost('playVideo');
+    } else if (mediaRef.current) {
+      mediaRef.current.currentTime = t;
+      mediaRef.current.play().catch(() => { /* autoplay bloqueado: queda posicionado */ });
+    }
+    setTimeThrottled(t);
+  }, [isYT, ytPost, setTimeThrottled]);
+
+  const toggle = useCallback(() => {
+    if (isYT) {
+      if (playing) ytPost('pauseVideo'); else ytPost('playVideo');
+    } else if (mediaRef.current) {
+      if (mediaRef.current.paused) mediaRef.current.play().catch(() => { /* bloqueado */ });
+      else mediaRef.current.pause();
+    }
+  }, [isYT, playing, ytPost]);
+
+  const seekBy = useCallback((delta: number) => {
+    seekTo(timeRef.current + delta);
+  }, [seekTo]);
+
+  useEffect(() => {
+    if (!apiRef) return;
+    apiRef.current = { getCurrentTime: () => timeRef.current, seekTo };
+    return () => { apiRef.current = null; };
+  }, [apiRef, seekTo]);
+
+  return (
+    <div className="flex flex-col bg-black">
+      {kind === 'video' ? (
+        embedUrl ? (
+          <iframe
+            ref={iframeRef}
+            src={embedUrl}
+            onLoad={isYT ? ytHandshake : undefined}
+            className={cn('w-full bg-black', tall ? 'flex-1 min-h-0 aspect-video max-h-[60dvh]' : 'aspect-video')}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen
+            // YouTube exige un Referer con el origen para validar quién
+            // incrusta; sin él responde "Video no disponible" (Error 153).
+            referrerPolicy="strict-origin-when-cross-origin"
+          />
+        ) : (
+          <video
+            ref={(el) => { mediaRef.current = el; }}
+            src={resource.source}
+            className={cn('w-full bg-black', tall ? 'max-h-[60dvh]' : 'max-h-72')}
+            controls
+            playsInline
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onEnded={() => setPlaying(false)}
+            onTimeUpdate={(e) => setTimeThrottled((e.target as HTMLVideoElement).currentTime)}
+          />
+        )
+      ) : (
+        <audio
+          ref={(el) => { mediaRef.current = el; }}
+          src={resource.source}
+          className="w-full px-3 pt-3"
+          controls
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => setPlaying(false)}
+          onTimeUpdate={(e) => setTimeThrottled((e.target as HTMLAudioElement).currentTime)}
+        />
+      )}
+      {/* Controles propios: funcionan igual para YouTube (postMessage) y
+          archivos directos (refs). Vimeo no habla el protocolo de YouTube ni
+          expone refs, así que ahí no se muestran (el iframe trae los suyos). */}
+      {(isYT || !embedUrl) && (
+        <MediaControls playing={playing} timeSec={timeSec} onToggle={toggle} onSeekBy={seekBy} />
+      )}
+    </div>
+  );
+}
+
 // Cada recurso (video/audio/imagen/texto) tiene sus propias notas, separadas
 // de las del libro, vía documentId con sufijo "::res::<id>". El hook se
 // instancia aquí (solo cuando el panel de notas de ESE recurso está abierto)
 // para que NotesPanel siga siendo un componente de presentación puro.
-function ResourceNotesPanel({ documentId }: { documentId: string }) {
+// currentPage = segundo actual del medio → las notas quedan con marca de
+// tiempo; onNavigateToPage = seek → tocar la nota salta a ese momento.
+function ResourceNotesPanel({ documentId, currentPage, onNavigateToPage }: {
+  documentId: string;
+  currentPage?: number | string;
+  onNavigateToPage?: (page: number | string) => void;
+}) {
   const { notes, addNote, addBookmark, editNote, deleteNote } = useDocumentNotes(documentId);
   return (
     <NotesPanel
@@ -126,6 +379,8 @@ function ResourceNotesPanel({ documentId }: { documentId: string }) {
       addBookmark={addBookmark}
       editNote={editNote}
       deleteNote={deleteNote}
+      currentPage={currentPage}
+      onNavigateToPage={onNavigateToPage}
     />
   );
 }
@@ -144,17 +399,29 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
   const [renameValue, setRenameValue] = useState('');
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [linkValue, setLinkValue] = useState('');
+  // Menú lateral de tipos colapsable (manija con chevrón en la orilla).
+  const [kindMenuOpen, setKindMenuOpen] = useState(true);
+  // Recurso en modo pantalla completa (media + notas, sin menús).
+  const [fullscreenId, setFullscreenId] = useState<string | null>(null);
 
   // Nº de medios (video/audio) reproduciéndose ahora mismo. Mientras haya
   // alguno, mantenemos la pantalla encendida para que el móvil no se bloquee.
   const [playingMediaCount, setPlayingMediaCount] = useState(0);
   useWakeLock(playingMediaCount > 0);
-  const onMediaPlay = () => setPlayingMediaCount(c => c + 1);
-  const onMediaPause = () => setPlayingMediaCount(c => Math.max(0, c - 1));
+  const handlePlayingChange = useCallback((playing: boolean) => {
+    setPlayingMediaCount(c => Math.max(0, c + (playing ? 1 : -1)));
+  }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // API del reproductor activo + segundo actual, para las notas con marca de
+  // tiempo. Hay un solo reproductor "con notas abiertas" a la vez (inline o
+  // fullscreen), así que basta una referencia compartida.
+  const mediaApiRef = useRef<MediaApi | null>(null);
+  const [mediaTimeSec, setMediaTimeSec] = useState(0);
 
   const current = resources.filter((r) => r.kind === activeKind);
   const activeMeta = KINDS.find((k) => k.id === activeKind)!;
+  const fullscreenRes = fullscreenId ? resources.find(r => r.id === fullscreenId) ?? null : null;
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -206,29 +473,51 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
     setRenamingId(null);
   };
 
+  const openFullscreen = (r: ResourceItem) => {
+    if (r.kind === 'text') {
+      // Para textos, la "pantalla completa" ES el lector principal.
+      onOpenTextResource(r);
+      return;
+    }
+    setFullscreenId(r.id);
+  };
+
   return (
     <div className="w-full h-full flex bg-[var(--bg-app)] overflow-hidden">
-      {/* Menú lateral de categorías */}
-      <div className="w-16 sm:w-44 shrink-0 border-r border-slate-200 bg-white flex flex-col py-2">
-        {KINDS.map(({ id, label, Icon }) => {
-          const count = resources.filter((r) => r.kind === id).length;
-          return (
-            <button
-              key={id}
-              onClick={() => setActiveKind(id)}
-              className={cn(
-                'flex items-center gap-3 px-3 sm:px-4 py-3 text-sm font-medium transition-colors border-l-2',
-                activeKind === id ? 'border-[var(--primary)] bg-[var(--primary)]/5 text-[var(--primary)]' : 'border-transparent text-slate-600 hover:bg-slate-50'
-              )}
-              title={label}
-            >
-              <Icon className="w-5 h-5 shrink-0" />
-              <span className="hidden sm:inline truncate">{label}</span>
-              {count > 0 && <span className="hidden sm:inline ml-auto text-[10px] font-bold bg-slate-200 text-slate-600 rounded-full px-1.5 py-0.5">{count}</span>}
-            </button>
-          );
-        })}
-      </div>
+      {/* Menú lateral de categorías (colapsable) */}
+      {kindMenuOpen && (
+        <div className="w-16 sm:w-44 shrink-0 border-r border-slate-200 bg-white flex flex-col py-2">
+          {KINDS.map(({ id, label, Icon }) => {
+            const count = resources.filter((r) => r.kind === id).length;
+            return (
+              <button
+                key={id}
+                onClick={() => setActiveKind(id)}
+                className={cn(
+                  'flex items-center gap-3 px-3 sm:px-4 py-3 text-sm font-medium transition-colors border-l-2',
+                  activeKind === id ? 'border-[var(--primary)] bg-[var(--primary)]/5 text-[var(--primary)]' : 'border-transparent text-slate-600 hover:bg-slate-50'
+                )}
+                title={label}
+              >
+                <Icon className="w-5 h-5 shrink-0" />
+                <span className="hidden sm:inline truncate">{label}</span>
+                {count > 0 && <span className="hidden sm:inline ml-auto text-[10px] font-bold bg-slate-200 text-slate-600 rounded-full px-1.5 py-0.5">{count}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Manija para colapsar/expandir el menú de tipos: más área útil para
+          el contenido en pantallas chicas. */}
+      <button
+        type="button"
+        onClick={() => setKindMenuOpen(v => !v)}
+        className="w-4 shrink-0 flex items-center justify-center bg-slate-100 hover:bg-slate-200 border-r border-slate-200 transition-colors"
+        title={kindMenuOpen ? 'Ocultar menú de tipos' : 'Mostrar menú de tipos'}
+      >
+        {kindMenuOpen ? <ChevronLeft className="w-3.5 h-3.5 text-slate-500" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-500" />}
+      </button>
 
       {/* Contenido de la categoría activa */}
       <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
@@ -308,42 +597,23 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
           <div className={cn('grid gap-3', activeKind === 'image' ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4' : 'grid-cols-1')}>
             {current.map((r) => (
               <div key={r.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm flex flex-col">
-                {/* Vista/reproductor embebido por tipo */}
-                {r.kind === 'video' && (
-                  getVideoEmbedUrl(r.source) ? (
-                    <div className="relative">
-                      <iframe
-                        src={getVideoEmbedUrl(r.source)!}
-                        className="w-full aspect-video bg-black"
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen
-                        // YouTube exige un Referer con el origen para validar
-                        // quién incrusta; sin él responde "Video no disponible"
-                        // (Error 153). Complementa el Referrer-Policy global
-                        // del servidor (antes era no-referrer, la causa raíz).
-                        referrerPolicy="strict-origin-when-cross-origin"
-                      />
-                      {/* YouTube/Vimeo a veces rechazan el embed dentro del WebView de la
-                          app (Error 153 y similares: restricción del proveedor, no un bug
-                          de la app). Como el iframe no avisa de forma fiable cuando falla,
-                          se ofrece siempre este botón que abre el video en el navegador o
-                          la app de YouTube real del dispositivo, donde sí funciona. */}
-                      <button
-                        type="button"
-                        onClick={() => window.open(r.source, '_blank', 'noopener,noreferrer')}
-                        className="absolute bottom-2 right-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-black/70 text-white hover:bg-black/85 transition-colors backdrop-blur-sm"
-                      >
-                        <ExternalLinkIcon className="w-3.5 h-3.5" /> Abrir en YouTube/navegador
-                      </button>
+                {/* Vista/reproductor embebido por tipo. El reproductor NO se
+                    monta si este recurso está en pantalla completa (evita
+                    audio duplicado con el reproductor del overlay). */}
+                {(r.kind === 'video' || r.kind === 'audio') && (
+                  fullscreenId === r.id ? (
+                    <div className="w-full aspect-video bg-slate-900 flex items-center justify-center text-white/60 text-xs font-bold">
+                      Reproduciendo en pantalla completa…
                     </div>
                   ) : (
-                    <video controls className="w-full max-h-72 bg-black" src={r.source} onPlay={onMediaPlay} onPause={onMediaPause} onEnded={onMediaPause} />
+                    <MediaPlayer
+                      resource={r}
+                      kind={r.kind}
+                      onPlayingChange={handlePlayingChange}
+                      apiRef={notesResourceId === r.id ? mediaApiRef : undefined}
+                      onTimeChange={notesResourceId === r.id ? setMediaTimeSec : undefined}
+                    />
                   )
-                )}
-                {r.kind === 'audio' && (
-                  <div className="p-3">
-                    <audio controls className="w-full" src={r.source} onPlay={onMediaPlay} onPause={onMediaPause} onEnded={onMediaPause} />
-                  </div>
                 )}
                 {r.kind === 'image' && (
                   <a href={r.source} target="_blank" rel="noreferrer" className="block aspect-square bg-slate-100">
@@ -367,7 +637,7 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                   </button>
                 )}
 
-                {/* Pie: título editable + notas + borrar */}
+                {/* Pie: título editable + pantalla completa + notas + borrar */}
                 <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-100">
                   {renamingId === r.id ? (
                     <input
@@ -383,10 +653,15 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                       {r.title}
                     </span>
                   )}
-                  {/* Texto: botón Play que abre el lector principal (allí se
-                      cita y se activa el lector de voz). El icono de notas/citas
-                      solo tiene sentido para video/audio/imagen, que no pasan
-                      por el lector. */}
+                  {/* Pantalla completa: para textos abre el lector principal;
+                      para video/audio/imagen abre el overlay sin menús. */}
+                  <button
+                    onClick={() => openFullscreen(r)}
+                    className="p-1 shrink-0 text-slate-400 hover:text-[var(--primary)] transition-colors"
+                    title="Pantalla completa"
+                  >
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
                   {r.kind === 'text' ? (
                     <button
                       onClick={() => onOpenTextResource(r)}
@@ -421,7 +696,9 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                   </button>
                 </div>
 
-                {/* Panel de notas del recurso (documentId propio, separado del libro) */}
+                {/* Panel de notas del recurso (documentId propio, separado del
+                    libro). Para video/audio, las notas guardan la marca de
+                    tiempo actual y tocarlas salta a ese momento. */}
                 {notesResourceId === r.id && (
                   <div className="border-t border-slate-100 h-72 flex flex-col">
                     <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 border-b border-slate-100 shrink-0">
@@ -431,7 +708,13 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                       </button>
                     </div>
                     <div className="flex-1 overflow-hidden">
-                      <ResourceNotesPanel documentId={`${bookId}::res::${r.id}`} />
+                      <ResourceNotesPanel
+                        documentId={`${bookId}::res::${r.id}`}
+                        currentPage={(r.kind === 'video' || r.kind === 'audio') ? mediaTimeSec : undefined}
+                        onNavigateToPage={(r.kind === 'video' || r.kind === 'audio')
+                          ? (page) => mediaApiRef.current?.seekTo(Number(page) || 0)
+                          : undefined}
+                      />
                     </div>
                   </div>
                 )}
@@ -440,6 +723,60 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
           </div>
         )}
       </div>
+
+      {/* ------------------ Pantalla completa de un recurso ------------------
+          Overlay total (portal a body, por encima del header del lector y del
+          menú lateral): media arriba + notas abajo, como pidió el usuario. */}
+      {fullscreenRes && createPortal(
+        <div className="fixed inset-0 z-[9990] bg-[var(--bg-app)] flex flex-col">
+          <div className="flex items-center gap-2 px-3 h-12 border-b border-slate-200 bg-white shrink-0">
+            <span className="font-bold text-sm text-slate-800 truncate flex-1">{fullscreenRes.title}</span>
+            <button
+              onClick={() => setFullscreenId(null)}
+              className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 shrink-0"
+              title="Salir de pantalla completa"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="shrink-0">
+            {(fullscreenRes.kind === 'video' || fullscreenRes.kind === 'audio') && (
+              <MediaPlayer
+                key={`fs-${fullscreenRes.id}`}
+                resource={fullscreenRes}
+                kind={fullscreenRes.kind}
+                onPlayingChange={handlePlayingChange}
+                apiRef={mediaApiRef}
+                onTimeChange={setMediaTimeSec}
+                tall
+              />
+            )}
+            {fullscreenRes.kind === 'image' && (
+              <div className="max-h-[60dvh] bg-black flex items-center justify-center">
+                <img src={fullscreenRes.source} alt={fullscreenRes.title} className="max-h-[60dvh] w-auto object-contain" />
+              </div>
+            )}
+          </div>
+
+          {/* Notas a pantalla completa (con marca de tiempo para video/audio) */}
+          <div className="flex-1 min-h-0 flex flex-col">
+            <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 border-b border-slate-100 shrink-0">
+              <span className="text-[10px] font-bold uppercase text-slate-500">Notas</span>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <ResourceNotesPanel
+                documentId={`${bookId}::res::${fullscreenRes.id}`}
+                currentPage={(fullscreenRes.kind === 'video' || fullscreenRes.kind === 'audio') ? mediaTimeSec : undefined}
+                onNavigateToPage={(fullscreenRes.kind === 'video' || fullscreenRes.kind === 'audio')
+                  ? (page) => mediaApiRef.current?.seekTo(Number(page) || 0)
+                  : undefined}
+              />
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
