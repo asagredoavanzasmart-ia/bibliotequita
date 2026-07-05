@@ -227,6 +227,71 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     });
   }, []);
 
+  // ---- Voz OFFLINE (Web Speech API, speechSynthesis) ---------------------
+  // Es el mismo motor que usa speakWithBrowserVoice (respaldo sin conexión):
+  // aquí solo se elige CUÁL de las voces instaladas en el dispositivo/
+  // navegador se prefiere, con favorita marcada con estrella — igual patrón
+  // que el selector de voz de servidor. Se identifican por `voiceURI` (el id
+  // estable de SpeechSynthesisVoice; `name` puede repetirse entre voces).
+  const [offlineVoices, setOfflineVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [preferredOfflineVoiceURI, setPreferredOfflineVoiceURI] = useState<string>(() => {
+    try { return localStorage.getItem('tts-offline-voice-uri') || ''; } catch { return ''; }
+  });
+  const [showOfflineVoiceDropdown, setShowOfflineVoiceDropdown] = useState(false);
+  const offlineVoiceButtonRef = useRef<HTMLButtonElement>(null);
+  const [offlineVoiceDropdownPos, setOfflineVoiceDropdownPos] = useState<{ left: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
+
+  // getVoices() puede devolver [] en la primera llamada y poblarse async
+  // (sobre todo en Chrome/Android) — se relee al montar y en 'voiceschanged'.
+  useEffect(() => {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    const loadVoices = () => {
+      const all = synth.getVoices();
+      // Español primero (es cualquier variante), luego el resto por si el
+      // usuario prefiere una voz en otro idioma para libros no hispanos.
+      const sorted = [...all].sort((a, b) => {
+        const aEs = a.lang?.toLowerCase().startsWith('es') ? 0 : 1;
+        const bEs = b.lang?.toLowerCase().startsWith('es') ? 0 : 1;
+        return aEs - bEs || a.name.localeCompare(b.name);
+      });
+      setOfflineVoices(sorted);
+    };
+    loadVoices();
+    synth.addEventListener('voiceschanged', loadVoices);
+    return () => synth.removeEventListener('voiceschanged', loadVoices);
+  }, []);
+
+  const setPreferredOfflineVoice = useCallback((uri: string) => {
+    setPreferredOfflineVoiceURI(uri);
+    try { localStorage.setItem('tts-offline-voice-uri', uri); } catch { /* localStorage puede no estar disponible */ }
+  }, []);
+
+  const computeOfflineVoiceDropdownPos = useCallback(() => {
+    if (!offlineVoiceButtonRef.current) return;
+    const rect = offlineVoiceButtonRef.current.getBoundingClientRect();
+    const spaceAbove = rect.top - 8;
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const left = rect.right - 256;
+    if (spaceAbove >= 120 || spaceAbove >= spaceBelow) {
+      setOfflineVoiceDropdownPos({ left, bottom: window.innerHeight - rect.top + 4, maxHeight: Math.min(280, Math.max(120, spaceAbove)) });
+    } else {
+      setOfflineVoiceDropdownPos({ left, top: rect.bottom + 4, maxHeight: Math.min(280, Math.max(120, spaceBelow)) });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showOfflineVoiceDropdown) return;
+    let frame: number;
+    const deadline = performance.now() + 350;
+    const tick = () => {
+      computeOfflineVoiceDropdownPos();
+      if (performance.now() < deadline) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [showOfflineVoiceDropdown, computeOfflineVoiceDropdownPos]);
+
   // Voces de ElevenLabs
   const ELEVENLABS_VOICES = useMemo(() => [
     // 🇨🇱 Voces chilenas
@@ -1266,12 +1331,16 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
     const utter = new SpeechSynthesisUtterance(phraseList[index]);
     const voices = synth.getVoices();
-    const esVoice =
+    // 1) La voz elegida por el usuario en "Voz offline" (si sigue disponible
+    // en este navegador/dispositivo); 2) si no eligió ninguna, autodetecta
+    // una voz local en español; 3) si tampoco hay, cualquier voz en español.
+    const chosenVoice =
+      (preferredOfflineVoiceURI && voices.find(v => v.voiceURI === preferredOfflineVoiceURI)) ||
       voices.find(v => v.localService && v.lang?.toLowerCase().startsWith('es')) ||
       voices.find(v => v.lang?.toLowerCase().startsWith('es')) ||
       null;
-    if (esVoice) utter.voice = esVoice;
-    utter.lang = esVoice?.lang || 'es-ES';
+    if (chosenVoice) utter.voice = chosenVoice;
+    utter.lang = chosenVoice?.lang || 'es-ES';
 
     utter.onend = () => {
       if (browserUtterRef.current !== utter) return; // cancelada/reemplazada
@@ -1302,7 +1371,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       navigator.mediaSession.playbackState = 'playing';
     }
     return true;
-  }, [ttsTextSource, handleTtsStop]);
+  }, [ttsTextSource, handleTtsStop, preferredOfflineVoiceURI]);
 
   // Reproducción paso a paso frase por frase con pre-fetching asíncrono y resiliencia a errores.
   //
@@ -2435,6 +2504,90 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                                       >
                                                          <span className="truncate text-xs">{v.name}</span>
                                                          <span onClick={(e) => toggleFavoriteVoice(v.id, e)} className="text-slate-300 hover:text-yellow-400 shrink-0 px-1 cursor-pointer">☆</span>
+                                                      </button>
+                                                   ))}
+                                                </div>
+                                             )}
+                                          </div>
+                                       </div>
+                                    </>,
+                                    document.body
+                                 )}
+                              </div>
+                            );
+                         })()}
+
+                         {/* Voz offline: la voz LOCAL del dispositivo/navegador
+                             (Web Speech API) que se usa automáticamente sin
+                             conexión (ver speakWithBrowserVoice). Mismo patrón
+                             de favorita con estrella que el selector de voz de
+                             servidor, pero listando las voces instaladas en
+                             este navegador/dispositivo en vez de las de la API. */}
+                         {(() => {
+                            const favorites = offlineVoices.filter(v => v.voiceURI === preferredOfflineVoiceURI);
+                            const rest = offlineVoices.filter(v => v.voiceURI !== preferredOfflineVoiceURI);
+                            const currentVoice = offlineVoices.find(v => v.voiceURI === preferredOfflineVoiceURI);
+                            const currentVoiceName = currentVoice ? `${currentVoice.name}` : 'Automática';
+                            return (
+                              <div className="relative text-xs">
+                                 <div className="flex items-center justify-between bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5 gap-2">
+                                    <span className="text-[var(--text-muted)] font-semibold shrink-0">Voz offline:</span>
+                                    <button
+                                       ref={offlineVoiceButtonRef}
+                                       disabled={offlineVoices.length === 0}
+                                       onClick={() => {
+                                          if (!showOfflineVoiceDropdown) computeOfflineVoiceDropdownPos();
+                                          setShowOfflineVoiceDropdown(v => !v);
+                                       }}
+                                       className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 font-bold text-slate-800 dark:text-slate-100 cursor-pointer transition-colors shadow-sm max-w-[170px] truncate disabled:opacity-50 disabled:cursor-not-allowed"
+                                       title="Voz usada al leer sin conexión"
+                                    >
+                                       {preferredOfflineVoiceURI && <span className="text-yellow-400 text-[10px]">★</span>}
+                                       <span className="truncate">{offlineVoices.length === 0 ? 'No disponible' : currentVoiceName}</span>
+                                       <ChevronUp className="w-3 h-3 shrink-0 opacity-50" />
+                                    </button>
+                                 </div>
+                                 {showOfflineVoiceDropdown && offlineVoiceDropdownPos && createPortal(
+                                    <>
+                                       <div className="fixed inset-0 z-[60]" onClick={() => setShowOfflineVoiceDropdown(false)} />
+                                       <div
+                                          className="fixed z-[61] w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden"
+                                          style={{
+                                             left: Math.max(8, offlineVoiceDropdownPos.left),
+                                             ...(offlineVoiceDropdownPos.top !== undefined ? { top: offlineVoiceDropdownPos.top } : { bottom: offlineVoiceDropdownPos.bottom }),
+                                          }}
+                                          onClick={(e) => e.stopPropagation()}
+                                       >
+                                          <div className="overflow-y-auto custom-scrollbar" style={{ maxHeight: offlineVoiceDropdownPos.maxHeight }}>
+                                             <div className="px-2 pt-2 pb-1">
+                                                <button onClick={() => { setPreferredOfflineVoice(''); setShowOfflineVoiceDropdown(false); }}
+                                                   className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", !preferredOfflineVoiceURI ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
+                                                >
+                                                   <span className="truncate text-xs">Automática (recomendada)</span>
+                                                </button>
+                                             </div>
+                                             {favorites.length > 0 && (
+                                                <div className="px-2 pt-1 pb-1">
+                                                   <span className="text-[10px] text-yellow-500 font-bold uppercase tracking-wide px-1">★ Favorita</span>
+                                                   {favorites.map(v => (
+                                                      <button key={v.voiceURI} onClick={() => { setPreferredOfflineVoice(v.voiceURI); setShowOfflineVoiceDropdown(false); }}
+                                                         className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", preferredOfflineVoiceURI === v.voiceURI ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
+                                                      >
+                                                         <span className="truncate text-xs">{v.name} <span className="text-[10px] text-[var(--text-muted)]">({v.lang})</span></span>
+                                                         <span onClick={(e) => { e.stopPropagation(); setPreferredOfflineVoice(''); }} className="text-yellow-400 hover:text-yellow-500 shrink-0 px-1 cursor-pointer">★</span>
+                                                      </button>
+                                                   ))}
+                                                </div>
+                                             )}
+                                             {rest.length > 0 && (
+                                                <div className="px-2 pt-1 pb-2">
+                                                   {favorites.length > 0 && <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wide px-1">Todas</span>}
+                                                   {rest.map(v => (
+                                                      <button key={v.voiceURI} onClick={() => { setPreferredOfflineVoice(v.voiceURI); setShowOfflineVoiceDropdown(false); }}
+                                                         className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", preferredOfflineVoiceURI === v.voiceURI ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
+                                                      >
+                                                         <span className="truncate text-xs">{v.name} <span className="text-[10px] text-[var(--text-muted)]">({v.lang})</span></span>
+                                                         <span onClick={(e) => { e.stopPropagation(); setPreferredOfflineVoice(v.voiceURI); }} className="text-slate-300 hover:text-yellow-400 shrink-0 px-1 cursor-pointer">☆</span>
                                                       </button>
                                                    ))}
                                                 </div>

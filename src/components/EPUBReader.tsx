@@ -486,6 +486,22 @@ export function EPUBReader({ url, getRendition, controlsVisible = true, hideOwnB
                   transform: dragOffset !== 0 ? `translateX(${dragOffset}px)` : undefined,
                   transition: dragAnimating ? 'transform 220ms ease-out' : undefined,
                 }}
+                // react-reader monta SIEMPRE su propio SwipeWrapper (react-swipeable)
+                // alrededor del visor, con onSwiped→next()/prev() propio — sin
+                // ninguna prop para desactivarlo. Cuando el navegador entrega ese
+                // gesto también a este wrapper externo (p. ej. el touchend cae
+                // sobre el div contenedor en vez de dentro del iframe, algo más
+                // probable durante el arrastre porque este div se desplaza con
+                // translateX), los DOS sistemas de gestos terminan compitiendo:
+                // el propio (registrado dentro del iframe, ver handleGetRendition)
+                // ya decidió una dirección/página, y el de la librería dispara
+                // next()/prev() por su cuenta con su propio umbral — de ahí el
+                // "rebote" que se veía sobre todo yendo hacia la izquierda. Se
+                // frena en fase de CAPTURA (antes de llegar al SwipeWrapper) para
+                // que solo exista un dueño del gesto de página en modo Páginas.
+                onTouchStartCapture={viewMode === 'paginated' ? (e) => e.stopPropagation() : undefined}
+                onTouchMoveCapture={viewMode === 'paginated' ? (e) => e.stopPropagation() : undefined}
+                onTouchEndCapture={viewMode === 'paginated' ? (e) => e.stopPropagation() : undefined}
               >
                 <ReactReader
                   key={viewMode}

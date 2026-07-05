@@ -624,56 +624,50 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
 
                {/* Modo sin conexión: descarga el archivo al dispositivo para
                    abrirlo y escucharlo sin internet. Solo aplica a archivos
-                   subidos al servidor (/api/files/...). */}
+                   subidos al servidor (/api/files/...). Disimulado a propósito
+                   (fila discreta, sin tarjeta de color): es una opción
+                   secundaria, no debe competir visualmente con los slots de
+                   PDF/EPUB. min-w-0 + truncate en cada tramo evita que el
+                   switch se empuje fuera de la columna (que puede ser muy
+                   angosta, p. ej. en el layout de landscape) — antes el texto
+                   largo del estado podía desbordar y cortar el switch. */}
                {offlineSupported() && (
-                  <div className={cn(
-                     'rounded-xl border p-3 flex flex-col gap-2 transition-colors',
-                     offlineOn ? 'bg-sky-50 border-sky-300' : 'bg-[var(--bg-card)] border-slate-200'
-                  )}>
-                     <div className="flex items-center justify-between gap-2">
-                        <span className="flex items-center gap-2 text-xs font-bold text-[var(--text-main)]">
-                           <WifiOff className={cn('w-4 h-4 shrink-0', offlineOn ? 'text-sky-600' : 'text-slate-400')} />
-                           Leer sin conexión
+                  <div className="flex flex-col gap-1.5 px-0.5">
+                     <div className="flex items-center gap-2 min-w-0">
+                        <WifiOff className={cn('w-3.5 h-3.5 shrink-0', offlineOn ? 'text-sky-500' : 'text-slate-300')} />
+                        <span className="text-[11px] font-semibold text-slate-500 truncate min-w-0">
+                           {offlineProgress !== null ? `Descargando… ${offlineProgress}%` : 'Leer sin conexión'}
                         </span>
+                        <span className="flex-1 min-w-[8px]" />
                         {offlineProgress !== null ? (
-                           <Loader2 className="w-5 h-5 animate-spin text-sky-600 shrink-0" />
+                           <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-500 shrink-0" />
                         ) : (
                            <button
                               type="button"
                               onClick={handleToggleOffline}
                               disabled={offlineUrls.length === 0}
-                              title={offlineOn ? 'Quitar la descarga del dispositivo' : 'Descargar al dispositivo'}
+                              title={offlineUrls.length === 0
+                                 ? 'Sube un PDF o EPUB al servidor para poder descargarlo'
+                                 : offlineOn ? 'Quitar la descarga del dispositivo' : 'Descargar al dispositivo'}
                               className={cn(
-                                 'relative w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed',
-                                 offlineOn ? 'bg-sky-500' : 'bg-slate-300'
+                                 'relative w-8 h-[18px] rounded-full transition-colors shrink-0 disabled:opacity-30 disabled:cursor-not-allowed',
+                                 offlineOn ? 'bg-sky-400' : 'bg-slate-200'
                               )}
                            >
                               <span className={cn(
-                                 'absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all',
-                                 offlineOn ? 'left-[22px]' : 'left-0.5'
+                                 'absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-all',
+                                 offlineOn ? 'left-[15px]' : 'left-0.5'
                               )} />
                            </button>
                         )}
                      </div>
                      {offlineProgress !== null && (
-                        <div className="flex items-center gap-2">
-                           <div className="flex-1 h-1.5 rounded-full bg-slate-200 overflow-hidden">
-                              <div className="h-full bg-sky-500 rounded-full transition-all" style={{ width: `${offlineProgress}%` }} />
-                           </div>
-                           <span className="text-[10px] font-bold text-sky-700 tabular-nums shrink-0">{offlineProgress}%</span>
+                        <div className="h-1 rounded-full bg-slate-100 overflow-hidden">
+                           <div className="h-full bg-sky-400 rounded-full transition-all" style={{ width: `${offlineProgress}%` }} />
                         </div>
                      )}
-                     <p className="text-[10px] leading-snug text-slate-500">
-                        {offlineUrls.length === 0
-                           ? 'Sube un PDF o EPUB al servidor para poder descargarlo al dispositivo.'
-                           : offlineProgress !== null
-                              ? 'Descargando el libro al dispositivo…'
-                              : offlineOn
-                                 ? 'Descargado: este libro se puede abrir y leer sin internet en este dispositivo.'
-                                 : 'Descarga el archivo al dispositivo para abrirlo y escucharlo sin internet.'}
-                     </p>
                      {offlineError && (
-                        <p className="text-[10px] font-medium text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1">{offlineError}</p>
+                        <p className="text-[10px] font-medium text-rose-600 truncate" title={offlineError}>{offlineError}</p>
                      )}
                   </div>
                )}
