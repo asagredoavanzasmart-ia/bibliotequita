@@ -357,10 +357,17 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     if (!scroller || !content) return '';
     const rect = scroller.getBoundingClientRect();
     const parts: string[] = [];
+    const blockSel = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre';
     content.querySelectorAll<HTMLElement>('section[data-spine-idx]').forEach(sec => {
       const sr = sec.getBoundingClientRect();
       if (sr.bottom < rect.top || sr.top > rect.bottom) return;
-      sec.querySelectorAll<HTMLElement>('p, h1, h2, h3, h4, h5, h6, li, blockquote, pre').forEach(el => {
+      sec.querySelectorAll<HTMLElement>(blockSel).forEach(el => {
+        // Si el elemento contiene otro bloque anidado (p. ej. <li><p>…</p></li>
+        // o <blockquote><p>…</p></blockquote>, frecuente en EPUB exportados
+        // desde Word/Calibre), su textContent ya incluye el del hijo: contar
+        // ambos duplicaría el texto y el TTS leería la misma frase dos veces.
+        // Solo cuenta el bloque más interno.
+        if (el.querySelector(blockSel)) return;
         const r = el.getBoundingClientRect();
         if (r.bottom > rect.top && r.top < rect.bottom && r.height > 0) {
           const t = normalize(el.textContent || '').trim();
@@ -381,12 +388,14 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     if (s < 0) return null;
     const sectionEl = getSectionEl(s);
     if (!sectionEl) return null;
-    // Offset (en caracteres normalizados) del inicio del bloque dentro de la sección.
+    // Offset (en caracteres normalizados) del inicio del bloque dentro de la
+    // sección: primer carácter del mapa cuyo nodo cae DENTRO del bloque (no
+    // se exige que sea literalmente el primer nodo de texto del bloque —
+    // si ese nodo es whitespace puro "absorbido" por un espacio ya contado
+    // en un hermano anterior, no aparece en el mapa y buscar coincidencia
+    // exacta devolvía -1, saltando incorrectamente al inicio de la sección).
     const { map } = buildSectionCharMap(sectionEl);
-    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-    const firstText = walker.nextNode() as Text | null;
-    if (!firstText) return { s, o: 0 };
-    const idx = map.findIndex(e => e.node === firstText);
+    const idx = map.findIndex(e => block.contains(e.node));
     return { s, o: Math.max(0, idx) };
   }, []);
 
