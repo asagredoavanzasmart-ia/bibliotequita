@@ -19,9 +19,8 @@
 // =============================================================================
 
 import { useLibrary } from '../hooks/useLibrary';
-import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, Book as BookIcon, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, ChevronUp, FolderOpen } from 'lucide-react';
+import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, Book as BookIcon, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, FolderOpen } from 'lucide-react';
 import { useState, useRef, FormEvent, ChangeEvent, useEffect, useCallback, useMemo } from 'react';
-import { createPortal } from 'react-dom';
 import type { Rendition } from 'epubjs';
 import { cn, getBookSources, resolvePrimarySource } from '../lib/utils';
 import type { ResourceType } from '../types';
@@ -170,53 +169,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const [favoriteVoices, setFavoriteVoices] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('tts-favorite-voices') || '[]'); } catch { return []; }
   });
-  const [showVoiceDropdown, setShowVoiceDropdown] = useState(false);
-  // El dropdown de voces se renderiza vía portal en document.body (en vez de
-  // dentro del widget TTS) porque el widget tiene overflow-hidden para
-  // limitar su alto en móvil — sin el portal, las voces que sobresalían del
-  // recuadro del widget quedaban recortadas/invisibles ("no cargan todas").
-  const voiceButtonRef = useRef<HTMLButtonElement>(null);
-  // anchorBottom=true ancla el panel por abajo (crece hacia arriba, caso normal:
-  // el botón de voz está cerca del borde inferior, p.ej. en el widget TTS). Si no
-  // hay espacio suficiente arriba (botón muy alto en la pantalla, común en el
-  // widget TTS compacto de móvil), se ancla por arriba en su lugar y la lista se
-  // limita con maxHeight al espacio real disponible — antes, al anclar siempre
-  // por abajo, el panel podía salirse del viewport por arriba y solo se veía la
-  // primera voz (Catalina), con el resto recortado fuera de la pantalla.
-  const [voiceDropdownPos, setVoiceDropdownPos] = useState<{ left: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
-
-  const computeVoiceDropdownPos = useCallback(() => {
-    if (!voiceButtonRef.current) return;
-    const rect = voiceButtonRef.current.getBoundingClientRect();
-    const spaceAbove = rect.top - 8;
-    const spaceBelow = window.innerHeight - rect.bottom - 8;
-    const left = rect.right - 256;
-    if (spaceAbove >= 120 || spaceAbove >= spaceBelow) {
-      setVoiceDropdownPos({ left, bottom: window.innerHeight - rect.top + 4, maxHeight: Math.min(280, Math.max(120, spaceAbove)) });
-    } else {
-      setVoiceDropdownPos({ left, top: rect.bottom + 4, maxHeight: Math.min(280, Math.max(120, spaceBelow)) });
-    }
-  }, []);
-
-  // El botón "Voz" suele abrirse justo después del widget TTS, que todavía
-  // se está deslizando hacia arriba (animate-in slide-in-from-bottom-2,
-  // 300ms). Si el usuario toca "Voz" durante esa animación, el rect medido en
-  // el click queda obsoleto (posición intermedia, no final) y el desplegable
-  // se planta mal — pareciendo que "no se abrió" hasta otra interacción que
-  // fuerce un recálculo correcto. Mientras el desplegable está abierto, se
-  // re-mide la posición en cada frame durante ~350ms (cubre la animación) para
-  // que se autocorrija sin que el usuario tenga que volver a tocar nada.
-  useEffect(() => {
-    if (!showVoiceDropdown) return;
-    let frame: number;
-    const deadline = performance.now() + 350;
-    const tick = () => {
-      computeVoiceDropdownPos();
-      if (performance.now() < deadline) frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [showVoiceDropdown, computeVoiceDropdownPos]);
+  // NOTA: el antiguo desplegable custom de voces (portal + posición
+  // calculada) se eliminó por completo: en móvil el lector entra a pantalla
+  // completa con z-[100] y el portal quedaba a z-[61] — el menú se abría
+  // DETRÁS del lector, invisible, y el botón parecía "congelado". El
+  // selector de Voz ahora es un <select> nativo (ver JSX), que el propio
+  // sistema dibuja por encima de todo.
 
   const toggleFavoriteVoice = useCallback((voiceId: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -231,11 +189,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Es el mismo motor que usa speakWithBrowserVoice (respaldo sin conexión, y
   // también el modo "Voz offline" elegido explícitamente en el selector de
   // Modelo): aquí solo se elige CUÁL de las voces instaladas en el
-  // dispositivo/navegador se prefiere, con favorita marcada con estrella —
-  // reutiliza el MISMO desplegable/posición que el selector de voz de
-  // servidor (voiceButtonRef/voiceDropdownPos/showVoiceDropdown, más abajo en
-  // el JSX), no uno propio. Se identifican por `voiceURI` (el id estable de
-  // SpeechSynthesisVoice; `name` puede repetirse entre voces).
+  // dispositivo/navegador se prefiere, con favorita marcada con estrella, en
+  // el mismo <select> nativo de Voz del JSX. Se identifican por `voiceURI`
+  // (el id estable de SpeechSynthesisVoice; `name` puede repetirse).
   const [offlineVoices, setOfflineVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [preferredOfflineVoiceURI, setPreferredOfflineVoiceURI] = useState<string>(() => {
     try { return localStorage.getItem('tts-offline-voice-uri') || ''; } catch { return ''; }
@@ -2489,151 +2445,86 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                             </div>
                          )}
 
-                         {/* Selector de Voz con favoritos. Un único selector para
-                             los 4 modelos: para 'offline' lista las voces del
-                             navegador/dispositivo (Web Speech API) en vez de
-                             las de la API de servidor — mismo patrón visual
-                             (favorita con estrella) en ambos casos. */}
-                         {(() => {
-                            const isOffline = selectedProvider === 'offline';
-                            const allVoices = isOffline
-                               ? offlineVoices.map(v => ({ id: v.voiceURI, name: `${v.name} (${v.lang})` }))
-                               : selectedProvider === 'elevenlabs' ? ELEVENLABS_VOICES : selectedProvider === 'google' ? GOOGLE_VOICES : GOOGLE_STANDARD_VOICES;
-                            const currentVoiceId = isOffline ? preferredOfflineVoiceURI : selectedVoice;
-                            const isFavorite = isOffline ? !!preferredOfflineVoiceURI : favoriteVoices.includes(selectedVoice);
-                            const favorites = allVoices.filter(v => isOffline ? v.id === preferredOfflineVoiceURI : favoriteVoices.includes(v.id));
-                            const rest = allVoices.filter(v => isOffline ? v.id !== preferredOfflineVoiceURI : !favoriteVoices.includes(v.id));
-                            const currentVoiceName = isOffline
-                               ? (allVoices.find(v => v.id === currentVoiceId)?.name || 'Automática')
-                               : (allVoices.find(v => v.id === selectedVoice)?.name || selectedVoice);
-                            const selectVoice = (id: string) => {
-                               if (isOffline) { setPreferredOfflineVoice(id); }
-                               else { setSelectedVoice(id); handleTtsStop(); }
-                               setShowVoiceDropdown(false);
-                            };
-                            // Estrella dentro de la lista: en modo offline solo hay
-                            // UNA favorita posible (alterna la marcada / la clicada);
-                            // en los modelos de servidor sigue el toggle multi-favorito.
-                            const toggleFavoriteEntry = (id: string, e: React.MouseEvent) => {
-                               if (isOffline) {
-                                  e.stopPropagation();
-                                  setPreferredOfflineVoice(preferredOfflineVoiceURI === id ? '' : id);
-                               } else {
-                                  toggleFavoriteVoice(id, e);
-                               }
-                            };
+                         {/* Selector de Voz: <select> NATIVO del sistema. El desplegable
+                             custom anterior se dibujaba vía portal con z-[61], pero en
+                             móvil el lector entra a pantalla completa con z-[100]: el menú
+                             se abría DETRÁS del lector, invisible — por eso el botón
+                             parecía "congelado". El picker nativo lo dibuja el propio
+                             Android/navegador por encima de todo, inmune a capas, z-index
+                             y pantalla completa (igual que el selector de Modelo, que
+                             siempre funcionó). */}
+                         {selectedProvider === 'offline' ? (
+                            <div className="flex flex-col gap-1.5 text-xs">
+                               <div className="flex items-center justify-between bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5 gap-2">
+                                  <span className="text-[var(--text-muted)] font-semibold shrink-0">Voz:</span>
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                     {preferredOfflineVoiceURI && <span className="text-yellow-400 text-[10px] shrink-0">★</span>}
+                                     <select
+                                        value={preferredOfflineVoiceURI}
+                                        onPointerDown={refreshOfflineVoices}
+                                        onChange={(e) => setPreferredOfflineVoice(e.target.value)}
+                                        className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-[var(--primary)] cursor-pointer transition-colors shadow-sm outline-none max-w-[185px] truncate"
+                                     >
+                                        <option value="" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">Automática (recomendada)</option>
+                                        {offlineVoices.map(v => (
+                                           <option key={v.voiceURI} value={v.voiceURI} className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">
+                                              {`${preferredOfflineVoiceURI === v.voiceURI ? '★ ' : ''}${v.name} (${v.lang})`}
+                                           </option>
+                                        ))}
+                                        {offlineVoices.length === 0 && (
+                                           <option value="" disabled className="bg-white dark:bg-slate-800">— cargando voces del sistema… toca de nuevo —</option>
+                                        )}
+                                     </select>
+                                  </div>
+                               </div>
+                               <p className="text-[10px] leading-snug text-[var(--text-muted)] px-1">
+                                  {offlineVoices.length === 0 && (
+                                     <span className="block font-mono mb-0.5">
+                                        {typeof window !== 'undefined' && window.speechSynthesis
+                                           ? `Diagnóstico: motor OK · voces expuestas: ${window.speechSynthesis.getVoices().length} — vuelve a tocar el selector.`
+                                           : 'Diagnóstico: este navegador no soporta speechSynthesis.'}
+                                     </span>
+                                  )}
+                                  Instalar más voces: <span className="font-semibold">Ajustes → Accesibilidad → Salida de texto a voz → ⚙ Motor de Google → Instalar datos de voz</span>. Elige voces <span className="font-semibold">-local</span> (funcionan sin internet; las -network necesitan conexión).
+                               </p>
+                            </div>
+                         ) : (() => {
+                            const allVoices = selectedProvider === 'elevenlabs' ? ELEVENLABS_VOICES : selectedProvider === 'google' ? GOOGLE_VOICES : GOOGLE_STANDARD_VOICES;
+                            const favorites = allVoices.filter(v => favoriteVoices.includes(v.id));
+                            const rest = allVoices.filter(v => !favoriteVoices.includes(v.id));
                             return (
-                              <div className="relative text-xs">
-                                 <div className="flex items-center justify-between bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5 gap-2">
-                                    <span className="text-[var(--text-muted)] font-semibold shrink-0">Voz:</span>
-                                    <button
-                                       ref={voiceButtonRef}
-                                       onClick={() => {
-                                          // Dentro del gesto del usuario algunos Android recién
-                                          // entregan getVoices(): reintenta la carga al abrir.
-                                          if (isOffline) refreshOfflineVoices();
-                                          if (!showVoiceDropdown) computeVoiceDropdownPos();
-                                          setShowVoiceDropdown(v => !v);
-                                       }}
-                                       className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 font-bold text-slate-800 dark:text-slate-100 cursor-pointer transition-colors shadow-sm max-w-[170px] truncate"
-                                    >
-                                       {isFavorite && <span className="text-yellow-400 text-[10px]">★</span>}
-                                       <span className="truncate">{currentVoiceName}</span>
-                                       <ChevronUp className="w-3 h-3 shrink-0 opacity-50" />
-                                    </button>
-                                 </div>
-                                 {showVoiceDropdown && (() => {
-                                    // Posición de respaldo si el cálculo del rect falló en el
-                                    // instante del toque (p. ej. widget aún animándose): el
-                                    // desplegable SIEMPRE se abre — antes, sin posición, el
-                                    // botón parecía "congelado" sin mostrar nada. El efecto de
-                                    // recálculo por rAF lo reubica enseguida en su lugar real.
-                                    const pos = voiceDropdownPos ?? {
-                                       left: Math.max(8, window.innerWidth - 272),
-                                       bottom: 140,
-                                       maxHeight: Math.min(280, Math.max(120, window.innerHeight - 200)),
-                                    };
-                                    return createPortal(
-                                    <>
-                                       {/* Capa invisible para cerrar el dropdown al tocar fuera */}
-                                       <div className="fixed inset-0 z-[60]" onClick={() => setShowVoiceDropdown(false)} />
-                                       <div
-                                          className="fixed z-[61] w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden"
-                                          style={{
-                                             left: Math.max(8, pos.left),
-                                             ...(pos.top !== undefined ? { top: pos.top } : { bottom: pos.bottom }),
-                                          }}
-                                          onClick={(e) => e.stopPropagation()}
-                                       >
-                                          <div className="overflow-y-auto custom-scrollbar" style={{ maxHeight: pos.maxHeight }}>
-                                             {isOffline && (
-                                                <div className="px-2 pt-2 pb-1">
-                                                   <button onClick={() => selectVoice('')}
-                                                      className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", !preferredOfflineVoiceURI ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
-                                                   >
-                                                      <span className="truncate text-xs">Automática (recomendada)</span>
-                                                   </button>
-                                                   {offlineVoices.length === 0 && (
-                                                      <p className="text-[10px] leading-snug text-[var(--text-muted)] px-2 py-1.5">
-                                                         El navegador aún no entrega la lista de voces del sistema. Cierra y vuelve a abrir este menú; si sigue vacío, revisa que el motor "Salida de texto a voz" de Google esté activo en Ajustes → Accesibilidad.
-                                                         {/* Diagnóstico en vivo: dónde se corta la cadena Android→Chrome→app.
-                                                             "sin soporte" = este navegador no expone speechSynthesis. */}
-                                                         <span className="block mt-1 font-mono opacity-70">
-                                                            Diagnóstico: {typeof window !== 'undefined' && window.speechSynthesis
-                                                               ? `motor OK · voces expuestas por el navegador: ${window.speechSynthesis.getVoices().length}`
-                                                               : 'sin soporte de speechSynthesis en este navegador'}
-                                                         </span>
-                                                      </p>
-                                                   )}
-                                                </div>
-                                             )}
-                                             {favorites.length > 0 && (
-                                                <div className="px-2 pt-2 pb-1">
-                                                   <span className="text-[10px] text-yellow-500 font-bold uppercase tracking-wide px-1">★ {isOffline ? 'Favorita' : 'Favoritas'}</span>
-                                                   {favorites.map(v => (
-                                                      <button key={v.id} onClick={() => selectVoice(v.id)}
-                                                         className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", currentVoiceId === v.id ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
-                                                      >
-                                                         <span className="truncate text-xs">{v.name}</span>
-                                                         <span onClick={(e) => toggleFavoriteEntry(v.id, e)} className="text-yellow-400 hover:text-yellow-500 shrink-0 px-1 cursor-pointer">★</span>
-                                                      </button>
-                                                   ))}
-                                                </div>
-                                             )}
-                                             {rest.length > 0 && (
-                                                <div className="px-2 pt-1 pb-2">
-                                                   {favorites.length > 0 && <span className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-wide px-1">Todas</span>}
-                                                   {rest.map(v => (
-                                                      <button key={v.id} onClick={() => selectVoice(v.id)}
-                                                         className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors", currentVoiceId === v.id ? "bg-[var(--primary)]/15 text-[var(--primary)]" : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100")}
-                                                      >
-                                                         <span className="truncate text-xs">{v.name}</span>
-                                                         <span onClick={(e) => toggleFavoriteEntry(v.id, e)} className="text-slate-300 hover:text-yellow-400 shrink-0 px-1 cursor-pointer">☆</span>
-                                                      </button>
-                                                   ))}
-                                                </div>
-                                             )}
-                                             {/* Guía para instalar más voces: la lista viene del motor
-                                                 TTS del sistema (via Chrome). Una web no puede abrir la
-                                                 pantalla de ajustes de Android (eso es un Intent nativo,
-                                                 como hace ReadEra), pero las voces que el usuario
-                                                 descargue ahí aparecen aquí solas ('voiceschanged').
-                                                 Las voces "-local" funcionan sin internet; las
-                                                 "-network" requieren conexión aunque sean del sistema. */}
-                                             {isOffline && (
-                                                <div className="px-3 py-2 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-                                                   <p className="text-[10px] leading-snug text-[var(--text-muted)]">
-                                                      Para instalar más voces: <span className="font-semibold">Ajustes → Accesibilidad → Salida de texto a voz → ⚙ Motor de Google → Instalar datos de voz</span>. Las nuevas aparecen aquí automáticamente. Prefiere voces <span className="font-semibold">-local</span>: funcionan sin internet (las -network requieren conexión).
-                                                   </p>
-                                                </div>
-                                             )}
-                                          </div>
-                                       </div>
-                                    </>,
-                                    document.body
-                                 );
-                                 })()}
-                              </div>
+                               <div className="flex items-center justify-between text-xs bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5 gap-2">
+                                  <span className="text-[var(--text-muted)] font-semibold shrink-0">Voz:</span>
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                     {/* Estrella: marca/desmarca la voz seleccionada como favorita */}
+                                     <button
+                                        type="button"
+                                        onClick={(e) => toggleFavoriteVoice(selectedVoice, e)}
+                                        title={favoriteVoices.includes(selectedVoice) ? 'Quitar de favoritas' : 'Marcar como favorita'}
+                                        className={cn('text-sm shrink-0 px-0.5 transition-colors', favoriteVoices.includes(selectedVoice) ? 'text-yellow-400 hover:text-yellow-500' : 'text-slate-300 hover:text-yellow-400')}
+                                     >
+                                        {favoriteVoices.includes(selectedVoice) ? '★' : '☆'}
+                                     </button>
+                                     <select
+                                        value={selectedVoice}
+                                        onChange={(e) => { setSelectedVoice(e.target.value); handleTtsStop(); }}
+                                        className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-[var(--primary)] cursor-pointer transition-colors shadow-sm outline-none max-w-[185px] truncate"
+                                     >
+                                        {favorites.length > 0 && (
+                                           <optgroup label="★ Favoritas">
+                                              {favorites.map(v => (
+                                                 <option key={v.id} value={v.id} className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">{v.name}</option>
+                                              ))}
+                                           </optgroup>
+                                        )}
+                                        <optgroup label={favorites.length > 0 ? 'Todas' : 'Voces'}>
+                                           {rest.map(v => (
+                                              <option key={v.id} value={v.id} className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">{v.name}</option>
+                                           ))}
+                                        </optgroup>
+                                     </select>
+                                  </div>
+                               </div>
                             );
                          })()}
 
@@ -2664,9 +2555,6 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                             </div>
                          )}
 
-                         {/* Sello de build: verifica en el dispositivo qué versión
-                             corre realmente (diagnóstico de despliegues/caché PWA). */}
-                         <p className="text-[9px] text-right text-[var(--text-muted)]/50 select-all">build {__BUILD_TAG__}</p>
                       </div>
                    )}
 
