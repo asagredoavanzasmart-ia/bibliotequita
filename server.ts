@@ -2349,6 +2349,32 @@ ${text}
     }
   }
 
+  // Gemini TTS (generateContent con responseModalities AUDIO) devuelve PCM
+  // CRUDO (mimeType "audio/L16;codec=pcm;rate=24000"), no un archivo de
+  // audio reproducible: el <audio> del navegador no puede decodificarlo y
+  // fallaba con "Error al reproducir esta frase" en el cliente. Se envuelve
+  // en una cabecera WAV estándar (RIFF, 44 bytes) para que sea un audio
+  // válido. 16-bit little-endian mono es lo que emite Gemini (L16).
+  function pcmToWav(pcm: Buffer, sampleRate: number, channels = 1, bitsPerSample = 16): Buffer {
+    const byteRate = (sampleRate * channels * bitsPerSample) / 8;
+    const blockAlign = (channels * bitsPerSample) / 8;
+    const header = Buffer.alloc(44);
+    header.write("RIFF", 0);
+    header.writeUInt32LE(36 + pcm.length, 4);
+    header.write("WAVE", 8);
+    header.write("fmt ", 12);
+    header.writeUInt32LE(16, 16);            // tamaño del sub-chunk fmt
+    header.writeUInt16LE(1, 20);             // formato PCM lineal
+    header.writeUInt16LE(channels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitsPerSample, 34);
+    header.write("data", 36);
+    header.writeUInt32LE(pcm.length, 40);
+    return Buffer.concat([header, pcm]);
+  }
+
   app.post("/api/tts", ttsLimiter, async (req, res) => {
     const text = reqString(req.body?.text, 3000);
     const provider = reqString(req.body?.provider, 32) || "elevenlabs";
@@ -2441,9 +2467,15 @@ ${text}
             const parts = response.candidates?.[0]?.content?.parts || [];
             const audioPart = parts.find((p: any) => p.inlineData?.data && p.inlineData.mimeType?.startsWith('audio/'));
             if (audioPart?.inlineData?.data) {
-              const audioBuffer = Buffer.from(audioPart.inlineData.data, 'base64');
+              let audioBuffer: Buffer = Buffer.from(audioPart.inlineData.data, 'base64');
               let mimeType = audioPart.inlineData.mimeType || 'audio/mp3';
-              if (mimeType.includes('wav')) {
+              if (/l16|pcm/i.test(mimeType)) {
+                // PCM crudo de Gemini: envolver en WAV para que el navegador
+                // pueda reproducirlo (ver pcmToWav arriba).
+                const rate = Number(/rate=(\d+)/.exec(mimeType)?.[1]) || 24000;
+                audioBuffer = pcmToWav(audioBuffer, rate);
+                mimeType = 'audio/wav';
+              } else if (mimeType.includes('wav')) {
                 mimeType = 'audio/wav';
               }
               
