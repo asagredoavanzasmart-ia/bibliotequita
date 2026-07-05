@@ -2523,19 +2523,30 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                        <ChevronUp className="w-3 h-3 shrink-0 opacity-50" />
                                     </button>
                                  </div>
-                                 {showVoiceDropdown && voiceDropdownPos && createPortal(
+                                 {showVoiceDropdown && (() => {
+                                    // Posición de respaldo si el cálculo del rect falló en el
+                                    // instante del toque (p. ej. widget aún animándose): el
+                                    // desplegable SIEMPRE se abre — antes, sin posición, el
+                                    // botón parecía "congelado" sin mostrar nada. El efecto de
+                                    // recálculo por rAF lo reubica enseguida en su lugar real.
+                                    const pos = voiceDropdownPos ?? {
+                                       left: Math.max(8, window.innerWidth - 272),
+                                       bottom: 140,
+                                       maxHeight: Math.min(280, Math.max(120, window.innerHeight - 200)),
+                                    };
+                                    return createPortal(
                                     <>
                                        {/* Capa invisible para cerrar el dropdown al tocar fuera */}
                                        <div className="fixed inset-0 z-[60]" onClick={() => setShowVoiceDropdown(false)} />
                                        <div
                                           className="fixed z-[61] w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden"
                                           style={{
-                                             left: Math.max(8, voiceDropdownPos.left),
-                                             ...(voiceDropdownPos.top !== undefined ? { top: voiceDropdownPos.top } : { bottom: voiceDropdownPos.bottom }),
+                                             left: Math.max(8, pos.left),
+                                             ...(pos.top !== undefined ? { top: pos.top } : { bottom: pos.bottom }),
                                           }}
                                           onClick={(e) => e.stopPropagation()}
                                        >
-                                          <div className="overflow-y-auto custom-scrollbar" style={{ maxHeight: voiceDropdownPos.maxHeight }}>
+                                          <div className="overflow-y-auto custom-scrollbar" style={{ maxHeight: pos.maxHeight }}>
                                              {isOffline && (
                                                 <div className="px-2 pt-2 pb-1">
                                                    <button onClick={() => selectVoice('')}
@@ -2594,7 +2605,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                        </div>
                                     </>,
                                     document.body
-                                 )}
+                                 );
+                                 })()}
                               </div>
                             );
                          })()}
