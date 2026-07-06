@@ -1485,6 +1485,9 @@ async function startServer() {
   app.get("/api/config", (_req, res) => {
     res.json({
       deleteToken: DELETE_TOKEN || null,
+      // El cliente lo usa para rechazar archivos demasiado grandes ANTES de
+      // subirlos (con mensaje claro), en vez de fallar tras minutos de espera.
+      maxUploadMb: MAX_UPLOAD_MB,
     });
   });
 

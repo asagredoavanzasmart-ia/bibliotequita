@@ -65,9 +65,30 @@ export async function uploadFile(
         reject(err);
       }
     };
-    xhr.onerror = () => reject(new Error("Error de red al subir el archivo"));
+    // onerror = la conexión se cortó sin respuesta HTTP: típico de subidas
+    // largas por datos móviles o del corte del proxy del hosting (Railway
+    // aborta requests de más de ~5 minutos). Distinto de un 413 (tamaño),
+    // que sí llega como respuesta y cae en onload.
+    xhr.onerror = () => reject(new Error(
+      "La subida se cortó antes de terminar. Suele pasar con archivos grandes en conexiones lentas: probá con WiFi o con un archivo más liviano (MP3/M4A pesan mucho menos que WAV).",
+    ));
     xhr.send(form);
   });
+}
+
+// Límite de subida del servidor (MB), cacheado tras la primera consulta.
+// null = no se pudo consultar (no bloquear la subida por eso).
+let _maxUploadMb: number | null | undefined = undefined;
+export async function getMaxUploadMb(): Promise<number | null> {
+  if (_maxUploadMb !== undefined) return _maxUploadMb;
+  try {
+    const res = await fetch("/api/config");
+    const data = res.ok ? await res.json() : {};
+    _maxUploadMb = typeof data.maxUploadMb === "number" && data.maxUploadMb > 0 ? data.maxUploadMb : null;
+  } catch {
+    _maxUploadMb = null;
+  }
+  return _maxUploadMb;
 }
 
 // Token interno para DELETE — se obtiene del servidor al primer uso y se cachea.

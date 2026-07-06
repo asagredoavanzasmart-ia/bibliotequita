@@ -22,7 +22,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, Minimize2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { uploadFile } from '../lib/uploadFile';
+import { uploadFile, getMaxUploadMb } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { useDocumentNotes } from '../hooks/useDocumentNotes';
@@ -432,6 +432,23 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
     setUploading(true);
     setUploadProgress(0);
     setUploadError(null);
+    // Rechazar de inmediato archivos que superan el límite del servidor: sin
+    // esto, el usuario esperaba minutos de subida para recibir un 413. La
+    // DURACIÓN del audio/video no importa, solo el PESO: 1 hora de audio en
+    // MP3/M4A son ~30-60 MB (entra de sobra); en WAV son ~600 MB (no entra).
+    const maxMb = await getMaxUploadMb();
+    const fileMb = file.size / (1024 * 1024);
+    if (maxMb && fileMb > maxMb) {
+      setUploading(false);
+      setUploadError(
+        `El archivo pesa ${Math.round(fileMb)} MB y el máximo es ${maxMb} MB. ` +
+        (activeKind === 'audio'
+          ? 'Convertilo a MP3 o M4A (1 hora ≈ 30-60 MB) y volvé a intentar.'
+          : 'Probá con una versión más comprimida del archivo.'),
+      );
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
     try {
       const { url, mimeType } = await uploadFile(file, undefined, setUploadProgress);
       const fileType = activeKind === 'text' ? fileTypeFromName(file.name) : undefined;
