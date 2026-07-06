@@ -56,10 +56,21 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   const [toBuy, setToBuy] = useState(item.toBuy || false);
   const [folderIds, setFolderIds] = useState<string[]>(item.folderIds || []);
   const [stageIds, setStageIds] = useState<string[]>(item.stageIds || []);
-  const [coverUrl, setCoverUrl] = useState(item.thumbnailUrl || '');
+  // Si un guardado anterior alcanzó a persistir una URL de vista previa
+  // "blob:" (muerta tras recargar), se descarta al abrir: mostrar el
+  // placeholder es mejor que un icono de imagen rota, y el próximo guardado
+  // limpia el dato corrupto.
+  const sanitizeUrl = (u: string | undefined) => (u && !u.startsWith('blob:') ? u : '');
+  const [coverUrl, setCoverUrl] = useState(sanitizeUrl(item.thumbnailUrl));
+  // Espejo síncrono del último valor REAL de la portada + promesa de la
+  // subida en vuelo: handleSubmit la espera para no persistir jamás la
+  // vista previa blob: (así fue como desaparecían las portadas editadas).
+  const coverUrlRef = useRef(sanitizeUrl(item.thumbnailUrl));
+  const coverUploadRef = useRef<Promise<void> | null>(null);
+  const [coverError, setCoverError] = useState<string | null>(null);
   // Portada SIN editar, conservada para poder reabrir el editor (ver
   // ImageEditorModal / botón "Reeditar portada" más abajo).
-  const [coverOriginalUrl, setCoverOriginalUrl] = useState(item.coverOriginalUrl || '');
+  const [coverOriginalUrl, setCoverOriginalUrl] = useState(sanitizeUrl(item.coverOriginalUrl));
   // Blob del original en curso de reedición: se pasa como `file` al editor
   // cuando el usuario pulsa "Reeditar portada" (se descarga desde
   // coverOriginalUrl bajo demanda, no se mantiene cargado siempre).
@@ -162,7 +173,12 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    // Si la portada editada todavía se está subiendo, esperar: persistir la
+    // vista previa "blob:" dejaba el libro con la portada rota para siempre.
+    if (coverUploadRef.current) {
+      try { await coverUploadRef.current; } catch { /* ya revertida en uploadCover */ }
+    }
     // La fuente "principal" (source/type) se deriva para retrocompatibilidad:
     // si es externa se respeta el enlace; si no, se prioriza PDF y luego EPUB.
     let primarySource = item.source;
@@ -198,8 +214,10 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
       source: primarySource,
       pdfSource: pdfSource || undefined,
       epubSource: epubSource || undefined,
-      thumbnailUrl: coverUrl,
-      coverOriginalUrl: coverOriginalUrl || undefined,
+      // Nunca persistir blob:/vista previa — solo URLs reales del servidor
+      // (o vacío, que al menos muestra el placeholder en vez de romperse).
+      thumbnailUrl: sanitizeUrl(coverUrlRef.current),
+      coverOriginalUrl: sanitizeUrl(coverOriginalUrl) || undefined,
       type: primaryType,
       rating,
       tags: tagIds,
@@ -269,27 +287,42 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   // (solo cuando viene del editor) se sube aparte y se guarda en
   // coverOriginalUrl — un archivo subido directamente no tiene original propio.
   const uploadCover = async (file: File | Blob, original?: Blob) => {
-    const previousUrl = coverUrl;
+    const previousUrl = coverUrlRef.current;
     const previousOriginalUrl = coverOriginalUrl;
     const previewUrl = URL.createObjectURL(file);
     setCoverUrl(previewUrl);
-    try {
-      const { url } = await uploadFile(file, `cover-${Date.now()}.jpg`);
-      setCoverUrl(url);
-      URL.revokeObjectURL(previewUrl);
-      if (previousUrl?.startsWith('/api/files/') && previousUrl !== url) {
-        deleteUploadedFile(previousUrl);
-      }
-      if (original) {
-        const { url: originalUrl } = await uploadFile(original, `cover-original-${Date.now()}.jpg`);
-        setCoverOriginalUrl(originalUrl);
-        if (previousOriginalUrl?.startsWith('/api/files/') && previousOriginalUrl !== originalUrl) {
-          deleteUploadedFile(previousOriginalUrl);
+    setCoverError(null);
+    const task = (async () => {
+      try {
+        const { url } = await uploadFile(file, `cover-${Date.now()}.jpg`);
+        setCoverUrl(url);
+        coverUrlRef.current = url;
+        URL.revokeObjectURL(previewUrl);
+        if (previousUrl?.startsWith('/api/files/') && previousUrl !== url) {
+          deleteUploadedFile(previousUrl);
         }
+        if (original) {
+          const { url: originalUrl } = await uploadFile(original, `cover-original-${Date.now()}.jpg`);
+          setCoverOriginalUrl(originalUrl);
+          if (previousOriginalUrl?.startsWith('/api/files/') && previousOriginalUrl !== originalUrl) {
+            deleteUploadedFile(previousOriginalUrl);
+          }
+        }
+      } catch (err) {
+        // Falló la subida: volver a la portada anterior. Dejar la vista
+        // previa blob: era lo que corrompía el libro al guardar.
+        console.error('Error subiendo portada al servidor:', err);
+        setCoverUrl(previousUrl);
+        coverUrlRef.current = previousUrl;
+        URL.revokeObjectURL(previewUrl);
+        setCoverError('No se pudo subir la portada. Revisa tu conexión e inténtalo de nuevo.');
       }
-    } catch (err) {
-      console.error('Error subiendo portada al servidor:', err);
-    }
+    })();
+    const wrapped = task.finally(() => {
+      if (coverUploadRef.current === wrapped) coverUploadRef.current = null;
+    });
+    coverUploadRef.current = wrapped;
+    await task;
     const reader = new FileReader();
     reader.onload = async (event) => {
       const base64Data = event.target?.result as string;
@@ -371,7 +404,10 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                 try {
                   const { url } = await uploadFile(blob, `cover-${Date.now()}.jpg`);
                   setCoverUrl(url);
+                  coverUrlRef.current = url;
                 } catch (err) {
+                  // Solo vista previa local: el ref conserva la URL buena
+                  // anterior (al guardar no se persiste jamás un blob:).
                   console.warn('No se pudo subir la auto-portada, uso preview local:', err);
                   setCoverUrl(URL.createObjectURL(blob));
                 }
@@ -524,7 +560,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                      {coverUrl && (
                         <button
                            type="button"
-                           onClick={() => setCoverUrl('')}
+                           onClick={() => { setCoverUrl(''); coverUrlRef.current = ''; }}
                            className="pointer-events-auto text-rose-200 hover:text-white hover:bg-rose-500/80 px-3 py-1 rounded-lg text-xs font-bold transition-colors"
                         >
                            Quitar portada
@@ -571,6 +607,9 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                      {loadingOriginal ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Pencil className="w-3.5 h-3.5" />}
                      {coverOriginalUrl ? 'Reeditar portada' : 'Editar portada'}
                   </button>
+               )}
+               {coverError && (
+                  <p className="text-[11px] text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">{coverError}</p>
                )}
 
                {/* Posesión: físico / digital / wishlist */}
@@ -1237,7 +1276,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                        <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center flex-col gap-3">
                           <span className="text-white text-sm font-bold flex items-center gap-2"><UploadCloud className="w-5 h-5" /> Cambiar</span>
                           {coverUrl && (
-                             <button type="button" onClick={(e) => { e.stopPropagation(); setCoverUrl(''); }} className="text-rose-400 hover:text-white hover:bg-rose-500 px-3 py-1.5 rounded text-xs font-bold transition-colors">
+                             <button type="button" onClick={(e) => { e.stopPropagation(); setCoverUrl(''); coverUrlRef.current = ''; }} className="text-rose-400 hover:text-white hover:bg-rose-500 px-3 py-1.5 rounded text-xs font-bold transition-colors">
                                 Eliminar
                              </button>
                           )}

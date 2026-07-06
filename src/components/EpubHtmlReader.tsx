@@ -90,6 +90,8 @@ const PGSTART_CLASS = '__pgstart__';  // marcador temporal: bloque que inicia p�
 const CONT_CLASS = '__epub-cont__';   // mitad-continuación de un bloque partido
 const SHEET_PAD_X = 22;               // padding horizontal de la hoja horizontal (px)
 const SHEET_PAD_Y = 18;               // padding vertical de la hoja horizontal (px)
+const SHEET_GAP = 10;                 // espacio gris entre hojas horizontales (px)
+const SHEET_SAFETY = 4;               // margen de seguridad del corte geométrico (px)
 
 type ViewMode = 'v' | 'h';
 
@@ -259,8 +261,6 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
   });
   const viewModeRef = useRef<ViewMode>(viewMode);
   useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
-  const [scrollerW, setScrollerW] = useState(0);  // ancho útil del visor (px)
-  const [slideCount, setSlideCount] = useState(1); // nº de hojas en modo horizontal
   const [toc, setToc] = useState<{ label: string; href: string; sub?: boolean }[]>([]);
   const [showToc, setShowToc] = useState(false);
 
@@ -365,12 +365,13 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     return sec ? Number((sec as HTMLElement).dataset.spineIdx) : -1;
   };
 
-  // Hoja horizontal activa = la alineada con el scroll (snap).
+  // Hoja horizontal activa = la alineada con el scroll (snap). El paso de
+  // snap es ancho de hoja + separación entre hojas.
+  const sheetStep = (scroller: HTMLElement) => Math.max(1, scroller.clientWidth) + SHEET_GAP;
   const activeSheetIndex = (): number => {
     const scroller = scrollRef.current;
     if (!scroller || sheetsRef.current.length === 0) return 0;
-    const w = Math.max(1, scroller.clientWidth);
-    return Math.max(0, Math.min(sheetsRef.current.length - 1, Math.round(scroller.scrollLeft / w)));
+    return Math.max(0, Math.min(sheetsRef.current.length - 1, Math.round(scroller.scrollLeft / sheetStep(scroller))));
   };
 
   const BLOCK_SEL = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre';
@@ -456,7 +457,7 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
       const sheet = el.closest(`.${SHEET_CLASS}`) as HTMLElement | null;
       if (!sheet) return;
       const idx = sheetsRef.current.indexOf(sheet);
-      if (idx >= 0) scroller.scrollTo({ left: idx * Math.max(1, scroller.clientWidth), behavior: 'auto' });
+      if (idx >= 0) scroller.scrollTo({ left: idx * sheetStep(scroller), behavior: 'auto' });
       return;
     }
     el.scrollIntoView({ block: center ? 'center' : 'start' });
@@ -637,6 +638,14 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     const cTop = content.getBoundingClientRect().top;
     const cuts: CutPoint[] = [];
     let pageStart = 0;
+    // El rect de un carácter mide la caja del glifo, que puede ser MENOR que
+    // la caja de línea (line-height 1.7): usar solo rect.bottom subestimaba
+    // el fondo real de la línea y la última línea quedaba cortada en algunas
+    // hojas. El fondo real de una línea = su top + line-height computado.
+    const lineHeightOf = (block: Element): number => {
+      const lh = parseFloat(window.getComputedStyle(block).lineHeight);
+      return Number.isFinite(lh) && lh > 0 ? lh : 28;
+    };
 
     // Inicios de palabra de un bloque: [{node, offset}] en orden.
     const wordStarts = (block: Element): { node: Text; offset: number }[] => {
@@ -674,10 +683,14 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
         if (bBottom - pageStart <= usableH) continue; // el bloque cabe entero
 
         // El bloque excede la hoja actual: puede necesitar varios cortes.
+        const lh = lineHeightOf(block);
+        // Fondo real de la línea de una palabra (glifo O caja de línea, el
+        // que sea mayor), relativo al flujo.
+        const lineBottom = (r: DOMRect) => Math.max(r.bottom, r.top + lh) - cTop;
         let guard = 0;
         let done = false;
         while (!done && guard++ < 400) {
-          const target = pageStart + usableH;
+          const target = pageStart + usableH - SHEET_SAFETY;
           if (bBottom <= target) break; // el resto ya cabe
           const ws = wordStarts(block);
           if (ws.length === 0) {
@@ -688,7 +701,7 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
           }
           // ¿Cabe al menos la primera palabra en la hoja actual?
           const firstR = wordRect(ws[0]);
-          if (firstR && firstR.bottom - cTop > target) {
+          if (firstR && lineBottom(firstR) > target) {
             // Ni la primera línea entra: hoja nueva desde el bloque.
             if (bTop > pageStart + 1) { cuts.push({ beforeBlock: block }); pageStart = bTop; continue; }
             break; // hoja ya vacía y no cabe: se recorta por CSS (caso extremo)
@@ -699,7 +712,7 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
             const mid = (lo + hi) >> 1;
             const r = wordRect(ws[mid]);
             if (!r) { lo = mid + 1; continue; }
-            if (r.bottom - cTop > target) { firstOut = mid; hi = mid - 1; }
+            if (lineBottom(r) > target) { firstOut = mid; hi = mid - 1; }
             else lo = mid + 1;
           }
           if (firstOut <= 0) break; // todo cabe (o caso degenerado)
@@ -708,7 +721,7 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
           const r = wordRect(cutWord);
           pageStart = r ? r.top - cTop : target;
           bTop = pageStart;
-          done = bBottom - pageStart <= usableH;
+          done = bBottom - pageStart <= usableH - SHEET_SAFETY;
         }
       }
     }
@@ -884,12 +897,10 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
 
     if (mode === 'h') {
       sheetsRef.current = pages;
-      setSlideCount(pages.length);
     } else {
       sheetsRef.current = [];
       measurePageTops();
     }
-    setScrollerW(scroller.clientWidth);
     setPage(prev => (prev.total === totalPagesRef.current ? prev : { current: Math.min(prev.current, totalPagesRef.current), total: totalPagesRef.current }));
     updateCurrentPage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -918,7 +929,7 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     if (!scroller) return;
     if (viewModeRef.current === 'h') {
       const target = Math.max(0, Math.min(sheetsRef.current.length - 1, activeSheetIndex() + delta));
-      scroller.scrollTo({ left: target * Math.max(1, scroller.clientWidth), behavior: 'auto' });
+      scroller.scrollTo({ left: target * sheetStep(scroller), behavior: 'auto' });
       return;
     }
     const tops = pageTopsRef.current;
@@ -1117,7 +1128,12 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
             {/* Estilos de lectura propios (los del libro se descartan al
                 sanitizar): tipografía consistente en todos los libros. */}
             <style>{`
-              #epub-html-content { font-family: Georgia, 'Times New Roman', serif; color: var(--text-main); line-height: 1.7; }
+              #epub-html-content { font-family: Georgia, 'Times New Roman', serif; color: var(--text-main); line-height: 1.7;
+                /* URLs y palabras kilométricas (notas al pie con enlaces) se
+                   quiebran en vez de desbordar la hoja: sin esto, el scroller
+                   vertical se volvía desplazable de costado y quedaba un
+                   espacio gris gigante junto al texto. */
+                overflow-wrap: anywhere; word-break: break-word; }
               #epub-html-content p { margin: 0 0 0.85em 0; text-align: justify; }
               #epub-html-content h1, #epub-html-content h2, #epub-html-content h3,
               #epub-html-content h4, #epub-html-content h5, #epub-html-content h6 {
@@ -1136,22 +1152,25 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
               #epub-html-content.__vmode { display: block; padding: 14px 8px 26px; }
               .${PAGE_CLASS} { position: relative; background: #fff; max-width: 48rem;
                 margin: 0 auto 16px; padding: 24px 1.15rem 32px; border-radius: 3px;
+                overflow: hidden; /* nada del libro puede sobresalir de la hoja */
                 box-shadow: 0 1px 2px rgba(15,23,42,.22), 0 5px 16px rgba(15,23,42,.13); }
               @media (min-width: 640px) { .${PAGE_CLASS} { padding: 30px 2.2rem 36px; } }
               .${PAGE_CLASS}::after { content: "pág. " attr(data-page); position: absolute;
                 bottom: 8px; right: 12px; font-family: ui-monospace, monospace;
                 font-size: 10px; color: #94a3b8; user-select: none; }
 
-              /* ---- HORIZONTAL: hojas del tamaño del viewport, apiladas ----
-                 sticky hace que la hoja se quede pegada al borde mientras la
-                 siguiente se desliza POR ENCIMA con sombra (scroll y snap 100%
-                 nativos; cero JS táctil). overflow hidden = el contenedor
-                 visual es el límite: nada puede desbordar. */
-              #epub-html-content.__hmode { display: flex; height: 100%; width: max-content; }
+              /* ---- HORIZONTAL: hojas del tamaño del viewport, lado a lado ----
+                 Cada hoja ES el snap target (elemento real de ancho completo:
+                 el snap siempre asienta alineado) y snap-stop always fuerza
+                 UNA hoja por gesto aunque el deslizamiento sea rápido.
+                 overflow hidden = el contenedor visual es el límite. */
+              #epub-html-content.__hmode { display: flex; height: 100%; width: max-content; gap: ${SHEET_GAP}px; }
               #epub-html-content.__hmode-measure { display: block; }
-              .${SHEET_CLASS} { position: sticky; left: 0; flex: 0 0 auto; background: #fff;
+              .${SHEET_CLASS} { position: relative; flex: 0 0 auto; background: #fff;
                 overflow: hidden; box-sizing: border-box;
-                box-shadow: -3px 0 6px rgba(15,23,42,.22), -16px 0 32px rgba(15,23,42,.30); }
+                scroll-snap-align: start; scroll-snap-stop: always;
+                box-shadow: 0 0 4px rgba(15,23,42,.25), 0 4px 14px rgba(15,23,42,.18); }
+              .${SHEET_CLASS} section:first-child > :first-child { margin-top: 0 !important; }
               .${SHEET_CLASS}::after { content: "pág. " attr(data-page); position: absolute;
                 bottom: 5px; right: 12px; font-family: ui-monospace, monospace;
                 font-size: 10px; color: #cbd5e1; user-select: none; }
@@ -1165,16 +1184,13 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
               ref={scrollRef}
               className={cn(
                 'flex-1 min-h-0 relative',
-                viewMode === 'v' ? 'overflow-y-auto' : 'overflow-x-auto overflow-y-hidden snap-x snap-mandatory bg-[#b6c2d2]'
+                viewMode === 'v'
+                  ? 'overflow-y-auto overflow-x-hidden'
+                  : 'overflow-x-auto overflow-y-hidden snap-x snap-mandatory overscroll-x-contain bg-[#b6c2d2]'
               )}
               style={{ touchAction: 'manipulation' }}
               onClick={handleContentClick}
             >
-              {/* Guías de snap del modo horizontal: un punto ESTÁTICO por hoja
-                  (las hojas son sticky y su posición visual no sirve de snap). */}
-              {viewMode === 'h' && scrollerW > 0 && Array.from({ length: slideCount }, (_, k) => (
-                <div key={k} aria-hidden className="absolute top-0 w-px h-px snap-start" style={{ left: k * scrollerW }} />
-              ))}
               <div id="epub-html-content" ref={contentRef} />
 
               {(!sections || !layoutReady) && (
