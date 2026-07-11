@@ -137,6 +137,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // efecto dentro de NotesPanel.
   const {
     notes: documentNotes,
+    loaded: notesLoaded,
     activePalette,
     savePalette,
     saveNotes: saveDocumentNotes,
@@ -2177,6 +2178,99 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setPendingHighlight(null);
   }, [pendingHighlight, activeType, highlightCurrentPhrase, clearPersistentHighlights]);
 
+  // Cita → texto de la cita (quote directo o el contenido sin el "> " del
+  // markdown de blockquote, para citas viejas creadas antes del campo quote).
+  const citationQuoteOf = useCallback((n: { quote?: string; content?: string }): string => {
+    if (n.quote && n.quote.trim()) return n.quote.trim();
+    const c = n.content || '';
+    return c.startsWith('>') ? c.replace(/^>\s*/, '').trim() : '';
+  }, []);
+
+  // PINTADO INICIAL de las citas guardadas de la página PDF visible. Sin esto,
+  // los resaltados persistentes solo aparecían tras CREAR o NAVEGAR una cita
+  // (el registro paintedCitationsRef nace vacío en cada montaje y ningún
+  // efecto recorría las notas cargadas del servidor al abrir el libro).
+  const initialPaintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const paintSavedPdfCitations = useCallback((retriesLeft = 12) => {
+    if (activeType !== 'pdf') return;
+    const pageNum = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10);
+    if (!Number.isFinite(pageNum) || pageNum <= 0) return;
+    const parseRef = (ref: unknown): number => {
+      const m = String(ref ?? '').trim().match(/\d+/);
+      return m ? parseInt(m[0], 10) : 0;
+    };
+    const wanted = documentNotes.filter(n =>
+      n.type !== 'bookmark' && parseRef(n.pageReference) === pageNum && citationQuoteOf(n).length >= 3
+    );
+    // Idempotencia: descartar rects/registro persistentes y repintar desde
+    // cero (si el efecto corre dos veces no se duplican rectángulos).
+    paintedCitationsRef.current = [];
+    document.querySelectorAll('.tts-hl-layer > div[data-persistent]').forEach(d => d.remove());
+    if (wanted.length === 0) return;
+    // ¿La capa de texto de LA PÁGINA ACTUAL ya está montada? (El visor
+    // virtualiza; al abrir, la página del marcador tarda en montarse. Mirar
+    // "cualquier página" fallaría si hay otra montada sin la nuestra.)
+    const pageWrap = document.querySelector(`[data-page-number="${pageNum}"]`);
+    const pageEl = pageWrap?.querySelector('.react-pdf__Page') as HTMLElement | null;
+    const ready = !!pageEl && buildPageLines(pageEl).length > 0;
+    if (!ready) {
+      if (retriesLeft > 0) {
+        if (initialPaintTimerRef.current) clearTimeout(initialPaintTimerRef.current);
+        initialPaintTimerRef.current = setTimeout(() => paintSavedPdfCitations(retriesLeft - 1), 250);
+      }
+      return;
+    }
+    // La capa ya está: pintar cada cita SIN scroll (no mover el encuadre) y
+    // SIN reintento interno propio (evita que cada llamada cancele el timer
+    // compartido de la anterior — ver highlightPhraseInDOM).
+    for (const n of wanted) {
+      const colorDef = activePalette.find(c => c.id === n.color);
+      highlightPhraseInDOM(citationQuoteOf(n), colorDef?.hex || '#fbbf24', true, 0, false);
+    }
+  }, [activeType, currentPage, documentNotes, activePalette, citationQuoteOf, buildPageLines, highlightPhraseInDOM]);
+
+  // Dispara el pintado al: abrir el libro (notas ya cargadas), cambiar de
+  // página, o cambiar de documento. El zoom ya lo cubre handlePdfScaleChange
+  // (que ahora encuentra el registro poblado).
+  useEffect(() => {
+    if (activeType !== 'pdf' || !notesLoaded) return;
+    const t = setTimeout(() => paintSavedPdfCitations(), 200);
+    return () => {
+      clearTimeout(t);
+      if (initialPaintTimerRef.current) { clearTimeout(initialPaintTimerRef.current); initialPaintTimerRef.current = null; }
+    };
+  }, [activeType, notesLoaded, currentPage, activeSource, paintSavedPdfCitations]);
+
+  // Repinta TODAS las citas guardadas del EPUB v2 sobre el flujo. Se llama
+  // desde onLayoutReady del lector (tras CADA reconstrucción del layout:
+  // apertura, cambio de modo v↔h, resize horizontal) porque buildLayout hace
+  // innerHTML='' y borra los <mark>. Sin scroll: pintar muchas no debe saltar
+  // el encuadre. El DOM recién construido no tiene marks, así que es aditivo
+  // sin duplicar; aun así se limpia primero por si acaso.
+  const repaintEpubCitations = useCallback(() => {
+    const h = epubReaderRef.current;
+    if (!h || activeType !== 'epub' || !notesLoaded) return;
+    h.clearHighlights(true);
+    for (const n of documentNotes) {
+      if (n.type === 'bookmark') continue;
+      const quote = citationQuoteOf(n);
+      if (quote.length < 3) continue;
+      const colorDef = activePalette.find(c => c.id === n.color);
+      h.highlightText(quote, colorDef?.hex || '#fbbf24', true, false);
+    }
+  }, [activeType, notesLoaded, documentNotes, activePalette, citationQuoteOf]);
+
+  // Caso "notas llegan DESPUÉS de que el layout ya estaba listo": onLayoutReady
+  // ya no volverá a disparar, así que aquí repintamos al cargar las notas o
+  // cambiar de documento. NO se depende de documentNotes (cada cita nueva ya
+  // se pinta al crearse; un repintado total borraría el <mark> del TTS en curso).
+  useEffect(() => {
+    if (activeType !== 'epub' || !notesLoaded) return;
+    const t = setTimeout(() => repaintEpubCitations(), 220);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeType, notesLoaded, activeSource]);
+
   // New states for fullscreen and split view
   const [isFullscreen, setIsFullscreen] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
   // Intención del usuario de mantener pantalla completa: si es true, al salir
@@ -2552,6 +2646,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               mergedBarPortalTarget={showTtsWidget ? mergedBarSlotEl : null}
               onContentTap={() => { if (isFullscreen) setShowControls(prev => !prev); }}
               onParseError={() => setEpubV2Failed(true)}
+              onLayoutReady={() => repaintEpubCitations()}
               onReady={() => {
                 // Reanudar en el ancla guardada ("sN:oM"); los CFI legacy se ignoran.
                 const a = parseAnchor(item?.bookmarkPage);

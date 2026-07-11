@@ -47,7 +47,10 @@ export interface EpubReaderHandle {
   getCurrentAnchor(): EpubAnchor | null;
   goToAnchor(a: EpubAnchor, center?: boolean): void;
   goToText(text: string, center?: boolean): boolean;
-  highlightText(text: string, colorHex: string, persistent: boolean): boolean;
+  // scroll=true (por defecto) centra la vista en el resaltado (TTS / navegar
+  // a cita). Para el REPINTADO masivo de citas al reconstruir el layout se
+  // pasa false: pintar muchas no debe saltar el encuadre a la última.
+  highlightText(text: string, colorHex: string, persistent: boolean, scroll?: boolean): boolean;
   clearHighlights(includePersistent: boolean): void;
   pageBy(delta: number): void;           // salto de página (hoja) anterior/siguiente
   scrollByViewport(delta: number): void; // salto manual de página del TTS
@@ -70,6 +73,10 @@ interface EpubHtmlReaderProps {
   onRelocate?: (anchor: EpubAnchor | null, page: { current: number; total: number }) => void;
   onContentTap?: () => void;
   onParseError?: (err: unknown) => void;
+  // Se dispara al FINAL de cada construcción del layout (apertura, cambio de
+  // modo v↔h, resize horizontal). buildLayout() hace innerHTML='' y borra
+  // los <mark>: ReaderView lo usa para repintar las citas guardadas.
+  onLayoutReady?: () => void;
   controlsVisible?: boolean;
   hideOwnBar?: boolean;
   mergedBarPortalTarget?: HTMLElement | null;
@@ -246,7 +253,7 @@ function wrapMarks(map: CharMapEntry[], from: number, to: number, colorHex: stri
 // Componente
 // ---------------------------------------------------------------------------
 export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(function EpubHtmlReader(
-  { url, onReady, onRelocate, onContentTap, onParseError, controlsVisible = true, hideOwnBar = false, mergedBarPortalTarget = null },
+  { url, onReady, onRelocate, onContentTap, onParseError, onLayoutReady, controlsVisible = true, hideOwnBar = false, mergedBarPortalTarget = null },
   ref,
 ) {
   const [sections, setSections] = useState<SectionData[] | null>(null);
@@ -274,6 +281,10 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
   const totalPagesRef = useRef(1);           // total de páginas POR PALABRAS
   const pageTopsRef = useRef<number[]>([]);  // offsetTop de cada hoja vertical
   const sheetsRef = useRef<HTMLElement[]>([]); // hojas horizontales en orden
+  // Ref al callback de layout listo (evita recrear buildLayout en cada render
+  // por una prop-arrow inline del padre).
+  const onLayoutReadyRef = useRef(onLayoutReady);
+  useEffect(() => { onLayoutReadyRef.current = onLayoutReady; }, [onLayoutReady]);
 
   // ----- Carga y extracción (una vez por libro) -----------------------------
   useEffect(() => {
@@ -538,14 +549,14 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     });
   }, []);
 
-  const highlightText = useCallback((text: string, colorHex: string, persistent: boolean): boolean => {
+  const highlightText = useCallback((text: string, colorHex: string, persistent: boolean, scroll = true): boolean => {
     // El resaltado del TTS (no persistente) reemplaza al anterior.
     if (!persistent) clearHighlights(false);
     if (!text || normalize(text).trim().length < 3) return true; // limpiar era el objetivo
     const found = findInBook(text);
     if (!found) return false;
     const firstMark = wrapMarks(found.map, found.from, found.from + found.len, colorHex, persistent);
-    if (firstMark) {
+    if (firstMark && scroll) {
       if (viewModeRef.current === 'h') revealNode(firstMark, true);
       else firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
@@ -903,6 +914,10 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     }
     setPage(prev => (prev.total === totalPagesRef.current ? prev : { current: Math.min(prev.current, totalPagesRef.current), total: totalPagesRef.current }));
     updateCurrentPage();
+    // Layout reconstruido (innerHTML nuevo, marks borrados): avisar al padre
+    // para que repinte las citas guardadas. Tras un frame, con el DOM ya
+    // pintado, para que los rects del modo horizontal sean válidos.
+    requestAnimationFrame(() => onLayoutReadyRef.current?.());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [measurePageTops, updateCurrentPage]);
 
