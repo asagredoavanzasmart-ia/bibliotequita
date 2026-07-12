@@ -281,6 +281,13 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
   const totalPagesRef = useRef(1);           // total de páginas POR PALABRAS
   const pageTopsRef = useRef<number[]>([]);  // offsetTop de cada hoja vertical
   const sheetsRef = useRef<HTMLElement[]>([]); // hojas horizontales en orden
+  // Tamaño del scroller con el que se construyó el layout vigente + timestamp
+  // del último scroll. Sirven para IGNORAR el jitter de altura del viewport
+  // móvil (la barra de URL de Chrome se oculta/muestra al deslizar y cambia
+  // el 100dvh): sin esto, cada deslizamiento disparaba un rebuild completo
+  // en pleno gesto → congelamiento y hojas cortadas tras varias páginas.
+  const lastBuiltSizeRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
+  const lastScrollTsRef = useRef(0);
   // Ref al callback de layout listo (evita recrear buildLayout en cada render
   // por una prop-arrow inline del padre).
   const onLayoutReadyRef = useRef(onLayoutReady);
@@ -795,7 +802,13 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
       } else {
         div.className = SHEET_CLASS;
         div.style.width = `${sheetW}px`;
-        div.style.height = `${sheetH}px`;
+        // Alto = 100% del scroller (NO un valor fijo en px): así el jitter de
+        // altura del viewport móvil (barra de URL) NO recorta la hoja ni exige
+        // reconstruir. El corte geométrico se calculó para sheetH; si el
+        // viewport queda más BAJO que en la construcción, a lo sumo la última
+        // línea se recorta por overflow (cosmético, se auto-corrige); si queda
+        // más alto, sobra un pequeño margen gris abajo.
+        div.style.height = '100%';
         div.style.padding = `${SHEET_PAD_Y}px ${SHEET_PAD_X}px`;
         // Nº de página POR PALABRAS a la que pertenece la primera palabra.
         div.dataset.page = String(Math.min(totalPagesRef.current, Math.floor(wordsAcc / WORDS_PER_PAGE) + 1));
@@ -914,6 +927,9 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     }
     setPage(prev => (prev.total === totalPagesRef.current ? prev : { current: Math.min(prev.current, totalPagesRef.current), total: totalPagesRef.current }));
     updateCurrentPage();
+    // Tamaño con el que quedó construido: referencia para descartar los
+    // resizes espurios de la barra de URL móvil (ver ResizeObserver).
+    lastBuiltSizeRef.current = { w: scroller.clientWidth, h: scroller.clientHeight };
     // Layout reconstruido (innerHTML nuevo, marks borrados): avisar al padre
     // para que repinte las citas guardadas. Tras un frame, con el DOM ya
     // pintado, para que los rects del modo horizontal sean válidos.
@@ -994,6 +1010,7 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     if (!scroller || !sections) return;
     let raf = 0;
     const onScroll = () => {
+      lastScrollTsRef.current = Date.now();
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
@@ -1027,33 +1044,66 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
   }, [sections, updateCurrentPage]);
 
   // ----- Re-anclaje al redimensionar (abrir TTS/notas, rotación) -------------
+  // Blindado contra el jitter del viewport móvil: en Android Chrome, la barra
+  // de URL se oculta/muestra al deslizar y cambia el 100dvh del contenedor,
+  // disparando este observer decenas de veces por sesión de scroll. Sin
+  // filtro, cada disparo hacía un buildLayout() COMPLETO (re-medición
+  // geométrica de todo el libro) en pleno gesto → congelamiento, frames rotos
+  // y hojas cortadas tras varias páginas. Reglas: (1) ignorar cambios <2px;
+  // (2) nunca reconstruir con el dedo en movimiento; (3) si el tamaño volvió
+  // al de construcción (la barra reapareció), cero trabajo.
   const pendingAnchorRef = useRef<EpubAnchor | null>(null);
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const scroller = scrollRef.current;
     if (!scroller || !sections) return;
-    // ResizeObserver SIEMPRE dispara un callback inicial al observar: hay que
-    // ignorarlo. Si se procesara, capturaría el ancla "inicio del libro" y
-    // 250ms después pisaría la restauración del marcador guardado.
     let initialFire = true;
+
+    const attemptReflow = () => {
+      const sc = scrollRef.current;
+      if (!sc) return;
+      // Gesto en curso: re-esperar (nunca reconstruir con el dedo moviéndose).
+      if (Date.now() - lastScrollTsRef.current < 300) {
+        resizeTimerRef.current = setTimeout(attemptReflow, 200);
+        return;
+      }
+      resizeTimerRef.current = null;
+      const built = lastBuiltSizeRef.current;
+      // Solo el ANCHO obliga a rehacer geometría (rotación, o panel de notas
+      // que angosta el lector). El alto ya lo absorbe la hoja height:100% +
+      // overflow, así que el jitter de la barra de URL móvil NO llega aquí a
+      // reconstruir nada. Si el ancho volvió a su valor, no hay trabajo.
+      if (Math.abs(sc.clientWidth - built.w) < 2) {
+        pendingAnchorRef.current = null;
+        return;
+      }
+      const a = pendingAnchorRef.current;
+      pendingAnchorRef.current = null;
+      if (viewModeRef.current === 'h') buildLayout();
+      else measurePageTops();
+      if (a) goToAnchor(a);
+      updateCurrentPage();
+    };
+
     const observer = new ResizeObserver(() => {
+      // El primer callback (al empezar a observar) es espurio: ignorarlo para
+      // no pisar la restauración del marcador guardado.
       if (initialFire) { initialFire = false; return; }
-      // Ancla capturada ANTES del primer evento de la ráfaga.
+      const sc = scrollRef.current;
+      if (!sc) return;
+      const built = lastBuiltSizeRef.current;
+      // Solo reaccionar a cambios de ANCHO. El alto (barra de URL, controles
+      // fullscreen) se ignora por completo: la hoja height:100% se adapta sola
+      // sin reconstruir. Esto elimina el rebuild-en-pleno-gesto que congelaba.
+      if (Math.abs(sc.clientWidth - built.w) < 2) {
+        if (resizeTimerRef.current) { clearTimeout(resizeTimerRef.current); resizeTimerRef.current = null; }
+        pendingAnchorRef.current = null;
+        return;
+      }
+      // Ancla capturada ANTES de tocar el layout (una vez por ráfaga).
       if (!pendingAnchorRef.current) pendingAnchorRef.current = getCurrentAnchor();
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
-      resizeTimerRef.current = setTimeout(() => {
-        resizeTimerRef.current = null;
-        const a = pendingAnchorRef.current;
-        pendingAnchorRef.current = null;
-        if (viewModeRef.current === 'h') {
-          // Las hojas horizontales dependen de la geometría: reconstruir.
-          buildLayout();
-        } else {
-          measurePageTops();
-        }
-        if (a) goToAnchor(a);
-        updateCurrentPage();
-      }, 250);
+      resizeTimerRef.current = setTimeout(attemptReflow, 350);
     });
     observer.observe(scroller);
     return () => {
