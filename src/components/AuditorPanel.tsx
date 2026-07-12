@@ -1,388 +1,523 @@
 // =============================================================================
 // AuditorPanel.tsx — Panel de auditoría científica (inline en ReaderView)
+// -----------------------------------------------------------------------------
+// v2 (schema_version === 2): marco epistemológico con semáforo de 5 estados
+// (verde/amarillo/rojo/gris/no_aplica), tabla afirmación→dato, veredicto global
+// CALCULADO en el servidor, auditoría bibliográfica y de retórica. El resultado
+// NO da recomendaciones: describe qué soporta el estudio y qué no, y el lector
+// concluye. Resultados viejos (sin schema_version) se muestran con la vista
+// legacy intacta (feature-detect).
 // =============================================================================
 
 import { useState, useEffect } from 'react';
 import {
-  X, FlaskConical,
-  BookOpen, Lightbulb, Microscope, Target, Activity,
-  ShieldAlert, Shield, EyeOff, FileWarning, AlertCircle, Search,
-  Copy, Check, Download, FileSpreadsheet, Printer,
-  ShieldCheck, ShieldX, AlertTriangle
+  X, FlaskConical, BookOpen, Lightbulb, Microscope, Target, Activity,
+  ShieldAlert, Shield, EyeOff, Search, ScrollText, Scale, Quote, ListChecks,
+  Copy, Check, Download, FileSpreadsheet, Printer, AlertTriangle, MinusCircle, HelpCircle,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { BookItem } from '../types';
 import { exportToDocx, exportToPrintPdf } from '../utils/exportUtils';
 
-// Semáforo por criterio: verde = sin problema, amarillo = matices/alerta leve,
-// rojo = problema significativo. Se muestra como icono "universal" antes de
-// cada título de criterio y como emoji al exportar.
-export type NivelCriterio = 'verde' | 'amarillo' | 'rojo';
+// ---------------------------------------------------------------------------
+// Tipos v2
+// ---------------------------------------------------------------------------
+export type NivelCriterio = 'verde' | 'amarillo' | 'rojo' | 'gris' | 'no_aplica';
+type NivelAfirmacion = 'verde' | 'amarillo' | 'rojo' | 'gris';
 
-interface AuditResult {
+interface Criterio { analisis: string; nivel: NivelCriterio; evidencia: string }
+interface Afirmacion { afirmacion: string; soporte_en_los_datos: string; nivel: NivelAfirmacion }
+
+type CriterioMap = Record<string, Criterio>;
+
+interface AuditResultV2 {
+  schema_version: 2;
   titulo_del_estudio: string;
   veredicto_general: string;
-  nivel_credibilidad: string;
-  auditoria_epistemologica: {
-    grado_de_corroboracion_objetiva: string;
-    grado_de_corroboracion_objetiva_nivel?: NivelCriterio;
-    infradeterminacion_explicaciones_alternativas: string;
-    infradeterminacion_explicaciones_alternativas_nivel?: NivelCriterio;
+  veredicto_calculado?: {
+    nivel: 'solido' | 'con_reservas' | 'debil' | 'insuficiente';
+    conteos: { verde: number; amarillo: number; rojo: number; gris: number; no_aplica: number };
+    regla_aplicada: string;
   };
-  diseccion_teorica_y_conceptual: {
-    falsabilidad_y_riesgo_popperiano: string;
-    falsabilidad_y_riesgo_popperiano_nivel?: NivelCriterio;
-    brecha_de_validez_de_constructo: string;
-    brecha_de_validez_de_constructo_nivel?: NivelCriterio;
-    hipotesis_ad_hoc_lakatosianas: string;
-    hipotesis_ad_hoc_lakatosianas_nivel?: NivelCriterio;
+  identificacion_y_tipologia: {
+    tipo_de_documento: string;
+    pregunta_o_afirmacion_central: string;
+    poblacion_y_muestra: string;
+    adecuacion_del_diseno: Criterio;
   };
-  escrutinio_metodologico_y_estadistico: {
-    adecuacion_y_omision_de_controles: string;
-    adecuacion_y_omision_de_controles_nivel?: NivelCriterio;
-    robustez_y_relevancia_real: string;
-    robustez_y_relevancia_real_nivel?: NivelCriterio;
-    rastros_de_p_hacking: string;
-    rastros_de_p_hacking_nivel?: NivelCriterio;
+  coherencia_datos_conclusiones: {
+    afirmaciones: Afirmacion[];
+    coherencia_global_datos_conclusiones: Criterio;
+    spin_y_enfasis: Criterio;
   };
-  auditoria_de_sesgos_y_datos_faltantes: {
-    sesgo_de_reporte_interno: string;
-    sesgo_de_reporte_interno_nivel?: NivelCriterio;
-    alineacion_de_incentivos: string;
-    alineacion_de_incentivos_nivel?: NivelCriterio;
-  };
-  detector_de_cientificismo_y_banderas_rojas: {
-    brecha_causal_y_extrapolacion: string;
-    brecha_causal_y_extrapolacion_nivel?: NivelCriterio;
-    cherry_picking_contextual: string;
-    cherry_picking_contextual_nivel?: NivelCriterio;
-    opacidad_para_refutacion: string;
-    opacidad_para_refutacion_nivel?: NivelCriterio;
-  };
-  sintesis_para_el_pensamiento_critico: {
-    la_realidad_de_los_datos_crudos: string;
-    traduccion_de_la_incertidumbre_al_mundo_real: string;
-  };
-  guia_de_aprendizaje: {
-    que_aprender_de_este_documento: string;
-    conceptos_clave_verificados: string;
-    conexiones_con_otros_campos: string;
-    preguntas_para_reflexion: string;
-    conclusion_para_el_lector: string;
+  escrutinio_metodologico_y_estadistico: CriterioMap;
+  transparencia_y_datos: CriterioMap;
+  sesgos_e_incentivos: CriterioMap;
+  retorica_e_ideologia: CriterioMap;
+  auditoria_bibliografica: CriterioMap;
+  epistemologia: CriterioMap;
+  sintesis_critica: {
+    lo_que_dicen_los_datos: string;
+    lo_que_el_estudio_si_soporta: string;
+    lo_que_el_estudio_no_soporta: string;
+    precauciones_de_lectura: string;
+    incertidumbres_abiertas: string;
+    conceptos_para_profundizar: string;
+    preguntas_para_el_lector: string;
   };
 }
 
-type CredLevel = 'alto' | 'medio' | 'bajo';
+// Configuración data-driven de las secciones de criterios v2. El render itera
+// esta config: añadir/renombrar criterios en el futuro no exige tocar el JSX.
+interface CriterioDef { key: string; label: string; critico?: boolean }
+interface SeccionDef { key: keyof AuditResultV2; titulo: string; Icon: any; criterios: CriterioDef[] }
 
-function getCredLevel(nivel: string): CredLevel {
-  const l = nivel.toLowerCase();
-  if (l.includes('alto') || l.includes('high')) return 'alto';
-  if (l.includes('bajo') || l.includes('low')) return 'bajo';
-  return 'medio';
+const AUDIT_SECTIONS: SeccionDef[] = [
+  {
+    key: 'escrutinio_metodologico_y_estadistico', titulo: 'Escrutinio metodológico y estadístico', Icon: Activity,
+    criterios: [
+      { key: 'controles_y_confusores', label: 'Controles y confusores', critico: true },
+      { key: 'potencia_y_tamano_muestral', label: 'Potencia y tamaño muestral' },
+      { key: 'magnitud_del_efecto_e_incertidumbre', label: 'Magnitud del efecto e incertidumbre' },
+      { key: 'senales_de_p_hacking', label: 'Señales de p-hacking', critico: true },
+    ],
+  },
+  {
+    key: 'transparencia_y_datos', titulo: 'Transparencia y datos', Icon: Search,
+    criterios: [
+      { key: 'preregistro_y_protocolo', label: 'Preregistro y protocolo' },
+      { key: 'disponibilidad_de_datos_y_codigo', label: 'Disponibilidad de datos y código' },
+      { key: 'reporte_selectivo_de_resultados', label: 'Reporte selectivo de resultados', critico: true },
+    ],
+  },
+  {
+    key: 'sesgos_e_incentivos', titulo: 'Sesgos e incentivos', Icon: EyeOff,
+    criterios: [
+      { key: 'financiacion_y_conflictos', label: 'Financiación y conflictos de interés' },
+      { key: 'sesgo_de_seleccion_y_muestreo', label: 'Sesgo de selección y muestreo' },
+      { key: 'independencia_del_analisis', label: 'Independencia del análisis' },
+    ],
+  },
+  {
+    key: 'retorica_e_ideologia', titulo: 'Retórica e ideología (patrón textual)', Icon: Scale,
+    criterios: [
+      { key: 'lenguaje_cargado_y_normativo', label: 'Lenguaje cargado y normativo' },
+      { key: 'salto_del_es_al_debe', label: 'Salto del «es» al «debe»' },
+      { key: 'encuadre_y_alternativas_silenciadas', label: 'Encuadre y alternativas silenciadas' },
+    ],
+  },
+  {
+    key: 'auditoria_bibliografica', titulo: 'Auditoría bibliográfica', Icon: Quote,
+    criterios: [
+      { key: 'uso_real_de_las_fuentes', label: 'Uso real de las fuentes' },
+      { key: 'calidad_de_fuentes_en_afirmaciones_clave', label: 'Calidad de fuentes en afirmaciones clave' },
+      { key: 'autocitacion_y_endogamia', label: 'Autocitación y endogamia' },
+      { key: 'afirmaciones_fuertes_sin_fuente', label: 'Afirmaciones fuertes sin fuente' },
+    ],
+  },
+  {
+    key: 'epistemologia', titulo: 'Epistemología', Icon: Shield,
+    criterios: [
+      { key: 'falsabilidad', label: 'Falsabilidad (riesgo popperiano)' },
+      { key: 'explicaciones_alternativas', label: 'Explicaciones alternativas' },
+      { key: 'hipotesis_ad_hoc', label: 'Hipótesis ad hoc' },
+      { key: 'validez_de_constructo', label: 'Validez de constructo' },
+      { key: 'salto_causal_y_extrapolacion', label: 'Salto causal y extrapolación', critico: true },
+      { key: 'corroboracion_externa', label: 'Corroboración externa' },
+    ],
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Semáforo de 5 estados: icono + estilos + emoji (export)
+// ---------------------------------------------------------------------------
+const NIVEL_META: Record<NivelCriterio, { emoji: string; label: string; dot: string; text: string; border: string }> = {
+  verde:     { emoji: '🟢', label: 'Sin problema',  dot: 'bg-emerald-500', text: 'text-emerald-700', border: 'border-emerald-200' },
+  amarillo:  { emoji: '🟡', label: 'Cautela',       dot: 'bg-amber-500',   text: 'text-amber-700',   border: 'border-amber-200' },
+  rojo:      { emoji: '🔴', label: 'Problema',      dot: 'bg-rose-500',    text: 'text-rose-700',    border: 'border-rose-200' },
+  gris:      { emoji: '⚪', label: 'No evaluable',  dot: 'bg-slate-400',   text: 'text-slate-600',   border: 'border-slate-200' },
+  no_aplica: { emoji: '➖', label: 'No aplica',     dot: 'bg-slate-300',   text: 'text-slate-500',   border: 'border-slate-200' },
+};
+
+export function NivelIcon({ nivel }: { nivel?: NivelCriterio }) {
+  const n = nivel && NIVEL_META[nivel] ? nivel : 'gris';
+  if (n === 'verde') return <IconDot cls="bg-emerald-600"><Check className="w-2.5 h-2.5 text-white" strokeWidth={3} /></IconDot>;
+  if (n === 'amarillo') return <IconDot cls="bg-amber-500"><AlertTriangle className="w-2.5 h-2.5 text-white" strokeWidth={3} /></IconDot>;
+  if (n === 'rojo') return <IconDot cls="bg-rose-600"><X className="w-2.5 h-2.5 text-white" strokeWidth={3} /></IconDot>;
+  if (n === 'no_aplica') return <IconDot cls="bg-slate-300"><MinusCircle className="w-2.5 h-2.5 text-white" strokeWidth={3} /></IconDot>;
+  return <IconDot cls="bg-slate-400"><HelpCircle className="w-2.5 h-2.5 text-white" strokeWidth={3} /></IconDot>;
+}
+function IconDot({ cls, children }: { cls: string; children: React.ReactNode }) {
+  return <span className={cn('inline-flex items-center justify-center w-4 h-4 rounded-full shrink-0', cls)} title="">{children}</span>;
 }
 
-function getCorroborationLevel(text: string): CredLevel {
-  const l = text.toLowerCase();
-  if (l.includes('alta') || l.includes('alto')) return 'alto';
-  if (l.includes('baja') || l.includes('bajo')) return 'bajo';
-  return 'medio';
-}
+const VEREDICTO_META = {
+  solido:       { label: 'Sólido en lo evaluable',       cls: 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200' },
+  con_reservas: { label: 'Fiable con reservas',          cls: 'bg-amber-500/20 border-amber-400/50 text-amber-200' },
+  debil:        { label: 'Débil para sus conclusiones',  cls: 'bg-rose-500/20 border-rose-400/50 text-rose-200' },
+  insuficiente: { label: 'No evaluable con el documento', cls: 'bg-slate-500/25 border-slate-400/50 text-slate-200' },
+} as const;
 
-function getTrafficLightLevel(result: AuditResult): CredLevel {
-  const conclusion = (result.guia_de_aprendizaje?.conclusion_para_el_lector || '').toLowerCase();
-  const veredicto = (result.veredicto_general || '').toLowerCase();
-  const cred = (result.nivel_credibilidad || '').toLowerCase();
-
-  // 1. Si la conclusión, veredicto o credibilidad contienen "cautela", "cuidado" o "precaución"
-  if (
-    conclusion.includes('cautela') ||
-    conclusion.includes('precaución') ||
-    conclusion.includes('precaucion') ||
-    conclusion.includes('cuidado') ||
-    veredicto.includes('cautela') ||
-    veredicto.includes('precaución') ||
-    veredicto.includes('precaucion') ||
-    veredicto.includes('cuidado') ||
-    cred.includes('cautela')
-  ) {
-    return 'medio';
-  }
-
-  // 2. Si la conclusión o veredicto indican descartar o bajo nivel
-  if (
-    conclusion.includes('descartar') ||
-    conclusion.includes('bajo') ||
-    veredicto.includes('descartar') ||
-    veredicto.includes('bajo') ||
-    cred.includes('bajo')
-  ) {
-    return 'bajo';
-  }
-
-  // 3. Si indica confiar o credibilidad alta
-  if (
-    conclusion.includes('confiar') ||
-    cred.includes('alto') ||
-    cred.includes('high')
-  ) {
-    return 'alto';
-  }
-
-  // 4. Fallback al grado de corroboración
-  const corroText = (result.auditoria_epistemologica?.grado_de_corroboracion_objetiva || '').toLowerCase();
-  if (corroText.includes('alta') || corroText.includes('alto')) return 'alto';
-  if (corroText.includes('baja') || corroText.includes('bajo')) return 'bajo';
-
-  return 'medio';
-}
-
-function Semaforo({ level }: { level: CredLevel }) {
+// ---------------------------------------------------------------------------
+// Sub-render v2
+// ---------------------------------------------------------------------------
+function CriterioRow({ label, criterio, critico }: { label: string; criterio?: Criterio; critico?: boolean }) {
+  const nivel = criterio?.nivel ?? 'gris';
   return (
-    <div className="bg-slate-900 p-3 rounded-full border border-slate-800 flex flex-col gap-2.5 shadow-inner">
-      <div className={cn(
-        "w-10 h-10 rounded-full border-2 transition-all duration-500",
-        level === 'alto'
-          ? 'bg-emerald-500 border-emerald-400 shadow-[0_0_18px_rgba(16,185,129,0.8)] scale-110'
-          : 'bg-emerald-950 border-emerald-900/50 opacity-30'
-      )} />
-      <div className={cn(
-        "w-10 h-10 rounded-full border-2 transition-all duration-500",
-        level === 'medio'
-          ? 'bg-amber-400 border-amber-300 shadow-[0_0_18px_rgba(251,191,36,0.8)] scale-110'
-          : 'bg-amber-950 border-amber-900/50 opacity-30'
-      )} />
-      <div className={cn(
-        "w-10 h-10 rounded-full border-2 transition-all duration-500",
-        level === 'bajo'
-          ? 'bg-rose-500 border-rose-400 shadow-[0_0_18px_rgba(225,29,72,0.8)] scale-110'
-          : 'bg-rose-950 border-rose-900/50 opacity-30'
-      )} />
+    <div className="py-2.5">
+      <p className="text-[13px] font-bold text-slate-700 mb-1 flex items-center gap-1.5 flex-wrap">
+        <NivelIcon nivel={nivel} />
+        <span>{label}</span>
+        {critico && <span className="text-[9px] font-black uppercase tracking-wider text-rose-500 bg-rose-50 border border-rose-200 px-1.5 py-px rounded">crítico</span>}
+        <span className={cn('text-[10px] font-semibold', NIVEL_META[nivel].text)}>· {NIVEL_META[nivel].label}</span>
+      </p>
+      <p className="text-sm text-slate-700 leading-relaxed">{criterio?.analisis || '—'}</p>
+      {criterio?.evidencia && criterio.evidencia.trim() && (
+        <p className="mt-1 text-xs text-slate-500 italic border-l-2 border-slate-200 pl-2 leading-snug">{criterio.evidencia}</p>
+      )}
     </div>
   );
 }
 
-function Section({ title, icon, children }: {
-  title: string;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-}) {
+function SeccionCard({ def, data }: { def: SeccionDef; data: CriterioMap }) {
+  const { Icon } = def;
   return (
     <div className="border border-slate-200 rounded-xl overflow-hidden">
-      <div className="w-full flex items-center gap-2 px-4 py-3 bg-slate-50 border-b border-slate-200 font-bold text-slate-700 text-sm">
-        {icon}
-        {title}
+      <div className="flex items-center gap-2 px-4 py-3 bg-slate-50 border-b border-slate-200 font-bold text-slate-700 text-sm">
+        <Icon className="w-4 h-4 text-[#00558F]" />
+        {def.titulo}
       </div>
-      <div className="px-4 py-4 bg-white space-y-4 text-sm text-slate-700 leading-relaxed">
-        {children}
+      <div className="px-4 py-2 bg-white divide-y divide-slate-100">
+        {def.criterios.map(c => <CriterioRow key={c.key} label={c.label} criterio={data?.[c.key]} critico={c.critico} />)}
       </div>
     </div>
   );
 }
 
-// Icono "universal" del semáforo por criterio: se muestra antes de cada título
-// para saber de un vistazo cómo está ese aspecto del análisis.
-// verde = check (sin problema), amarillo = alerta (matices/limitaciones), rojo = x (problema).
-export function NivelIcon({ nivel }: { nivel?: NivelCriterio }) {
-  if (nivel === 'rojo') {
-    return (
-      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-rose-600 shrink-0">
-        <X className="w-2.5 h-2.5 text-white" strokeWidth={3} />
-      </span>
-    );
-  }
-  if (nivel === 'amarillo') {
-    return (
-      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-500 shrink-0">
-        <AlertTriangle className="w-2.5 h-2.5 text-white" strokeWidth={3} fill="none" />
-      </span>
-    );
-  }
-  if (nivel === 'verde') {
-    return (
-      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-emerald-600 shrink-0">
-        <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />
-      </span>
-    );
-  }
-  return null;
+function afirmacionDot(nivel: NivelAfirmacion): string {
+  return NIVEL_META[nivel]?.dot ?? 'bg-slate-400';
 }
 
-// Emoji equivalente al NivelIcon, usado al exportar a Word/PDF.
-function nivelEmoji(nivel?: NivelCriterio): string {
-  if (nivel === 'rojo') return '🔴';
-  if (nivel === 'amarillo') return '🟡';
-  if (nivel === 'verde') return '🟢';
-  return '';
+function AuditorV2Result({ result }: { result: AuditResultV2 }) {
+  const tipo = result.identificacion_y_tipologia;
+  const coh = result.coherencia_datos_conclusiones;
+  const ver = result.veredicto_calculado;
+  const vMeta = ver ? VEREDICTO_META[ver.nivel] : null;
+  const sint = result.sintesis_critica;
+
+  return (
+    <div className="space-y-5">
+      {/* Cabecera: veredicto calculado + conteos + tipo */}
+      <div className="bg-gradient-to-br from-[#00558F] to-[#003a66] text-white rounded-2xl overflow-hidden shadow-lg">
+        <div className="p-5 sm:p-6">
+          {result.titulo_del_estudio && (
+            <p className="text-[#A0CFEB] text-xs font-bold uppercase tracking-widest mb-2 line-clamp-2">{result.titulo_del_estudio}</p>
+          )}
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            {vMeta && (
+              <span className={cn('text-sm font-black px-3 py-1.5 rounded-full border', vMeta.cls)}>{vMeta.label}</span>
+            )}
+            {tipo?.tipo_de_documento && (
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-white/10 border border-white/20 text-blue-100">{tipo.tipo_de_documento}</span>
+            )}
+          </div>
+          {ver && (
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <ConteoChip n={ver.conteos.verde} label="sin problema" dot="bg-emerald-400" />
+              <ConteoChip n={ver.conteos.amarillo} label="cautela" dot="bg-amber-400" />
+              <ConteoChip n={ver.conteos.rojo} label="problema" dot="bg-rose-400" />
+              <ConteoChip n={ver.conteos.gris} label="no evaluable" dot="bg-slate-300" />
+              {ver.conteos.no_aplica > 0 && <ConteoChip n={ver.conteos.no_aplica} label="no aplica" dot="bg-slate-400" />}
+            </div>
+          )}
+          {ver?.regla_aplicada && (
+            <p className="text-[11px] text-blue-200/90 italic mb-3">Regla aplicada: {ver.regla_aplicada}</p>
+          )}
+          <p className="text-sm text-blue-50 leading-relaxed">{result.veredicto_general}</p>
+        </div>
+        {/* Leyenda de la escala */}
+        <div className="bg-white/10 border-t border-white/10 px-5 sm:px-6 py-2.5">
+          <p className="text-[11px] text-blue-100 leading-relaxed">
+            🟢 sin problema · 🟡 cautela · 🔴 problema · ⚪ <b>no evaluable</b> (el documento no da la información — no es aprobación) · ➖ no aplica a este tipo de documento
+          </p>
+        </div>
+      </div>
+
+      {/* Identificación */}
+      {(tipo?.pregunta_o_afirmacion_central || tipo?.poblacion_y_muestra) && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {tipo?.pregunta_o_afirmacion_central && (
+            <InfoCard label="Pregunta o afirmación central" value={tipo.pregunta_o_afirmacion_central} />
+          )}
+          {tipo?.poblacion_y_muestra && (
+            <InfoCard label="Población y muestra" value={tipo.poblacion_y_muestra} />
+          )}
+        </div>
+      )}
+      {tipo?.adecuacion_del_diseno && (
+        <div className="border border-slate-200 rounded-xl px-4 py-2 bg-white">
+          <CriterioRow label="Adecuación del diseño a la pregunta" criterio={tipo.adecuacion_del_diseno} />
+        </div>
+      )}
+
+      {/* Tabla de afirmaciones (la sección estrella) */}
+      <div className="border-2 border-[#00558F]/25 rounded-2xl overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-3 bg-[#00558F]/8 border-b border-[#00558F]/15">
+          <ListChecks className="w-4 h-4 text-[#00558F]" />
+          <span className="font-black text-[#00558F] text-sm uppercase tracking-wider">¿Los datos soportan las conclusiones?</span>
+        </div>
+        <div className="divide-y divide-slate-100 bg-white">
+          {(coh?.afirmaciones || []).map((a, i) => (
+            <div key={i} className="p-4">
+              <div className="flex items-start gap-2.5">
+                <span className={cn('mt-1.5 w-2.5 h-2.5 rounded-full shrink-0', afirmacionDot(a.nivel))} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-slate-800 leading-snug">{a.afirmacion}</p>
+                  <p className="text-xs text-slate-600 leading-relaxed mt-1">
+                    <span className="font-bold text-slate-400 uppercase tracking-wider text-[10px]">Soporte en los datos: </span>
+                    {a.soporte_en_los_datos}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ))}
+          {(!coh?.afirmaciones || coh.afirmaciones.length === 0) && (
+            <p className="p-4 text-sm text-slate-400">No se extrajeron afirmaciones.</p>
+          )}
+        </div>
+        <div className="px-4 py-2 bg-white border-t border-slate-100 divide-y divide-slate-100">
+          <CriterioRow label="Coherencia global datos ↔ conclusiones" criterio={coh?.coherencia_global_datos_conclusiones} critico />
+          <CriterioRow label="Spin y énfasis" criterio={coh?.spin_y_enfasis} />
+        </div>
+      </div>
+
+      {/* Secciones de criterios (config-driven) */}
+      {AUDIT_SECTIONS.map(def => (
+        <SeccionCard key={def.key as string} def={def} data={result[def.key] as CriterioMap} />
+      ))}
+
+      {/* Síntesis crítica — declarativa, SIN recomendaciones */}
+      <div className="border-2 border-slate-300 rounded-2xl overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-3 bg-slate-100 border-b border-slate-200">
+          <ScrollText className="w-4 h-4 text-slate-600" />
+          <span className="font-black text-slate-700 text-sm uppercase tracking-wider">Síntesis crítica</span>
+        </div>
+        <div className="px-4 py-4 bg-white space-y-3">
+          <SintCard Icon={Target} accent="emerald" label="Lo que dicen los datos" value={sint?.lo_que_dicen_los_datos} />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <SintCard Icon={Check} accent="emerald" label="Lo que el estudio SÍ soporta" value={sint?.lo_que_el_estudio_si_soporta} />
+            <SintCard Icon={X} accent="rose" label="Lo que el estudio NO soporta" value={sint?.lo_que_el_estudio_no_soporta} />
+          </div>
+          <SintCard Icon={ShieldAlert} accent="amber" label="Precauciones de lectura" value={sint?.precauciones_de_lectura} />
+          <SintCard Icon={HelpCircle} accent="slate" label="Incertidumbres abiertas" value={sint?.incertidumbres_abiertas} />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <SintCard Icon={BookOpen} accent="slate" label="Conceptos para profundizar" value={sint?.conceptos_para_profundizar} />
+            <SintCard Icon={Lightbulb} accent="slate" label="Preguntas para el lector" value={sint?.preguntas_para_el_lector} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-function Field({ label, value, accent = false, nivel }: { label: string; value: string; accent?: boolean; nivel?: NivelCriterio }) {
+function ConteoChip({ n, label, dot }: { n: number; label: string; dot: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-50 bg-white/10 border border-white/15 rounded-full px-2.5 py-1">
+      <span className={cn('w-2 h-2 rounded-full', dot)} /> {n} {label}
+    </span>
+  );
+}
+function InfoCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-slate-50 rounded-xl p-3 border border-slate-200">
+      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">{label}</p>
+      <p className="text-sm text-slate-700 leading-relaxed">{value}</p>
+    </div>
+  );
+}
+function SintCard({ Icon, accent, label, value }: { Icon: any; accent: 'emerald' | 'rose' | 'amber' | 'slate'; label: string; value?: string }) {
+  const a = {
+    emerald: 'bg-emerald-50 border-emerald-200 text-emerald-700',
+    rose: 'bg-rose-50 border-rose-200 text-rose-700',
+    amber: 'bg-amber-50 border-amber-200 text-amber-700',
+    slate: 'bg-slate-50 border-slate-200 text-slate-600',
+  }[accent];
+  return (
+    <div className={cn('rounded-xl p-3 border', a)}>
+      <p className="text-[10px] font-black uppercase tracking-wider mb-1 flex items-center gap-1.5"><Icon className="w-3.5 h-3.5" /> {label}</p>
+      <p className="text-sm text-slate-700 leading-relaxed">{value || '—'}</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Legacy (schema v1): render mínimo pero completo de resultados guardados viejos
+// ---------------------------------------------------------------------------
+interface AuditResultLegacy {
+  titulo_del_estudio?: string;
+  veredicto_general?: string;
+  nivel_credibilidad?: string;
+  [k: string]: any;
+}
+function LegacyField({ label, value }: { label: string; value?: string }) {
+  if (!value) return null;
   return (
     <div>
-      <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-        <NivelIcon nivel={nivel} />
-        {label}
-      </p>
-      {accent
-        ? <p className="font-semibold text-slate-800 border-l-4 border-[#00558F] pl-3 py-1 leading-relaxed">{value}</p>
-        : <p className="text-slate-700 leading-relaxed">{value}</p>
-      }
+      <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">{label}</p>
+      <p className="text-slate-700 leading-relaxed text-sm">{value}</p>
+    </div>
+  );
+}
+function AuditorLegacyResult({ result }: { result: AuditResultLegacy }) {
+  const epi = result.auditoria_epistemologica || {};
+  const teo = result.diseccion_teorica_y_conceptual || {};
+  const met = result.escrutinio_metodologico_y_estadistico || {};
+  const ses = result.auditoria_de_sesgos_y_datos_faltantes || {};
+  const flags = result.detector_de_cientificismo_y_banderas_rojas || {};
+  const sint = result.sintesis_para_el_pensamiento_critico || {};
+  const guia = result.guia_de_aprendizaje || {};
+  return (
+    <div className="space-y-4">
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
+        Análisis con el formato anterior. Vuelve a auditar para el nuevo marco (semáforo de 5 estados, tabla de afirmaciones y auditoría bibliográfica).
+      </div>
+      <div className="bg-gradient-to-br from-[#00558F] to-[#003a66] text-white rounded-2xl p-5">
+        {result.titulo_del_estudio && <p className="text-[#A0CFEB] text-xs font-bold uppercase tracking-widest mb-2">{result.titulo_del_estudio}</p>}
+        <p className="text-sm text-blue-50 leading-relaxed">{result.veredicto_general}</p>
+        {result.nivel_credibilidad && <p className="mt-2 text-xs text-blue-200">Credibilidad: {result.nivel_credibilidad}</p>}
+      </div>
+      <div className="border border-slate-200 rounded-xl p-4 bg-white space-y-3">
+        <LegacyField label="La realidad de los datos" value={sint.la_realidad_de_los_datos_crudos} />
+        <LegacyField label="Traducción al mundo real" value={sint.traduccion_de_la_incertidumbre_al_mundo_real} />
+        <LegacyField label="Brecha causal y extrapolación" value={flags.brecha_causal_y_extrapolacion} />
+        <LegacyField label="Cherry-picking contextual" value={flags.cherry_picking_contextual} />
+        <LegacyField label="Opacidad para refutación" value={flags.opacidad_para_refutacion} />
+        <LegacyField label="Adecuación de controles" value={met.adecuacion_y_omision_de_controles} />
+        <LegacyField label="Robustez y relevancia real" value={met.robustez_y_relevancia_real} />
+        <LegacyField label="Rastros de p-hacking" value={met.rastros_de_p_hacking} />
+        <LegacyField label="Falsabilidad" value={teo.falsabilidad_y_riesgo_popperiano} />
+        <LegacyField label="Validez de constructo" value={teo.brecha_de_validez_de_constructo} />
+        <LegacyField label="Hipótesis ad hoc" value={teo.hipotesis_ad_hoc_lakatosianas} />
+        <LegacyField label="Sesgo de reporte interno" value={ses.sesgo_de_reporte_interno} />
+        <LegacyField label="Alineación de incentivos" value={ses.alineacion_de_incentivos} />
+        <LegacyField label="Corroboración objetiva" value={epi.grado_de_corroboracion_objetiva} />
+        <LegacyField label="Qué aprender" value={guia.que_aprender_de_este_documento} />
+      </div>
     </div>
   );
 }
 
-interface AuditorPanelProps {
-  item: BookItem;
-  onClose: () => void;
+// ---------------------------------------------------------------------------
+// Export markdown
+// ---------------------------------------------------------------------------
+function buildMarkdownV2(r: AuditResultV2): string {
+  const em = (n?: NivelCriterio) => (n && NIVEL_META[n] ? NIVEL_META[n].emoji : '⚪');
+  const crit = (m: CriterioMap | undefined, key: string, label: string) => {
+    const c = m?.[key];
+    return `- ${em(c?.nivel)} **${label}:** ${c?.analisis || '—'}${c?.evidencia ? `\n  > ${c.evidencia}` : ''}`;
+  };
+  const ver = r.veredicto_calculado;
+  const lines: string[] = [];
+  lines.push(`# Auditoría Científica: ${r.titulo_del_estudio || ''}`);
+  if (ver) {
+    lines.push(`\n**Veredicto:** ${VEREDICTO_META[ver.nivel]?.label ?? ver.nivel}`);
+    lines.push(`> ${ver.conteos.verde}🟢 · ${ver.conteos.amarillo}🟡 · ${ver.conteos.rojo}🔴 · ${ver.conteos.gris}⚪ · ${ver.conteos.no_aplica}➖ — ${ver.regla_aplicada}`);
+  }
+  lines.push(`\n${r.veredicto_general}`);
+  const t = r.identificacion_y_tipologia;
+  lines.push(`\n## Identificación\n- **Tipo:** ${t?.tipo_de_documento || '—'}\n- **Pregunta central:** ${t?.pregunta_o_afirmacion_central || '—'}\n- **Población/muestra:** ${t?.poblacion_y_muestra || '—'}`);
+  lines.push(crit({ x: t?.adecuacion_del_diseno } as any, 'x', 'Adecuación del diseño'));
+  lines.push(`\n## ¿Los datos soportan las conclusiones?`);
+  for (const a of r.coherencia_datos_conclusiones?.afirmaciones || []) {
+    lines.push(`- ${em(a.nivel as NivelCriterio)} **${a.afirmacion}**\n  > Soporte: ${a.soporte_en_los_datos}`);
+  }
+  lines.push(crit(r.coherencia_datos_conclusiones as any, 'coherencia_global_datos_conclusiones', 'Coherencia global'));
+  lines.push(crit(r.coherencia_datos_conclusiones as any, 'spin_y_enfasis', 'Spin y énfasis'));
+  for (const def of AUDIT_SECTIONS) {
+    lines.push(`\n## ${def.titulo}`);
+    for (const c of def.criterios) lines.push(crit(r[def.key] as CriterioMap, c.key, c.label));
+  }
+  const s = r.sintesis_critica;
+  lines.push(`\n## Síntesis crítica`);
+  lines.push(`**Lo que dicen los datos:** ${s?.lo_que_dicen_los_datos || '—'}`);
+  lines.push(`\n**Lo que el estudio SÍ soporta:** ${s?.lo_que_el_estudio_si_soporta || '—'}`);
+  lines.push(`\n**Lo que el estudio NO soporta:** ${s?.lo_que_el_estudio_no_soporta || '—'}`);
+  lines.push(`\n**Precauciones de lectura:** ${s?.precauciones_de_lectura || '—'}`);
+  lines.push(`\n**Incertidumbres abiertas:** ${s?.incertidumbres_abiertas || '—'}`);
+  lines.push(`\n**Conceptos para profundizar:** ${s?.conceptos_para_profundizar || '—'}`);
+  lines.push(`\n**Preguntas para el lector:** ${s?.preguntas_para_el_lector || '—'}`);
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Panel
+// ---------------------------------------------------------------------------
+interface AuditorPanelProps { item: BookItem; onClose: () => void }
+
+function isV2(r: any): r is AuditResultV2 {
+  return !!r && r.schema_version === 2;
 }
 
 export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<AuditResult | null>(null);
+  const [result, setResult] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
 
   const fileName = item.source?.replace('/api/files/', '') ?? '';
 
-  // Carga el resultado guardado previamente (si existe) al abrir el panel.
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/documents/${item.id}/settings`, { credentials: 'include' })
       .then(r => r.json())
-      .then(d => {
-        if (!cancelled && d.settings?.auditResult) {
-          setResult(d.settings.auditResult as AuditResult);
-        }
-      })
+      .then(d => { if (!cancelled && d.settings?.auditResult) setResult(d.settings.auditResult); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [item.id]);
 
-  // Auto-guarda el resultado del análisis; no requiere acción del usuario.
-  const saveAuditResult = async (auditResult: AuditResult | null) => {
+  const saveAuditResult = async (auditResult: any | null) => {
     try {
       await fetch(`/api/documents/${item.id}/settings`, {
-        method: 'PUT',
-        credentials: 'include',
+        method: 'PUT', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ auditResult }),
       });
-    } catch (e) {
-      console.error('No se pudo guardar la auditoría:', e);
-    }
+    } catch (e) { console.error('No se pudo guardar la auditoría:', e); }
   };
 
   const handleAudit = async () => {
-    setLoading(true);
-    setError(null);
-    setResult(null);
+    setLoading(true); setError(null); setResult(null);
     try {
       const res = await fetch('/api/audit-resource', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ fileName }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', body: JSON.stringify({ fileName }),
       });
       const text = await res.text();
       let data: any;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error(`Respuesta inesperada del servidor: ${text.slice(0, 200)}`);
-      }
+      try { data = JSON.parse(text); } catch { throw new Error(`Respuesta inesperada del servidor: ${text.slice(0, 200)}`); }
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-      setResult(data.result as AuditResult);
-      saveAuditResult(data.result as AuditResult);
+      setResult(data.result);
+      saveAuditResult(data.result);
     } catch (e: any) {
       setError(e.message || 'Error desconocido.');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
-  const buildAuditMarkdown = (r: AuditResult): string => {
-    const e = nivelEmoji;
-    const epi = r.auditoria_epistemologica;
-    const teo = r.diseccion_teorica_y_conceptual;
-    const met = r.escrutinio_metodologico_y_estadistico;
-    const ses = r.auditoria_de_sesgos_y_datos_faltantes;
-    const flags = r.detector_de_cientificismo_y_banderas_rojas;
-    const guia = r.guia_de_aprendizaje;
-    return `# Auditoría Científica: ${r.titulo_del_estudio}
-
-## Veredicto General
-${r.veredicto_general}
-
-> Credibilidad: ${r.nivel_credibilidad} · Corroboración: ${epi.grado_de_corroboracion_objetiva}
-
-## Síntesis Crítica
-**La realidad de los datos crudos:** ${r.sintesis_para_el_pensamiento_critico.la_realidad_de_los_datos_crudos}
-
-**Traducción al mundo real:** ${r.sintesis_para_el_pensamiento_critico.traduccion_de_la_incertidumbre_al_mundo_real}
-
-## Detector de Cientificismo y Banderas Rojas
-- ${e(flags.brecha_causal_y_extrapolacion_nivel)} **Brecha causal y extrapolación:** ${flags.brecha_causal_y_extrapolacion}
-- ${e(flags.cherry_picking_contextual_nivel)} **Cherry-picking contextual:** ${flags.cherry_picking_contextual}
-- ${e(flags.opacidad_para_refutacion_nivel)} **Opacidad para refutación:** ${flags.opacidad_para_refutacion}
-
-## Escrutinio Metodológico y Estadístico
-- ${e(met.adecuacion_y_omision_de_controles_nivel)} **Adecuación de controles:** ${met.adecuacion_y_omision_de_controles}
-
-- ${e(met.robustez_y_relevancia_real_nivel)} **Robustez y relevancia real:** ${met.robustez_y_relevancia_real}
-
-- ${e(met.rastros_de_p_hacking_nivel)} **Rastros de p-hacking:** ${met.rastros_de_p_hacking}
-
-## Disección Teórica y Conceptual
-- ${e(teo.falsabilidad_y_riesgo_popperiano_nivel)} **Falsabilidad (riesgo popperiano):** ${teo.falsabilidad_y_riesgo_popperiano}
-
-- ${e(teo.brecha_de_validez_de_constructo_nivel)} **Brecha de validez de constructo:** ${teo.brecha_de_validez_de_constructo}
-
-- ${e(teo.hipotesis_ad_hoc_lakatosianas_nivel)} **Hipótesis ad hoc (lakatosianas):** ${teo.hipotesis_ad_hoc_lakatosianas}
-
-## Sesgos y Datos Faltantes
-- ${e(ses.sesgo_de_reporte_interno_nivel)} **Sesgo de reporte interno:** ${ses.sesgo_de_reporte_interno}
-
-- ${e(ses.alineacion_de_incentivos_nivel)} **Alineación de incentivos:** ${ses.alineacion_de_incentivos}
-
-## Auditoría Epistemológica
-- ${e(epi.grado_de_corroboracion_objetiva_nivel)} **Grado de corroboración objetiva:** ${epi.grado_de_corroboracion_objetiva}
-
-- ${e(epi.infradeterminacion_explicaciones_alternativas_nivel)} **Infradeterminación y explicaciones alternativas:** ${epi.infradeterminacion_explicaciones_alternativas}
-
-## Guía de Aprendizaje
-**Qué aprender:** ${guia.que_aprender_de_este_documento}
-
-**Conceptos clave verificados:** ${guia.conceptos_clave_verificados}
-
-**Conexiones con otros campos:** ${guia.conexiones_con_otros_campos}
-
-**Preguntas para reflexión:** ${guia.preguntas_para_reflexion}
-
-> **Conclusión para el lector:** ${guia.conclusion_para_el_lector}`;
-  };
-
+  const canExport = result && isV2(result);
   const handleCopy = () => {
-    if (!result) return;
-    navigator.clipboard.writeText(buildAuditMarkdown(result));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (!canExport) return;
+    navigator.clipboard.writeText(buildMarkdownV2(result));
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
   };
-
   const handleExport = (format: 'pdf' | 'docx') => {
-    if (!result) return;
+    if (!canExport) return;
     setShowExportMenu(false);
-    const md = buildAuditMarkdown(result);
+    const md = buildMarkdownV2(result);
     const title = `Auditoría Científica - ${result.titulo_del_estudio || item.title}`;
-    if (format === 'pdf') {
-      exportToPrintPdf(title, md);
-    } else {
-      exportToDocx(`Auditoria_Cientifica_${item.id}.docx`, md);
-    }
+    if (format === 'pdf') exportToPrintPdf(title, md);
+    else exportToDocx(`Auditoria_Cientifica_${item.id}.docx`, md);
   };
-
-  const credLevel = result ? getCredLevel(result.nivel_credibilidad) : null;
-  const corroLevel = result ? getCorroborationLevel(result.auditoria_epistemologica.grado_de_corroboracion_objetiva) : null;
-  const trafficLightLevel = result ? getTrafficLightLevel(result) : null;
 
   return (
     <div className="flex flex-col min-h-full">
@@ -393,53 +528,31 @@ ${r.veredicto_general}
           <h2 className="font-bold text-slate-800 text-base">Auditoría Científica</h2>
         </div>
         <div className="flex items-center gap-2">
-          {result && (
-            <button
-              onClick={handleCopy}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 bg-white text-slate-600 hover:text-[#00558F] hover:border-[#00558F]/30 rounded-lg transition-colors shadow-sm"
-              title="Copiar análisis"
-            >
+          {canExport && (
+            <button onClick={handleCopy} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 bg-white text-slate-600 hover:text-[#00558F] hover:border-[#00558F]/30 rounded-lg transition-colors shadow-sm" title="Copiar análisis">
               {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
               <span className="hidden sm:inline">{copied ? 'Copiado' : 'Copiar'}</span>
             </button>
           )}
-          {result && (
+          {canExport && (
             <div className="relative">
-              <button
-                onClick={() => setShowExportMenu(p => !p)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 bg-white text-slate-600 hover:text-[#00558F] hover:border-[#00558F]/30 rounded-lg transition-colors shadow-sm"
-                title="Exportar análisis"
-              >
+              <button onClick={() => setShowExportMenu(p => !p)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 bg-white text-slate-600 hover:text-[#00558F] hover:border-[#00558F]/30 rounded-lg transition-colors shadow-sm" title="Exportar análisis">
                 <Download className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Exportar</span>
               </button>
               {showExportMenu && (
-                <div
-                  className="absolute right-0 top-10 z-50 w-56 bg-white border border-slate-200/90 shadow-2xl rounded-2xl p-2 flex flex-col gap-1"
-                  onMouseLeave={() => setShowExportMenu(false)}
-                >
-                  <button
-                    onClick={() => handleExport('docx')}
-                    className="w-full text-left text-xs font-semibold text-slate-700 hover:text-[#00558F] hover:bg-slate-50 p-2.5 rounded-xl transition-colors flex items-center gap-2.5"
-                  >
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-                    <span>Descargar Word (.docx)</span>
+                <div className="absolute right-0 top-10 z-50 w-56 bg-white border border-slate-200/90 shadow-2xl rounded-2xl p-2 flex flex-col gap-1" onMouseLeave={() => setShowExportMenu(false)}>
+                  <button onClick={() => handleExport('docx')} className="w-full text-left text-xs font-semibold text-slate-700 hover:text-[#00558F] hover:bg-slate-50 p-2.5 rounded-xl transition-colors flex items-center gap-2.5">
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-600" /> <span>Descargar Word (.docx)</span>
                   </button>
-                  <button
-                    onClick={() => handleExport('pdf')}
-                    className="w-full text-left text-xs font-semibold text-slate-700 hover:text-[#00558F] hover:bg-slate-50 p-2.5 rounded-xl transition-colors flex items-center gap-2.5"
-                  >
-                    <Printer className="w-4 h-4 text-rose-500" />
-                    <span>Descargar / Imprimir PDF</span>
+                  <button onClick={() => handleExport('pdf')} className="w-full text-left text-xs font-semibold text-slate-700 hover:text-[#00558F] hover:bg-slate-50 p-2.5 rounded-xl transition-colors flex items-center gap-2.5">
+                    <Printer className="w-4 h-4 text-rose-500" /> <span>Descargar / Imprimir PDF</span>
                   </button>
                 </div>
               )}
             </div>
           )}
-          <button
-            onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
-          >
+          <button onClick={onClose} className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -447,38 +560,30 @@ ${r.veredicto_general}
 
       {/* Body */}
       <div className="px-4 sm:px-6 py-5 space-y-5 max-w-3xl mx-auto w-full pb-10">
-
-        {/* Info del documento */}
         <div className="bg-slate-50 rounded-xl p-3 border border-slate-200">
           <p className="text-xs text-slate-500 font-medium mb-0.5">Documento</p>
           <p className="font-semibold text-slate-800 text-sm line-clamp-2">{item.title}</p>
           {item.author && <p className="text-xs text-[#00558F] mt-0.5">{item.author}</p>}
         </div>
 
-        {/* Estado: inicio */}
         {!result && !loading && (
           <div className="flex flex-col items-center gap-4 py-10">
             <div className="w-16 h-16 rounded-2xl bg-[#00558F]/10 flex items-center justify-center">
               <Microscope className="w-8 h-8 text-[#00558F]" />
             </div>
-            <div className="text-center space-y-1 max-w-sm">
-              <p className="font-semibold text-slate-700">Análisis científico completo</p>
+            <div className="text-center space-y-1 max-w-md">
+              <p className="font-semibold text-slate-700">Auditoría epistemológica del documento</p>
               <p className="text-sm text-slate-500">
-                Gemini evaluará el rigor metodológico, sesgos, p-hacking y extraerá los aprendizajes clave del documento completo.
+                Se evalúa si los datos soportan las conclusiones, el rigor metodológico y estadístico, sesgos e incentivos, la retórica, la bibliografía y la transparencia — con un semáforo honesto de 5 estados. No da recomendaciones: el criterio final es tuyo.
               </p>
             </div>
-            <button
-              onClick={handleAudit}
-              className="flex items-center gap-2 px-6 py-3 bg-[#00558F] hover:bg-[#004270] text-white font-semibold rounded-xl shadow-md transition-all hover:-translate-y-0.5 active:scale-95"
-            >
-              <FlaskConical className="w-5 h-5" />
-              Iniciar Auditoría
+            <button onClick={handleAudit} className="flex items-center gap-2 px-6 py-3 bg-[#00558F] hover:bg-[#004270] text-white font-semibold rounded-xl shadow-md transition-all hover:-translate-y-0.5 active:scale-95">
+              <FlaskConical className="w-5 h-5" /> Iniciar Auditoría
             </button>
             <p className="text-xs text-slate-400">Puede tardar 30–90 segundos</p>
           </div>
         )}
 
-        {/* Loading */}
         {loading && (
           <div className="flex flex-col items-center gap-5 py-16">
             <div className="relative">
@@ -486,13 +591,12 @@ ${r.veredicto_general}
               <div className="w-16 h-16 border-4 border-[#00558F] rounded-full border-t-transparent animate-spin absolute top-0 left-0" />
             </div>
             <div className="text-center space-y-1">
-              <p className="text-slate-700 font-semibold">Auditando el documento...</p>
-              <p className="text-xs text-slate-400 max-w-xs text-center">Gemini está diseccionando sesgos, fallos metodológicos y buscando p-hacking</p>
+              <p className="text-slate-700 font-semibold">Auditando el documento…</p>
+              <p className="text-xs text-slate-400 max-w-xs text-center">Contrastando afirmaciones con datos, midiendo rigor, sesgos, retórica y bibliografía</p>
             </div>
           </div>
         )}
 
-        {/* Error */}
         {error && !loading && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-red-700 text-sm">
             <p className="font-semibold mb-1">Error al auditar</p>
@@ -501,229 +605,13 @@ ${r.veredicto_general}
           </div>
         )}
 
-        {/* Resultados */}
-        {result && credLevel && corroLevel && (
-          <div className="space-y-5">
-
-            {/* Hero: Síntesis + Semáforo */}
-            <div className="bg-gradient-to-br from-[#00558F] to-[#003a66] text-white rounded-2xl overflow-hidden shadow-lg">
-              <div className="p-5 sm:p-6">
-                {result.titulo_del_estudio && (
-                  <p className="text-[#A0CFEB] text-xs font-bold uppercase tracking-widest mb-2 line-clamp-2">{result.titulo_del_estudio}</p>
-                )}
-                <div className="flex flex-col sm:flex-row sm:items-stretch gap-4">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs text-blue-200 font-bold uppercase tracking-widest mb-2 flex items-center gap-1.5">
-                      <Target className="w-3.5 h-3.5" /> La Realidad de los Datos
-                    </p>
-                    <p className="text-lg sm:text-xl font-black leading-tight mb-4">
-                      {result.sintesis_para_el_pensamiento_critico.la_realidad_de_los_datos_crudos}
-                    </p>
-                    <div className="bg-white/10 backdrop-blur-sm p-3 sm:p-4 rounded-xl border border-white/20">
-                      <p className="text-blue-200 text-xs font-bold uppercase tracking-widest mb-1.5">Traducción al mundo real</p>
-                      <p className="text-sm text-blue-50 leading-relaxed font-medium">
-                        {result.sintesis_para_el_pensamiento_critico.traduccion_de_la_incertidumbre_al_mundo_real}
-                      </p>
-                    </div>
-                  </div>
-                  {/* Semáforo */}
-                  <div className="shrink-0 flex sm:flex-col items-center justify-center gap-2 sm:gap-2 sm:border-l sm:border-white/15 sm:pl-5 pt-2 sm:pt-0">
-                    <Semaforo level={trafficLightLevel || 'medio'} />
-                    <div className="flex flex-col items-center">
-                      <p className={cn(
-                        "text-xs font-black uppercase tracking-wider",
-                        trafficLightLevel === 'alto' ? 'text-emerald-400' : trafficLightLevel === 'bajo' ? 'text-rose-400' : 'text-amber-400'
-                      )}>
-                        {trafficLightLevel === 'alto' ? 'Confiar' : trafficLightLevel === 'bajo' ? 'Descartar' : 'Cautela'}
-                      </p>
-                      <p className="text-[10px] text-blue-300 text-center leading-tight">Recomendación</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Veredicto + Credibilidad */}
-              <div className="bg-white/10 border-t border-white/10 px-5 sm:px-6 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <p className="text-sm text-blue-100 leading-relaxed flex-1 min-w-0">{result.veredicto_general}</p>
-                <span className={cn(
-                  "self-start sm:self-auto shrink-0 text-xs font-black px-3 py-1.5 rounded-full border",
-                  credLevel === 'alto'
-                    ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300'
-                    : credLevel === 'bajo'
-                    ? 'bg-rose-500/20 border-rose-400/40 text-rose-300'
-                    : 'bg-amber-500/20 border-amber-400/40 text-amber-300'
-                )}>
-                  Credibilidad {credLevel === 'alto' ? 'Alta' : credLevel === 'bajo' ? 'Baja' : 'Media'}
-                </span>
-              </div>
-            </div>
-
-            {/* Banderas Rojas — 3 columnas */}
-            <div className="bg-rose-50 border-2 border-rose-200 rounded-2xl p-4 sm:p-5">
-              <h3 className="text-rose-700 font-black uppercase tracking-widest text-xs flex items-center gap-2 mb-4">
-                <ShieldAlert className="w-4 h-4" /> Detector de Cientificismo y Banderas Rojas
-              </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {[
-                  {
-                    label: 'Brecha Causal',
-                    value: result.detector_de_cientificismo_y_banderas_rojas.brecha_causal_y_extrapolacion,
-                    nivel: result.detector_de_cientificismo_y_banderas_rojas.brecha_causal_y_extrapolacion_nivel,
-                  },
-                  {
-                    label: 'Cherry-Picking',
-                    value: result.detector_de_cientificismo_y_banderas_rojas.cherry_picking_contextual,
-                    nivel: result.detector_de_cientificismo_y_banderas_rojas.cherry_picking_contextual_nivel,
-                  },
-                  {
-                    label: 'Opacidad',
-                    value: result.detector_de_cientificismo_y_banderas_rojas.opacidad_para_refutacion,
-                    nivel: result.detector_de_cientificismo_y_banderas_rojas.opacidad_para_refutacion_nivel,
-                  },
-                ].map(({ label, value, nivel }) => (
-                  <div key={label} className={cn(
-                    "bg-white/80 p-4 rounded-xl border shadow-sm",
-                    nivel === 'rojo' ? "border-rose-200" : nivel === 'amarillo' ? "border-amber-200" : "border-emerald-200"
-                  )}>
-                    <div className="flex items-center justify-between gap-2 mb-2 pb-2 border-b border-rose-100">
-                      <h4 className="text-xs font-bold text-rose-700 uppercase tracking-wider">{label}</h4>
-                      <NivelIcon nivel={nivel} />
-                    </div>
-                    <p className="text-xs text-slate-800 leading-relaxed">{value}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Escrutinio Metodológico */}
-            <Section
-              title="Escrutinio Metodológico y Estadístico"
-              icon={<Activity className="w-4 h-4 text-[#00558F]" />}
-            >
-              <div className="flex gap-3">
-                <div className="w-9 h-9 shrink-0 bg-[#00558F]/10 text-[#00558F] flex items-center justify-center font-black rounded-lg text-sm">C</div>
-                <Field label="Adecuación de Controles" value={result.escrutinio_metodologico_y_estadistico.adecuacion_y_omision_de_controles} nivel={result.escrutinio_metodologico_y_estadistico.adecuacion_y_omision_de_controles_nivel} />
-              </div>
-              <div className="h-px bg-slate-100 w-full" />
-              <div className="flex gap-3">
-                <div className="w-9 h-9 shrink-0 bg-[#00558F]/10 text-[#00558F] flex items-center justify-center font-black rounded-lg text-sm">R</div>
-                <Field label="Robustez y Relevancia Real" value={result.escrutinio_metodologico_y_estadistico.robustez_y_relevancia_real} nivel={result.escrutinio_metodologico_y_estadistico.robustez_y_relevancia_real_nivel} />
-              </div>
-              <div className="h-px bg-slate-100 w-full" />
-              <div className="flex gap-3">
-                <div className="w-9 h-9 shrink-0 bg-amber-50 text-amber-600 flex items-center justify-center rounded-lg">
-                  <Search className="w-4 h-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-                    <NivelIcon nivel={result.escrutinio_metodologico_y_estadistico.rastros_de_p_hacking_nivel} />
-                    Rastros de P-Hacking
-                  </p>
-                  <p className="font-semibold bg-amber-50 p-3 rounded-xl border border-amber-200 text-slate-800 text-sm leading-relaxed">
-                    {result.escrutinio_metodologico_y_estadistico.rastros_de_p_hacking}
-                  </p>
-                </div>
-              </div>
-            </Section>
-
-            {/* Disección Teórica + Sesgos — grid 2 col en pantallas grandes */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {/* Disección Teórica */}
-              <Section
-                title="Disección Teórica y Conceptual"
-                icon={<Shield className="w-4 h-4 text-[#00558F]" />}
-              >
-                <Field label="Falsabilidad (Riesgo Popperiano)" value={result.diseccion_teorica_y_conceptual.falsabilidad_y_riesgo_popperiano} nivel={result.diseccion_teorica_y_conceptual.falsabilidad_y_riesgo_popperiano_nivel} accent />
-                <div className="h-px bg-slate-100" />
-                <Field label="Brecha de Validez de Constructo" value={result.diseccion_teorica_y_conceptual.brecha_de_validez_de_constructo} nivel={result.diseccion_teorica_y_conceptual.brecha_de_validez_de_constructo_nivel} accent />
-                <div className="h-px bg-slate-100" />
-                <div>
-                  <p className="text-xs font-bold text-[#00558F] uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-                    <NivelIcon nivel={result.diseccion_teorica_y_conceptual.hipotesis_ad_hoc_lakatosianas_nivel} />
-                    Hipótesis Ad Hoc (Lakatosianas)
-                  </p>
-                  <p className="italic text-slate-700 bg-slate-50 p-3 rounded-xl border border-slate-200 text-sm leading-relaxed">
-                    "{result.diseccion_teorica_y_conceptual.hipotesis_ad_hoc_lakatosianas}"
-                  </p>
-                </div>
-              </Section>
-
-              {/* Sesgos */}
-              <Section
-                title="Sesgos y Datos Faltantes"
-                icon={<EyeOff className="w-4 h-4 text-slate-500" />}
-              >
-                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-                    <NivelIcon nivel={result.auditoria_de_sesgos_y_datos_faltantes.sesgo_de_reporte_interno_nivel} />
-                    Sesgo de Reporte Interno
-                  </p>
-                  <p className="text-slate-800 font-semibold text-sm leading-relaxed">{result.auditoria_de_sesgos_y_datos_faltantes.sesgo_de_reporte_interno}</p>
-                </div>
-                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-                    <NivelIcon nivel={result.auditoria_de_sesgos_y_datos_faltantes.alineacion_de_incentivos_nivel} />
-                    Alineación de Incentivos
-                  </p>
-                  <p className="text-slate-800 font-semibold text-sm leading-relaxed">{result.auditoria_de_sesgos_y_datos_faltantes.alineacion_de_incentivos}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-bold text-[#00558F] uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-                    <NivelIcon nivel={result.auditoria_epistemologica.infradeterminacion_explicaciones_alternativas_nivel} />
-                    Infradeterminación
-                  </p>
-                  <div className="bg-[#00558F]/5 p-3 rounded-xl border border-[#00558F]/15 text-sm text-[#003a66] leading-relaxed">
-                    {result.auditoria_epistemologica.infradeterminacion_explicaciones_alternativas}
-                  </div>
-                </div>
-              </Section>
-            </div>
-
-            {/* Epistemológica */}
-            <Section
-              title="Auditoría Epistemológica"
-              icon={<span className="text-sm">🔬</span>}
-            >
-              <Field label="Grado de Corroboración Objetiva" value={result.auditoria_epistemologica.grado_de_corroboracion_objetiva} nivel={result.auditoria_epistemologica.grado_de_corroboracion_objetiva_nivel} />
-              <div className="h-px bg-slate-100" />
-              <Field label="Infradeterminación y Explicaciones Alternativas" value={result.auditoria_epistemologica.infradeterminacion_explicaciones_alternativas} nivel={result.auditoria_epistemologica.infradeterminacion_explicaciones_alternativas_nivel} />
-            </Section>
-
-            {/* Guía de Aprendizaje */}
-            <div className="border-2 border-[#00558F]/25 rounded-2xl overflow-hidden">
-              <div className="flex items-center gap-2 px-4 py-3 bg-[#00558F]/8 border-b border-[#00558F]/15">
-                <BookOpen className="w-4 h-4 text-[#00558F]" />
-                <span className="font-black text-[#00558F] text-sm uppercase tracking-wider">Guía de Aprendizaje</span>
-              </div>
-              <div className="px-4 py-4 bg-white space-y-4 text-sm">
-                <Field label="¿Qué aprender de este documento?" value={result.guia_de_aprendizaje.que_aprender_de_este_documento} />
-                <div className="h-px bg-slate-100" />
-                <Field label="Conceptos clave verificados" value={result.guia_de_aprendizaje.conceptos_clave_verificados} />
-                <div className="h-px bg-slate-100" />
-                <Field label="Conexiones con otros campos" value={result.guia_de_aprendizaje.conexiones_con_otros_campos} />
-                <div className="h-px bg-slate-100" />
-                <Field label="Preguntas para reflexión" value={result.guia_de_aprendizaje.preguntas_para_reflexion} />
-                <div className="h-px bg-slate-100" />
-                <div className="bg-[#00558F]/5 rounded-xl p-4 border border-[#00558F]/15">
-                  <div className="flex items-start gap-2">
-                    <Lightbulb className="w-4 h-4 text-[#00558F] mt-0.5 shrink-0" />
-                    <div>
-                      <p className="text-xs font-bold text-[#00558F] uppercase tracking-wider mb-1.5">Conclusión para el lector</p>
-                      <p className="text-slate-700 leading-relaxed font-medium">{result.guia_de_aprendizaje.conclusion_para_el_lector}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Auditar de nuevo */}
-            <button
-              onClick={handleAudit}
-              className="w-full py-3 text-sm text-slate-500 hover:text-[#00558F] border border-slate-200 hover:border-[#00558F]/30 rounded-xl transition-colors font-medium"
-            >
+        {result && !loading && (
+          <>
+            {isV2(result) ? <AuditorV2Result result={result} /> : <AuditorLegacyResult result={result} />}
+            <button onClick={handleAudit} className="w-full py-3 text-sm text-slate-500 hover:text-[#00558F] border border-slate-200 hover:border-[#00558F]/30 rounded-xl transition-colors font-medium">
               Volver a auditar
             </button>
-          </div>
+          </>
         )}
       </div>
     </div>
