@@ -20,7 +20,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, Minimize2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, Minimize2, ChevronLeft, ChevronRight, Volume1, Volume2, VolumeX } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { uploadFile, getMaxUploadMb } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
@@ -62,7 +62,11 @@ function fileTypeFromName(name: string): ResourceType {
 //    nuestros controles mandan play/pausa/seek y reciben el tiempo actual.
 function getVideoEmbedUrl(url: string): string | null {
   const origin = typeof window !== 'undefined' ? encodeURIComponent(window.location.origin) : '';
-  const ytEmbed = (id: string) => `https://www.youtube-nocookie.com/embed/${id}?playsinline=1&rel=0&enablejsapi=1&origin=${origin}`;
+  // controls=0 + modestbranding + iv_load_policy=3 + disablekb: se ocultan
+  // los controles nativos de YouTube, la marca, las anotaciones y el teclado.
+  // La reproducción se maneja SOLO con nuestros controles (postMessage). fs=0
+  // quita el botón de pantalla completa de YouTube (usamos el propio de la app).
+  const ytEmbed = (id: string) => `https://www.youtube-nocookie.com/embed/${id}?playsinline=1&rel=0&enablejsapi=1&controls=0&modestbranding=1&iv_load_policy=3&disablekb=1&fs=0&origin=${origin}`;
   try {
     const u = new URL(url);
     if (u.hostname.includes('youtube.com')) {
@@ -145,13 +149,18 @@ export interface MediaApi {
 // Un TAP en ⏪/⏩ salta 5s; DOBLE tap salta 10s (ventana de 260ms para
 // distinguirlos, como pidió el usuario — mismo patrón que la app de YouTube).
 // -----------------------------------------------------------------------------
-function MediaControls({ playing, timeSec, onToggle, onSeekBy }: {
+function MediaControls({ playing, timeSec, durationSec, volume, onToggle, onSeekBy, onScrub, onVolume }: {
   playing: boolean;
   timeSec: number;
+  durationSec: number;
+  volume: number;
   onToggle: () => void;
   onSeekBy: (delta: number) => void;
+  onScrub: (seconds: number) => void;
+  onVolume: (v: number) => void;
 }) {
   const tapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showVol, setShowVol] = useState(false);
   const handleSeekTap = (dir: 1 | -1) => {
     if (tapTimerRef.current) {
       // Segundo tap dentro de la ventana: es doble tap → 10s (se cancela el 5s pendiente).
@@ -167,36 +176,55 @@ function MediaControls({ playing, timeSec, onToggle, onSeekBy }: {
   };
   useEffect(() => () => { if (tapTimerRef.current) clearTimeout(tapTimerRef.current); }, []);
 
+  const dur = durationSec > 0 ? durationSec : 0;
+  const VolIcon = volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+
   return (
-    <div className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-900/95 text-white">
-      <span className="text-[11px] font-mono tabular-nums text-white/80 min-w-[44px]">{formatTime(timeSec)}</span>
-      <div className="flex-1" />
-      <button
-        type="button"
-        onClick={() => handleSeekTap(-1)}
-        className="p-2 rounded-full hover:bg-white/15 active:scale-95 transition-all"
-        title="Atrás: 1 tap = 5s · 2 taps = 10s"
-      >
-        <Rewind className="w-5 h-5 fill-current" />
-      </button>
-      <button
-        type="button"
-        onClick={onToggle}
-        className="p-2.5 rounded-full bg-white/15 hover:bg-white/25 active:scale-95 transition-all"
-        title={playing ? 'Pausar' : 'Reproducir'}
-      >
-        {playing ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
-      </button>
-      <button
-        type="button"
-        onClick={() => handleSeekTap(1)}
-        className="p-2 rounded-full hover:bg-white/15 active:scale-95 transition-all"
-        title="Adelante: 1 tap = 5s · 2 taps = 10s"
-      >
-        <FastForward className="w-5 h-5 fill-current" />
-      </button>
-      <div className="flex-1" />
-      <span className="min-w-[44px]" />
+    <div className="flex flex-col gap-1.5 px-3 py-2 bg-slate-900/95 text-white">
+      {/* Barra de tiempo movible: arrastrable, con el tiempo a cada lado. */}
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-mono tabular-nums text-white/80 min-w-[42px] text-right">{formatTime(timeSec)}</span>
+        <input
+          type="range"
+          min={0}
+          max={dur || 1}
+          step={0.1}
+          value={Math.min(timeSec, dur || 1)}
+          disabled={dur === 0}
+          onChange={(e) => onScrub(Number(e.target.value))}
+          className="flex-1 h-1.5 accent-[var(--primary)] cursor-pointer disabled:opacity-40"
+          title="Barra de tiempo"
+        />
+        <span className="text-[11px] font-mono tabular-nums text-white/50 min-w-[42px]">{dur > 0 ? formatTime(dur) : '--:--'}</span>
+      </div>
+      {/* Controles: retroceso, play/pausa, avance + volumen. */}
+      <div className="flex items-center justify-center gap-2 relative">
+        <button type="button" onClick={() => handleSeekTap(-1)} className="p-2 rounded-full hover:bg-white/15 active:scale-95 transition-all" title="Atrás: 1 tap = 5s · 2 taps = 10s">
+          <Rewind className="w-5 h-5 fill-current" />
+        </button>
+        <button type="button" onClick={onToggle} className="p-2.5 rounded-full bg-white/15 hover:bg-white/25 active:scale-95 transition-all" title={playing ? 'Pausar' : 'Reproducir'}>
+          {playing ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+        </button>
+        <button type="button" onClick={() => handleSeekTap(1)} className="p-2 rounded-full hover:bg-white/15 active:scale-95 transition-all" title="Adelante: 1 tap = 5s · 2 taps = 10s">
+          <FastForward className="w-5 h-5 fill-current" />
+        </button>
+        {/* Volumen: icono que despliega un deslizador (clic para silenciar). */}
+        <div className="absolute right-0 flex items-center gap-1.5" onMouseEnter={() => setShowVol(true)} onMouseLeave={() => setShowVol(false)}>
+          <button type="button" onClick={() => onVolume(volume === 0 ? 1 : 0)} className="p-2 rounded-full hover:bg-white/15 active:scale-95 transition-all" title="Volumen (clic para silenciar)">
+            <VolIcon className="w-5 h-5" />
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={volume}
+            onChange={(e) => onVolume(Number(e.target.value))}
+            className={cn('h-1.5 accent-[var(--primary)] cursor-pointer transition-all', showVol ? 'w-20 opacity-100' : 'w-0 opacity-0 sm:w-16 sm:opacity-100')}
+            title="Volumen"
+          />
+        </div>
+      </div>
     </div>
   );
 }
@@ -226,6 +254,8 @@ function MediaPlayer({ resource, kind, onPlayingChange, apiRef, onTimeChange, ta
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [timeSec, setTimeSec] = useState(0);
+  const [durationSec, setDurationSec] = useState(0);
+  const [volume, setVolumeState] = useState(1); // 0..1
   const timeRef = useRef(0);
 
   // Notificar reproducción (wake lock) solo en las TRANSICIONES reales.
@@ -262,6 +292,13 @@ function MediaPlayer({ resource, kind, onPlayingChange, apiRef, onTimeChange, ta
         if (typeof data.info.currentTime === 'number') setTimeThrottled(data.info.currentTime);
         // playerState 1 = reproduciendo (tabla de estados de la IFrame API).
         if (typeof data.info.playerState === 'number') setPlaying(data.info.playerState === 1);
+        // Duración y volumen para la barra de progreso y el control de volumen.
+        if (typeof data.info.duration === 'number' && data.info.duration > 0) {
+          setDurationSec(prev => (Math.abs(prev - data.info.duration) < 0.5 ? prev : data.info.duration));
+        }
+        if (typeof data.info.volume === 'number' && !data.info.muted) {
+          setVolumeState(prev => (Math.abs(prev - data.info.volume / 100) < 0.02 ? prev : data.info.volume / 100));
+        }
       }
     };
     window.addEventListener('message', onMessage);
@@ -303,6 +340,22 @@ function MediaPlayer({ resource, kind, onPlayingChange, apiRef, onTimeChange, ta
     seekTo(timeRef.current + delta);
   }, [seekTo]);
 
+  // Arrastre de la barra de progreso: reposiciona SIN forzar reproducción
+  // (respeta si estaba en pausa).
+  const scrubTo = useCallback((seconds: number) => {
+    const t = Math.max(0, Math.min(durationSec || seconds, seconds));
+    if (isYT) ytPost('seekTo', [t, true]);
+    else if (mediaRef.current) mediaRef.current.currentTime = t;
+    setTimeThrottled(t);
+  }, [isYT, ytPost, setTimeThrottled, durationSec]);
+
+  const setVolume = useCallback((v: number) => {
+    const vol = Math.max(0, Math.min(1, v));
+    if (isYT) { ytPost('unMute'); ytPost('setVolume', [Math.round(vol * 100)]); }
+    else if (mediaRef.current) { mediaRef.current.muted = vol === 0; mediaRef.current.volume = vol; }
+    setVolumeState(vol);
+  }, [isYT, ytPost]);
+
   useEffect(() => {
     if (!apiRef) return;
     apiRef.current = { getCurrentTime: () => timeRef.current, seekTo };
@@ -325,35 +378,50 @@ function MediaPlayer({ resource, kind, onPlayingChange, apiRef, onTimeChange, ta
             referrerPolicy="strict-origin-when-cross-origin"
           />
         ) : (
+          // Sin `controls` nativos: se usan SOLO nuestros controles (barra de
+          // tiempo movible, volumen y saltos), igual que con YouTube.
           <video
-            ref={(el) => { mediaRef.current = el; }}
+            ref={(el) => { mediaRef.current = el; if (el) el.volume = volume; }}
             src={resource.source}
             className={cn('w-full bg-black', tall ? 'max-h-[60dvh]' : 'max-h-72')}
-            controls
             playsInline
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
             onEnded={() => setPlaying(false)}
             onTimeUpdate={(e) => setTimeThrottled((e.target as HTMLVideoElement).currentTime)}
+            onLoadedMetadata={(e) => setDurationSec((e.target as HTMLVideoElement).duration || 0)}
+            onDurationChange={(e) => setDurationSec((e.target as HTMLVideoElement).duration || 0)}
+            onVolumeChange={(e) => setVolumeState((e.target as HTMLVideoElement).volume)}
           />
         )
       ) : (
         <audio
-          ref={(el) => { mediaRef.current = el; }}
+          ref={(el) => { mediaRef.current = el; if (el) el.volume = volume; }}
           src={resource.source}
           className="w-full px-3 pt-3"
-          controls
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onEnded={() => setPlaying(false)}
           onTimeUpdate={(e) => setTimeThrottled((e.target as HTMLAudioElement).currentTime)}
+          onLoadedMetadata={(e) => setDurationSec((e.target as HTMLAudioElement).duration || 0)}
+          onDurationChange={(e) => setDurationSec((e.target as HTMLAudioElement).duration || 0)}
+          onVolumeChange={(e) => setVolumeState((e.target as HTMLAudioElement).volume)}
         />
       )}
       {/* Controles propios: funcionan igual para YouTube (postMessage) y
           archivos directos (refs). Vimeo no habla el protocolo de YouTube ni
           expone refs, así que ahí no se muestran (el iframe trae los suyos). */}
       {(isYT || !embedUrl) && (
-        <MediaControls playing={playing} timeSec={timeSec} onToggle={toggle} onSeekBy={seekBy} />
+        <MediaControls
+          playing={playing}
+          timeSec={timeSec}
+          durationSec={durationSec}
+          volume={volume}
+          onToggle={toggle}
+          onSeekBy={seekBy}
+          onScrub={scrubTo}
+          onVolume={setVolume}
+        />
       )}
     </div>
   );
@@ -401,6 +469,7 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
   const [renameValue, setRenameValue] = useState('');
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [linkValue, setLinkValue] = useState('');
+  const [linkName, setLinkName] = useState('');
   // Menú lateral de tipos colapsable (manija con chevrón en la orilla).
   const [kindMenuOpen, setKindMenuOpen] = useState(true);
   // Pantalla completa del PANEL (mismo botón ⛶ que el resto de la app): el
@@ -478,12 +547,16 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
     const url = linkValue.trim();
     if (!url) return;
     try {
-      // Título legible en vez de la URL cruda (la URL no aporta al usuario;
-      // los títulos-URL existentes se ocultan al mostrarse — ver el pie).
-      let title = 'Video';
-      try { title = `Video de ${new URL(url).hostname.replace(/^www\./, '')}`; } catch { /* URL rara: título genérico */ }
+      // El NOMBRE lo pone el usuario (pedido explícito). Si lo deja vacío, se
+      // usa un título legible por defecto; la URL cruda nunca se muestra.
+      let title = linkName.trim();
+      if (!title) {
+        title = 'Video';
+        try { title = `Video de ${new URL(url).hostname.replace(/^www\./, '')}`; } catch { /* URL rara: título genérico */ }
+      }
       await addResource({ kind: 'video', title, source: url });
       setLinkValue('');
+      setLinkName('');
       setShowLinkInput(false);
     } catch (err) {
       console.error('Error añadiendo enlace de video:', err);
@@ -602,18 +675,27 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
         )}
 
         {activeKind === 'video' && showLinkInput && (
-          <div className="flex items-center gap-2 mb-4">
+          <div className="flex flex-col gap-2 mb-4">
             <input
               autoFocus
               value={linkValue}
               onChange={(e) => setLinkValue(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleAddLink(); }}
               placeholder="Pega un enlace de YouTube, Vimeo o video directo (.mp4)…"
-              className="flex-1 text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+              className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
             />
-            <button onClick={handleAddLink} disabled={!linkValue.trim()} className="px-3 py-2 rounded-lg text-xs font-bold bg-[var(--primary)] text-white disabled:opacity-50 transition-colors">
-              Añadir
-            </button>
+            <div className="flex items-center gap-2">
+              <input
+                value={linkName}
+                onChange={(e) => setLinkName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleAddLink(); }}
+                placeholder="Nombre del video (cómo quieres que aparezca)…"
+                className="flex-1 text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+              />
+              <button onClick={handleAddLink} disabled={!linkValue.trim()} className="px-3 py-2 rounded-lg text-xs font-bold bg-[var(--primary)] text-white disabled:opacity-50 transition-colors shrink-0">
+                Añadir
+              </button>
+            </div>
           </div>
         )}
 
