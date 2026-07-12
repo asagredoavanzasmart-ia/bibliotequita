@@ -3137,6 +3137,16 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         }
       : { width: '100%', height: '100%' };
 
+  // Con una pestaña de overlay activa (Recursos/Citas/Info/Auditoría), el
+  // lector se OCULTA con visibility (NO display:none: eso pondría su tamaño
+  // en 0 y dispararía el ResizeObserver del EPUB → rebuild al volver, y en
+  // móvil dejaría "fragmentos de texto pegados" durante la transición). Con
+  // visibility el layout se conserva intacto y el TTS sigue sonando.
+  const readerPaneStyle2: React.CSSProperties = {
+    ...readerPaneStyle,
+    visibility: activeTab === 'reader' ? 'visible' : 'hidden',
+  };
+
   // El panel de notas SIEMPRE conserva su porción del split, también al escribir.
   // (Antes, al enfocar el textarea en móvil, pasaba a `position: fixed` a pantalla
   // completa y tapaba el documento; ahora se mantiene dentro de su contenedor y
@@ -3439,7 +3449,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
          {notesPosition === 'right' ? (
              <>
-             <div style={readerPaneStyle} className="relative z-10 min-w-0 min-h-0">{renderReader()}</div>
+             <div style={readerPaneStyle2} className="relative z-10 min-w-0 min-h-0">{renderReader()}</div>
              {showNotes && (
                  <>
                      <div 
@@ -3465,7 +3475,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                      </div>
                  </>
              )}
-             <div style={readerPaneStyle} className="relative z-10 min-w-0 min-h-0">{renderReader()}</div>
+             <div style={readerPaneStyle2} className="relative z-10 min-w-0 min-h-0">{renderReader()}</div>
              </>
          )}
 
