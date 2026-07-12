@@ -2763,6 +2763,105 @@ ${text}
       const fileBuffer = fs.readFileSync(filePath);
       const base64Data = fileBuffer.toString("base64");
 
+      // Cada criterio del schema v2 es un objeto uniforme {analisis, nivel,
+      // evidencia}. `nivel` tiene 5 estados (ver systemInstruction): verde,
+      // amarillo, rojo, gris (no evaluable con la info del documento) y
+      // no_aplica (no corresponde a este tipo de documento).
+      const NIVEL5 = { type: Type.STRING, enum: ["verde", "amarillo", "rojo", "gris", "no_aplica"] };
+      const criterio = () => ({
+        type: Type.OBJECT,
+        properties: { analisis: { type: Type.STRING }, nivel: NIVEL5, evidencia: { type: Type.STRING } },
+        required: ["analisis", "nivel", "evidencia"],
+      });
+      // Sección compuesta solo por criterios uniformes.
+      const criterioSection = (keys: string[]) => ({
+        type: Type.OBJECT,
+        properties: Object.fromEntries(keys.map(k => [k, criterio()])),
+        required: keys,
+      });
+      const str = { type: Type.STRING };
+
+      const auditResponseSchema = {
+        type: Type.OBJECT,
+        properties: {
+          titulo_del_estudio: str,
+          veredicto_general: str,
+          identificacion_y_tipologia: {
+            type: Type.OBJECT,
+            properties: {
+              tipo_de_documento: str,
+              pregunta_o_afirmacion_central: str,
+              poblacion_y_muestra: str,
+              adecuacion_del_diseno: criterio(),
+            },
+            required: ["tipo_de_documento", "pregunta_o_afirmacion_central", "poblacion_y_muestra", "adecuacion_del_diseno"],
+          },
+          coherencia_datos_conclusiones: {
+            type: Type.OBJECT,
+            properties: {
+              afirmaciones: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    afirmacion: str,
+                    soporte_en_los_datos: str,
+                    nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo", "gris"] },
+                  },
+                  required: ["afirmacion", "soporte_en_los_datos", "nivel"],
+                },
+              },
+              coherencia_global_datos_conclusiones: criterio(),
+              spin_y_enfasis: criterio(),
+            },
+            required: ["afirmaciones", "coherencia_global_datos_conclusiones", "spin_y_enfasis"],
+          },
+          escrutinio_metodologico_y_estadistico: criterioSection([
+            "controles_y_confusores", "potencia_y_tamano_muestral",
+            "magnitud_del_efecto_e_incertidumbre", "senales_de_p_hacking",
+          ]),
+          transparencia_y_datos: criterioSection([
+            "preregistro_y_protocolo", "disponibilidad_de_datos_y_codigo", "reporte_selectivo_de_resultados",
+          ]),
+          sesgos_e_incentivos: criterioSection([
+            "financiacion_y_conflictos", "sesgo_de_seleccion_y_muestreo", "independencia_del_analisis",
+          ]),
+          retorica_e_ideologia: criterioSection([
+            "lenguaje_cargado_y_normativo", "salto_del_es_al_debe", "encuadre_y_alternativas_silenciadas",
+          ]),
+          auditoria_bibliografica: criterioSection([
+            "uso_real_de_las_fuentes", "calidad_de_fuentes_en_afirmaciones_clave",
+            "autocitacion_y_endogamia", "afirmaciones_fuertes_sin_fuente",
+          ]),
+          epistemologia: criterioSection([
+            "falsabilidad", "explicaciones_alternativas", "hipotesis_ad_hoc",
+            "validez_de_constructo", "salto_causal_y_extrapolacion", "corroboracion_externa",
+          ]),
+          sintesis_critica: {
+            type: Type.OBJECT,
+            properties: {
+              lo_que_dicen_los_datos: str,
+              lo_que_el_estudio_si_soporta: str,
+              lo_que_el_estudio_no_soporta: str,
+              precauciones_de_lectura: str,
+              incertidumbres_abiertas: str,
+              conceptos_para_profundizar: str,
+              preguntas_para_el_lector: str,
+            },
+            required: [
+              "lo_que_dicen_los_datos", "lo_que_el_estudio_si_soporta", "lo_que_el_estudio_no_soporta",
+              "precauciones_de_lectura", "incertidumbres_abiertas", "conceptos_para_profundizar", "preguntas_para_el_lector",
+            ],
+          },
+        },
+        required: [
+          "titulo_del_estudio", "veredicto_general", "identificacion_y_tipologia",
+          "coherencia_datos_conclusiones", "escrutinio_metodologico_y_estadistico",
+          "transparencia_y_datos", "sesgos_e_incentivos", "retorica_e_ideologia",
+          "auditoria_bibliografica", "epistemologia", "sintesis_critica",
+        ],
+      };
+
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
         contents: [
@@ -2770,7 +2869,7 @@ ${text}
             role: "user",
             parts: [
               {
-                text: `Analiza el documento PDF adjunto siguiendo exactamente las instrucciones del system prompt. Rellena todos los campos del schema JSON con análisis detallados y específicos al contenido de ESTE documento. No uses frases genéricas — referencia datos, cifras y afirmaciones concretas del paper. Si el documento no es un paper científico formal (e.g., es un libro, ensayo o guía), adapta el análisis al tipo de documento pero mantén el mismo rigor crítico.`
+                text: `Audita el documento PDF adjunto siguiendo EXACTAMENTE el system prompt. Rellena todos los campos con análisis específicos de ESTE documento, anclados en texto concreto (cifras, tablas, frases). Nada genérico. Empieza clasificando el tipo de documento y adapta qué criterios aplican. Recuerda: si un criterio no se puede juzgar con lo que el documento aporta, su nivel es "gris" (NO "verde").`
               },
               {
                 inlineData: {
@@ -2782,182 +2881,160 @@ ${text}
           }
         ],
         config: {
-          systemInstruction: `Eres un auditor científico experto en integridad metodológica y pensamiento crítico. Tu misión es desgranar papers y estudios académicos con ojo implacable: identificar sesgos, fallos metodológicos, p-hacking, cientificismo y extrapolaciones injustificadas. También extraes el aprendizaje real y verificable para el lector. Responde siempre en español, de forma directa y sin eufemismos.
+          systemInstruction: `Eres un epistemólogo y metodólogo de la ciencia que audita estudios, artículos y documentos con rigor escéptico. Tu trabajo NO es recomendar ni tranquilizar: es exponer, con precisión y anclado al texto, qué sostiene el documento y qué no, para que el LECTOR saque sus propias conclusiones. Respondes en español, directo y sin eufemismos.
 
-Para cada campo del schema sigue estas instrucciones:
+REGLA DE ORO — HONESTIDAD DEL SEMÁFORO. Cada criterio lleva un "nivel" de CINCO estados:
+- "verde": lo evaluaste y NO hay problema relevante en ese aspecto.
+- "amarillo": lo evaluaste; hay limitaciones o dudas que exigen cautela.
+- "rojo": lo evaluaste; hay un problema significativo que compromete ese aspecto.
+- "gris": NO es evaluable porque el documento no aporta la información necesaria. La ausencia de datos NO es aprobación: si no puedes anclar el juicio en texto concreto del documento, el nivel es "gris", JAMÁS "verde". La opacidad se reporta como gris.
+- "no_aplica": el criterio no corresponde a este tipo de documento (p. ej. p-hacking en un ensayo teórico sin estadística).
+El campo "evidencia" de cada criterio debe citar textualmente (breve) o referenciar la sección/tabla del documento que ancla tu "analisis". Si el nivel es "gris" o "no_aplica", evidencia = "" o una nota de por qué no es evaluable.
 
-- titulo_del_estudio: El título exacto del documento tal como aparece en el PDF.
-- veredicto_general: 2-3 oraciones que resuman la solidez global del estudio. Sé directo: ¿es fiable, parcialmente fiable o cuestionable? ¿Por qué?
-- nivel_credibilidad: UNA sola palabra: "alto", "medio" o "bajo". Basado en la suma de todos los criterios.
+PROHIBICIONES ESTRICTAS:
+- NO des recomendaciones al lector: nada de "debes", "recomiendo", "confía", "descarta", "usa con cautela". Describe hallazgos; el lector decide.
+- NO inventes el contenido de referencias externas: solo ves este PDF. Lo que exigiría leer la fuente citada para verificarlo va como "gris" con nota. No afirmes qué dice un estudio citado si no está en el documento.
+- NO acuses intenciones ni etiquetes ideologías ("los autores son marxistas/neoliberales"). Describe el PATRÓN textual observable (lenguaje, encuadre, selección de fuentes) y deja el juicio al lector.
 
-SEMÁFORO POR CRITERIO: Cada criterio de las secciones de auditoria_epistemologica,
-diseccion_teorica_y_conceptual, escrutinio_metodologico_y_estadistico,
-auditoria_de_sesgos_y_datos_faltantes y detector_de_cientificismo_y_banderas_rojas tiene,
-además de su texto explicativo, un campo "_nivel" hermano con uno de estos 3 valores:
-- "verde": no se detecta problema en ese aspecto, está bien.
-- "amarillo": hay matices, limitaciones menores o incertidumbre a considerar.
-- "rojo": problema significativo detectado en ese aspecto.
-Asigna el nivel según lo que realmente describas en el texto, sin sesgo hacia ningún color.
+CRITERIOS (analisis + nivel + evidencia en cada uno):
 
-SECCIÓN auditoria_epistemologica:
-- grado_de_corroboracion_objetiva (+ grado_de_corroboracion_objetiva_nivel): ¿Cuántos estudios independientes corroboran los resultados? ¿Son replicables? Menciona si hay corroboración alta, moderada o baja y por qué.
-- infradeterminacion_explicaciones_alternativas (+ infradeterminacion_explicaciones_alternativas_nivel): ¿Existen explicaciones alternativas igualmente válidas que el estudio ignora o descarta sin justificación?
+identificacion_y_tipologia:
+- tipo_de_documento: clasifica (ensayo clínico aleatorizado, estudio observacional, meta-análisis/revisión sistemática, revisión narrativa, estudio cualitativo, teórico/modelado, ensayo o libro de divulgación, preprint, u otro). De esto depende qué criterios aplican.
+- pregunta_o_afirmacion_central: qué pretende demostrar o afirmar el documento.
+- poblacion_y_muestra: quiénes, cuántos y cómo se seleccionaron ("" si no aplica).
+- adecuacion_del_diseno: ¿el diseño elegido PUEDE, en principio, responder esa pregunta? (un observacional no establece causalidad; una encuesta no mide conducta real).
 
-SECCIÓN diseccion_teorica_y_conceptual:
-- falsabilidad_y_riesgo_popperiano (+ falsabilidad_y_riesgo_popperiano_nivel): ¿La hipótesis central podría ser refutada por algún experimento posible? ¿O está formulada de forma que siempre sea "verdadera"?
-- brecha_de_validez_de_constructo (+ brecha_de_validez_de_constructo_nivel): ¿Las métricas usadas miden realmente lo que dicen medir? Evalúa si los constructos teóricos están bien operacionalizados.
-- hipotesis_ad_hoc_lakatosianas (+ hipotesis_ad_hoc_lakatosianas_nivel): ¿El estudio añade suposiciones auxiliares para salvar su teoría cuando los datos no encajan? Identifica ejemplos concretos si los hay.
+coherencia_datos_conclusiones (el núcleo):
+- afirmaciones: ARRAY de 3 a 6 de las conclusiones principales tal como las formula el documento. Por cada una: {afirmacion (cita o paráfrasis fiel), soporte_en_los_datos (qué resultado concreto la respalda o la contradice), nivel}. verde = se sigue de los datos reportados; amarillo = solo parcialmente o con salvedades que el texto no enfatiza; rojo = NO se sigue (sobreinterpreta, invierte el sentido, o los datos dicen otra cosa); gris = los datos necesarios no están en el documento.
+- coherencia_global_datos_conclusiones: juicio de conjunto sobre si las conclusiones están soportadas por los resultados.
+- spin_y_enfasis: ¿se re-encuadran resultados nulos como positivos, se entierra el desenlace primario, se promocionan subgrupos o desenlaces secundarios?
 
-SECCIÓN escrutinio_metodologico_y_estadistico:
-- adecuacion_y_omision_de_controles (+ adecuacion_y_omision_de_controles_nivel): ¿Se usaron grupos control adecuados? ¿Qué variables confusoras no se controlaron? Sé específico.
-- robustez_y_relevancia_real (+ robustez_y_relevancia_real_nivel): ¿El tamaño del efecto es clínicamente/prácticamente significativo, o solo estadísticamente significativo? ¿Cuál es el intervalo de confianza real?
-- rastros_de_p_hacking (+ rastros_de_p_hacking_nivel): ¿Hay señales de selección de variables post-hoc, análisis múltiples no reportados, umbrales p ajustados o muestras ampliadas hasta obtener p<0.05?
+escrutinio_metodologico_y_estadistico:
+- controles_y_confusores: grupos control adecuados; variables confusoras no controladas.
+- potencia_y_tamano_muestral: ¿n justificado?, ¿cálculo de potencia?, riesgo de falsos negativos/positivos por muestra chica o enorme.
+- magnitud_del_efecto_e_incertidumbre: tamaño del efecto práctico vs. mera significancia estadística; intervalos de confianza; ¿el efecto importa en el mundo real?
+- senales_de_p_hacking: selección post-hoc, comparaciones múltiples sin corrección, outcome switching, subgrupos exploratorios presentados como confirmatorios, muestra ampliada hasta p<0.05.
 
-SECCIÓN auditoria_de_sesgos_y_datos_faltantes:
-- sesgo_de_reporte_interno (+ sesgo_de_reporte_interno_nivel): ¿Se reportan todos los resultados o solo los favorables? ¿Hay discrepancias entre métodos declarados y resultados reportados?
-- alineacion_de_incentivos (+ alineacion_de_incentivos_nivel): ¿Quién financia el estudio? ¿Los autores tienen conflictos de interés? ¿El diseño favorece sistemáticamente un resultado?
+transparencia_y_datos:
+- preregistro_y_protocolo: ¿protocolo pre-registrado?, ¿desviaciones respecto a él?
+- disponibilidad_de_datos_y_codigo: ¿datos crudos y código accesibles y reproducibles?
+- reporte_selectivo_de_resultados: métodos declarados vs. resultados reportados; desenlaces anunciados que luego no aparecen; omisiones (describe el patrón, sin imputar intención).
 
-SECCIÓN detector_de_cientificismo_y_banderas_rojas:
-- brecha_causal_y_extrapolacion (+ brecha_causal_y_extrapolacion_nivel): ¿El estudio infiere causalidad de datos correlacionales? ¿Generaliza a poblaciones/contextos no estudiados?
-- cherry_picking_contextual (+ cherry_picking_contextual_nivel): ¿Se ignoran estudios previos contradictorios? ¿Se seleccionan solo los datos que confirman la hipótesis?
-- opacidad_para_refutacion (+ opacidad_para_refutacion_nivel): ¿Los datos crudos son accesibles? ¿El protocolo fue pre-registrado? ¿Es reproducible el análisis?
+sesgos_e_incentivos:
+- financiacion_y_conflictos: quién financia y su interés; papel del financiador en diseño/análisis/publicación; conflictos de interés declarados. Si NO hay declaración de financiación ni de conflictos, nivel amarillo o gris, nunca verde.
+- sesgo_de_seleccion_y_muestreo: cómo se reclutó la muestra; pérdidas/exclusiones asimétricas; sesgo de supervivencia.
+- independencia_del_analisis: ¿análisis ciego?, ¿el equipo tenía la conclusión comprometida de antemano (misión institucional, activismo)?
 
-SECCIÓN sintesis_para_el_pensamiento_critico:
-- la_realidad_de_los_datos_crudos: En 1-2 oraciones contundentes: ¿qué dicen realmente los datos, sin el spin del resumen de los autores?
-- traduccion_de_la_incertidumbre_al_mundo_real: ¿Qué significa este estudio para una persona real? ¿Cuánto debe cambiar su comportamiento/creencias basándose en esto?
+retorica_e_ideologia (patrón textual, no etiquetas):
+- lenguaje_cargado_y_normativo: adjetivación valorativa en los resultados, términos militantes o eufemismos; ¿el tono describe o predica?
+- salto_del_es_al_debe: ¿deriva prescripciones (políticas, morales) de datos descriptivos sin puente argumental? (falacia naturalista).
+- encuadre_y_alternativas_silenciadas: ¿presenta un solo marco interpretativo como si fuera el único?, ¿la literatura citada es de una sola corriente?, ¿las conclusiones coinciden sospechosamente con la agenda declarada de autores/institución/revista?
 
-SECCIÓN guia_de_aprendizaje:
-- que_aprender_de_este_documento: Los 2-3 conceptos más valiosos y verificables que el lector puede extraer, independientemente de las limitaciones del estudio.
-- conceptos_clave_verificados: Lista los términos científicos o metodológicos clave que aparecen en el estudio y que vale la pena que el lector comprenda profundamente.
-- conexiones_con_otros_campos: ¿Con qué otras disciplinas o áreas del conocimiento conecta este estudio? ¿Qué lecturas complementarias sugeriría?
-- preguntas_para_reflexion: 2-3 preguntas críticas que el lector debería hacerse al terminar de leer este documento.
-- conclusion_para_el_lector: Una recomendación final directa: ¿debe el lector confiar en este estudio, usarlo con cautela, o descartarlo? ¿Por qué?`,
+auditoria_bibliografica (solo lo verificable desde este PDF; lo demás = gris):
+- uso_real_de_las_fuentes: ¿las citas sostienen pasos del argumento o son relleno decorativo (racimos de citas en generalidades, bibliografía listada que nunca se invoca en el cuerpo)?
+- calidad_de_fuentes_en_afirmaciones_clave: para las afirmaciones CENTRALES, ¿qué se cita? (meta-análisis y estudios primarios sólidos vs. libros de opinión, prensa, blogs, preprints, "datos no publicados", comunicación personal). Fuente débil sosteniendo afirmación fuerte = rojo.
+- autocitacion_y_endogamia: proporción de autocitas y de citas al mismo grupo/escuela; ¿la "corroboración" es un circuito cerrado?
+- afirmaciones_fuertes_sin_fuente: "está establecido que…", "numerosos estudios muestran…" sin cita verificable.
+
+epistemologia:
+- falsabilidad: ¿la hipótesis central podría ser refutada por algún resultado posible, o está formulada para ser siempre "verdadera"?
+- explicaciones_alternativas: explicaciones rivales igual de válidas que el documento ignora o descarta sin justificación.
+- hipotesis_ad_hoc: suposiciones auxiliares añadidas para salvar la teoría cuando los datos no encajan.
+- validez_de_constructo: ¿las métricas miden de verdad lo que dicen medir?, ¿buena operacionalización?
+- salto_causal_y_extrapolacion: causalidad inferida de correlación; generalización a poblaciones/contextos no estudiados.
+- corroboracion_externa: ¿los resultados están replicados/corroborados por trabajo independiente? Si no puedes saberlo desde el documento, nivel gris con nota "requiere buscar replicaciones fuera del documento".
+
+sintesis_critica (declarativa, SIN recomendaciones):
+- lo_que_dicen_los_datos: 1-3 frases sobre qué muestran realmente los datos reportados, sin el spin de los autores.
+- lo_que_el_estudio_si_soporta: afirmaciones concretas que sobreviven la auditoría tal cual.
+- lo_que_el_estudio_no_soporta: afirmaciones del propio documento (o usos previsibles de él) que NO quedan justificadas.
+- precauciones_de_lectura: a qué prestar atención al leerlo (secciones con spin, tablas clave, letra chica).
+- incertidumbres_abiertas: qué haría falta para zanjar la cuestión.
+- conceptos_para_profundizar: 2-4 términos o métodos que vale la pena entender bien.
+- preguntas_para_el_lector: 2-3 preguntas críticas para hacerse al terminar.
+
+- veredicto_general: 2-3 frases que resuman la solidez global ANCLADAS en los criterios anteriores. Describe, no recomiendes.`,
           responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              titulo_del_estudio: { type: Type.STRING },
-              veredicto_general: { type: Type.STRING },
-              nivel_credibilidad: { type: Type.STRING },
-              auditoria_epistemologica: {
-                type: Type.OBJECT,
-                properties: {
-                  grado_de_corroboracion_objetiva: { type: Type.STRING },
-                  grado_de_corroboracion_objetiva_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                  infradeterminacion_explicaciones_alternativas: { type: Type.STRING },
-                  infradeterminacion_explicaciones_alternativas_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                },
-                required: [
-                  "grado_de_corroboracion_objetiva", "grado_de_corroboracion_objetiva_nivel",
-                  "infradeterminacion_explicaciones_alternativas", "infradeterminacion_explicaciones_alternativas_nivel",
-                ],
-              },
-              diseccion_teorica_y_conceptual: {
-                type: Type.OBJECT,
-                properties: {
-                  falsabilidad_y_riesgo_popperiano: { type: Type.STRING },
-                  falsabilidad_y_riesgo_popperiano_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                  brecha_de_validez_de_constructo: { type: Type.STRING },
-                  brecha_de_validez_de_constructo_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                  hipotesis_ad_hoc_lakatosianas: { type: Type.STRING },
-                  hipotesis_ad_hoc_lakatosianas_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                },
-                required: [
-                  "falsabilidad_y_riesgo_popperiano", "falsabilidad_y_riesgo_popperiano_nivel",
-                  "brecha_de_validez_de_constructo", "brecha_de_validez_de_constructo_nivel",
-                  "hipotesis_ad_hoc_lakatosianas", "hipotesis_ad_hoc_lakatosianas_nivel",
-                ],
-              },
-              escrutinio_metodologico_y_estadistico: {
-                type: Type.OBJECT,
-                properties: {
-                  adecuacion_y_omision_de_controles: { type: Type.STRING },
-                  adecuacion_y_omision_de_controles_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                  robustez_y_relevancia_real: { type: Type.STRING },
-                  robustez_y_relevancia_real_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                  rastros_de_p_hacking: { type: Type.STRING },
-                  rastros_de_p_hacking_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                },
-                required: [
-                  "adecuacion_y_omision_de_controles", "adecuacion_y_omision_de_controles_nivel",
-                  "robustez_y_relevancia_real", "robustez_y_relevancia_real_nivel",
-                  "rastros_de_p_hacking", "rastros_de_p_hacking_nivel",
-                ],
-              },
-              auditoria_de_sesgos_y_datos_faltantes: {
-                type: Type.OBJECT,
-                properties: {
-                  sesgo_de_reporte_interno: { type: Type.STRING },
-                  sesgo_de_reporte_interno_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                  alineacion_de_incentivos: { type: Type.STRING },
-                  alineacion_de_incentivos_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                },
-                required: [
-                  "sesgo_de_reporte_interno", "sesgo_de_reporte_interno_nivel",
-                  "alineacion_de_incentivos", "alineacion_de_incentivos_nivel",
-                ],
-              },
-              detector_de_cientificismo_y_banderas_rojas: {
-                type: Type.OBJECT,
-                properties: {
-                  brecha_causal_y_extrapolacion: { type: Type.STRING },
-                  brecha_causal_y_extrapolacion_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                  cherry_picking_contextual: { type: Type.STRING },
-                  cherry_picking_contextual_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                  opacidad_para_refutacion: { type: Type.STRING },
-                  opacidad_para_refutacion_nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo"] },
-                },
-                required: [
-                  "brecha_causal_y_extrapolacion", "brecha_causal_y_extrapolacion_nivel",
-                  "cherry_picking_contextual", "cherry_picking_contextual_nivel",
-                  "opacidad_para_refutacion", "opacidad_para_refutacion_nivel",
-                ],
-              },
-              sintesis_para_el_pensamiento_critico: {
-                type: Type.OBJECT,
-                properties: {
-                  la_realidad_de_los_datos_crudos: { type: Type.STRING },
-                  traduccion_de_la_incertidumbre_al_mundo_real: { type: Type.STRING },
-                },
-                required: ["la_realidad_de_los_datos_crudos", "traduccion_de_la_incertidumbre_al_mundo_real"],
-              },
-              guia_de_aprendizaje: {
-                type: Type.OBJECT,
-                properties: {
-                  que_aprender_de_este_documento: { type: Type.STRING },
-                  conceptos_clave_verificados: { type: Type.STRING },
-                  conexiones_con_otros_campos: { type: Type.STRING },
-                  preguntas_para_reflexion: { type: Type.STRING },
-                  conclusion_para_el_lector: { type: Type.STRING },
-                },
-                required: ["que_aprender_de_este_documento", "conceptos_clave_verificados", "conexiones_con_otros_campos", "preguntas_para_reflexion", "conclusion_para_el_lector"],
-              },
-            },
-            required: [
-              "titulo_del_estudio",
-              "veredicto_general",
-              "nivel_credibilidad",
-              "auditoria_epistemologica",
-              "diseccion_teorica_y_conceptual",
-              "escrutinio_metodologico_y_estadistico",
-              "auditoria_de_sesgos_y_datos_faltantes",
-              "detector_de_cientificismo_y_banderas_rojas",
-              "sintesis_para_el_pensamiento_critico",
-              "guia_de_aprendizaje",
-            ],
-          },
+          responseSchema: auditResponseSchema,
         },
       });
 
       const text = response.text;
       if (!text) return res.status(500).json({ error: "Gemini no devolvió resultado." });
 
-      let parsed: unknown;
+      let parsed: any;
       try {
         parsed = JSON.parse(text);
       } catch {
         return res.status(500).json({ error: "Respuesta de Gemini no es JSON válido." });
       }
+
+      // Veredicto global CALCULADO en el servidor (no lo decide la IA): reglas
+      // transparentes y reproducibles sobre los niveles de todos los criterios.
+      // Así dos auditorías del mismo documento dan el mismo nivel global.
+      try {
+        const nivels: string[] = [];
+        for (const secKey of Object.keys(parsed)) {
+          const sec = parsed[secKey];
+          if (sec && typeof sec === "object") {
+            for (const k of Object.keys(sec)) {
+              const v = sec[k];
+              if (v && typeof v === "object" && typeof v.nivel === "string") nivels.push(v.nivel);
+            }
+          }
+        }
+        // Niveles de la tabla de afirmaciones también cuentan.
+        const afirmaciones = parsed?.coherencia_datos_conclusiones?.afirmaciones;
+        if (Array.isArray(afirmaciones)) {
+          for (const a of afirmaciones) if (a && typeof a.nivel === "string") nivels.push(a.nivel);
+        }
+        const conteos = {
+          verde: nivels.filter(n => n === "verde").length,
+          amarillo: nivels.filter(n => n === "amarillo").length,
+          rojo: nivels.filter(n => n === "rojo").length,
+          gris: nivels.filter(n => n === "gris").length,
+          no_aplica: nivels.filter(n => n === "no_aplica").length,
+        };
+        const nivelDe = (sec: string, k: string): string => parsed?.[sec]?.[k]?.nivel ?? "gris";
+        const criticos = [
+          parsed?.coherencia_datos_conclusiones?.coherencia_global_datos_conclusiones?.nivel ?? "gris",
+          nivelDe("escrutinio_metodologico_y_estadistico", "controles_y_confusores"),
+          nivelDe("escrutinio_metodologico_y_estadistico", "senales_de_p_hacking"),
+          nivelDe("transparencia_y_datos", "reporte_selectivo_de_resultados"),
+          nivelDe("epistemologia", "salto_causal_y_extrapolacion"),
+        ];
+        const rojosCriticos = criticos.filter(n => n === "rojo").length;
+        const evaluables = conteos.verde + conteos.amarillo + conteos.rojo;
+        const financiacionRoja = nivelDe("sesgos_e_incentivos", "financiacion_y_conflictos") === "rojo";
+
+        let nivel: string;
+        let regla: string;
+        if (evaluables < 6) {
+          nivel = "insuficiente";
+          regla = `Solo ${evaluables} criterios evaluables (el resto gris/no aplica): el documento no aporta información suficiente para un juicio.`;
+        } else if (rojosCriticos >= 1 || conteos.rojo >= 3) {
+          nivel = "debil";
+          regla = rojosCriticos >= 1
+            ? `${rojosCriticos} criterio(s) crítico(s) en rojo.`
+            : `${conteos.rojo} criterios en rojo.`;
+        } else if (conteos.rojo >= 1 || conteos.amarillo >= 3) {
+          nivel = "con_reservas";
+          regla = conteos.rojo >= 1 ? `${conteos.rojo} criterio en rojo (no crítico).` : `${conteos.amarillo} criterios en amarillo.`;
+        } else {
+          nivel = "solido";
+          regla = "Sin rojos y pocos amarillos en lo evaluable.";
+        }
+        // Los conflictos de interés no invalidan por sí solos, pero rebajan un
+        // "sólido" a "con reservas": obligan a leer con el incentivo en mente.
+        if (financiacionRoja && nivel === "solido") {
+          nivel = "con_reservas";
+          regla = "Conflicto de interés / financiación con bandera roja: cautela pese al resto.";
+        }
+        parsed.veredicto_calculado = { nivel, conteos, regla_aplicada: regla };
+      } catch (e) {
+        console.error("[Auditor] No se pudo calcular el veredicto:", e);
+      }
+      parsed.schema_version = 2;
 
       if (supabase && req.user?.role !== "admin") {
         const { data: limits } = await supabase
