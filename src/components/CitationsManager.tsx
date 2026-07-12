@@ -46,6 +46,9 @@ interface CitationsManagerProps {
   onNavigateToPage?: (page: number | string) => void;
   onNavigateToCitation?: (note: CitationNote) => void;
   currentPage?: number | string;
+  // Resuelve una referencia para MOSTRARLA (EPUB: ancla "sN:oM" → nº de
+  // página real). Sin ella, la referencia se muestra cruda.
+  resolvePageLabel?: (ref: number | string) => string;
 }
 
 const ALL_POSSIBLE_COLORS: ColorDefinition[] = [
@@ -102,7 +105,14 @@ function sortByPageAndTimestamp(list: CitationNote[]): CitationNote[] {
   });
 }
 
-export function CitationsManager({ documentId, notes, activePalette, savePalette, saveNotes, onClose, onNavigateToPage, onNavigateToCitation, currentPage }: CitationsManagerProps) {
+export function CitationsManager({ documentId, notes, activePalette, savePalette, saveNotes, onClose, onNavigateToPage, onNavigateToCitation, currentPage, resolvePageLabel }: CitationsManagerProps) {
+  // Etiqueta de página a mostrar: resuelta (EPUB) o cruda. Oculta las anclas
+  // topológicas "sN:oM" que no aporten un número.
+  const pageLabelOf = (ref: number | string | undefined): string | null => {
+    if (ref === undefined || ref === null || String(ref).trim() === '') return null;
+    if (/^s\d+:o\d+$/.test(String(ref))) return resolvePageLabel ? resolvePageLabel(ref) : null;
+    return String(ref);
+  };
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
   // documentId "propietario" de la nota que se está editando: el del libro
@@ -888,7 +898,7 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
                       >
                          {note.content}
                       </ReactMarkdown>
-                      {note.pageReference && (
+                      {note.pageReference && pageLabelOf(note.pageReference) && (
                          <>
                             {' '}
                             <button
@@ -903,7 +913,7 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
                               }}
                               className="text-[10px] sm:text-xs text-[#00558F]/90 hover:text-[#00558F] font-semibold hover:underline inline"
                             >
-                               (pag.{note.pageReference})
+                               (pag.{pageLabelOf(note.pageReference)})
                             </button>
                          </>
                       )}
@@ -1039,7 +1049,11 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
                 >
                   {note.content}
                 </ReactMarkdown>
-                {note.pageReference && <span className="text-[10px] sm:text-xs text-[#00558F]/70 font-semibold"> (pag.{note.pageReference})</span>}
+                {/* Citas de RECURSO: su ancla EPUB (si la tuviera) es de otro
+                    documento, no del libro; solo mostramos refs numéricas. */}
+                {note.pageReference && !/^s\d+:o\d+$/.test(String(note.pageReference)) && (
+                  <span className="text-[10px] sm:text-xs text-[#00558F]/70 font-semibold"> (pag.{note.pageReference})</span>
+                )}
               </div>
             </div>
           )}

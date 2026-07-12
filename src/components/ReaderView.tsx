@@ -2178,6 +2178,16 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setPendingHighlight(null);
   }, [pendingHighlight, activeType, highlightCurrentPhrase, clearPersistentHighlights]);
 
+  // Resuelve una referencia de página para MOSTRARLA. En EPUB v2 las citas
+  // guardan el ancla "sN:oM" (navegación exacta); aquí se convierte al nº de
+  // página FIJA por palabras — el mismo que muestra el contador del lector.
+  // Otras refs (números de PDF, tiempos de media) se devuelven tal cual.
+  const resolvePageLabel = useCallback((ref: number | string): string => {
+    const anchor = parseAnchor(ref);
+    if (anchor && epubReaderRef.current) return String(epubReaderRef.current.pageOfAnchor(anchor));
+    return String(ref);
+  }, []);
+
   // Cita → texto de la cita (quote directo o el contenido sin el "> " del
   // markdown de blockquote, para citas viejas creadas antes del campo quote).
   const citationQuoteOf = useCallback((n: { quote?: string; content?: string }): string => {
@@ -3091,6 +3101,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
             editNote={editDocumentNote}
             deleteNote={deleteDocumentNote}
             currentPage={currentPage}
+            resolvePageLabel={activeType === 'epub' ? resolvePageLabel : undefined}
             onNavigateToPage={(page) => setTargetPage({ page: Number(page), t: Date.now() })}
             onNavigateToCitation={(note) => {
               const colorDef = activePalette.find(c => c.id === note.color);
@@ -3509,6 +3520,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                activePalette={activePalette}
                savePalette={savePalette}
                saveNotes={saveDocumentNotes}
+               resolvePageLabel={activeType === 'epub' ? resolvePageLabel : undefined}
                onClose={() => setActiveTab('reader')}
                onNavigateToPage={(page) => {
                  setTargetPage({ page: Number(page), t: Date.now() });

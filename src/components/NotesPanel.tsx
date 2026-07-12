@@ -49,9 +49,12 @@ interface NotesPanelProps {
   // true cuando el "documento" es un medio (video/audio): pageReference son
   // SEGUNDOS y se muestran como tiempo H:MM:SS en vez de "pág. N".
   timeReferences?: boolean;
+  // Resuelve una referencia de página para MOSTRARLA (EPUB: convierte el ancla
+  // "sN:oM" en el nº de página real). Si no se pasa, se muestra la ref cruda.
+  resolvePageLabel?: (ref: number | string) => string;
 }
 
-export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, deleteNote, onNavigateToPage, onNavigateToCitation, onRecolorCitation, currentPage, timeReferences = false }: NotesPanelProps) {
+export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, deleteNote, onNavigateToPage, onNavigateToCitation, onRecolorCitation, currentPage, timeReferences = false, resolvePageLabel }: NotesPanelProps) {
   // Formatea una referencia para mostrarla: página tal cual, o segundos como
   // tiempo H:MM:SS (p. ej. 34 → "0:00:34") cuando el documento es un medio.
   const formatRef = (v: number | string | undefined): string => {
@@ -399,7 +402,7 @@ export function NotesPanel({ documentId, notes, addNote, addBookmark, editNote, 
                               {timeReferences
                                 ? `(${formatRef(note.pageReference)})`
                                 : /^s\d+:o\d+$/.test(String(note.pageReference))
-                                  ? '(ver)' /* ancla topológica EPUB: el crudo "sN:oM" no aporta */
+                                  ? (resolvePageLabel ? `(pag.${resolvePageLabel(note.pageReference!)})` : '(ver)')
                                   : `(pag.${note.pageReference})`}
                             </button>
                           </>

@@ -54,6 +54,9 @@ export interface EpubReaderHandle {
   clearHighlights(includePersistent: boolean): void;
   pageBy(delta: number): void;           // salto de página (hoja) anterior/siguiente
   scrollByViewport(delta: number): void; // salto manual de página del TTS
+  // Nº de página FIJA (por palabras) de un ancla — para mostrar en citas,
+  // notas e índice el mismo número que el contador del lector.
+  pageOfAnchor(a: EpubAnchor): number;
   // Texto que SIGUE al último resaltado TTS (dominio del texto, no píxeles):
   // el avance automático del audiolibro continúa exactamente donde quedó,
   // sin repetir ni saltarse nada aunque un párrafo ocupe varias pantallas.
@@ -990,6 +993,20 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     setViewMode(next); // el efecto [viewMode] reconstruye y restaura el ancla
   }, [getCurrentAnchor]);
 
+  // Nº de página (por palabras) de un ancla {s,o}: palabras de las secciones
+  // anteriores + palabras hasta el offset en la sección actual, dividido por
+  // WORDS_PER_PAGE. Es el MISMO criterio que el contador y las hojas.
+  const pageOfAnchor = useCallback((a: EpubAnchor): number => {
+    const secs = sectionsRef.current;
+    if (!secs || secs.length === 0) return 1;
+    let words = 0;
+    for (let i = 0; i < a.s && i < secs.length; i++) words += secs[i].words;
+    const sec = secs[a.s];
+    if (sec) words += countWords(sec.text.slice(0, a.o));
+    const total = Math.max(1, Math.ceil(secs.reduce((acc, s) => acc + s.words, 0) / WORDS_PER_PAGE));
+    return Math.max(1, Math.min(total, Math.floor(words / WORDS_PER_PAGE) + 1));
+  }, []);
+
   useImperativeHandle(ref, (): EpubReaderHandle => ({
     getVisibleText,
     getFullText,
@@ -1000,8 +1017,9 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
     clearHighlights,
     pageBy,
     scrollByViewport,
+    pageOfAnchor,
     getContinuationText,
-  }), [getVisibleText, getFullText, getCurrentAnchor, goToAnchor, goToText, highlightText, clearHighlights, pageBy, scrollByViewport, getContinuationText]);
+  }), [getVisibleText, getFullText, getCurrentAnchor, goToAnchor, goToText, highlightText, clearHighlights, pageBy, scrollByViewport, pageOfAnchor, getContinuationText]);
 
   // ----- Scroll → página actual + onRelocate ---------------------------------
   const relocateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1279,21 +1297,29 @@ export const EpubHtmlReader = forwardRef<EpubReaderHandle, EpubHtmlReaderProps>(
                     </div>
                     <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
                       {toc.length === 0 && <p className="text-sm text-slate-400 text-center mt-4">Este libro no tiene índice.</p>}
-                      {toc.map((item, i) => (
+                      {toc.map((item, i) => {
+                        // Página (por palabras) del inicio del capítulo, para
+                        // mostrarla a la derecha como en un índice impreso.
+                        const dest = resolvePath((item.href || '').split('#')[0], '');
+                        const s = spineHrefsRef.current.findIndex(h => h === dest || h.endsWith('/' + dest) || dest.endsWith('/' + h));
+                        const pageLabel = s >= 0 ? pageOfAnchor({ s, o: 0 }) : null;
+                        return (
                         <button
                           key={i}
                           onClick={() => {
-                            const dest = resolvePath((item.href || '').split('#')[0], '');
-                            const s = spineHrefsRef.current.findIndex(h => h === dest || h.endsWith('/' + dest) || dest.endsWith('/' + h));
                             if (s >= 0) goToAnchor({ s, o: 0 });
                             setShowToc(false);
                           }}
-                          className={cn('block w-full text-left text-sm text-slate-700 hover:text-[var(--primary)] py-2 px-1 rounded hover:bg-[var(--primary)]/5 transition-colors truncate', item.sub && 'pl-5 text-[13px]')}
+                          className={cn('flex items-center gap-2 w-full text-left text-sm text-slate-700 hover:text-[var(--primary)] py-2 px-1 rounded hover:bg-[var(--primary)]/5 transition-colors', item.sub && 'pl-5 text-[13px]')}
                           title={item.label}
                         >
-                          {item.label}
+                          <span className="truncate flex-1 min-w-0">{item.label}</span>
+                          {pageLabel !== null && (
+                            <span className="shrink-0 text-[11px] font-mono tabular-nums text-slate-400">{pageLabel}</span>
+                          )}
                         </button>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
