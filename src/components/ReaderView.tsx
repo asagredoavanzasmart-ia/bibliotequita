@@ -140,6 +140,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     loaded: notesLoaded,
     activePalette,
     savePalette,
+    flushPaletteNow,
     saveNotes: saveDocumentNotes,
     addCitation,
     addNote: addDocumentNote,
@@ -2538,8 +2539,15 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       const selection = window.getSelection();
       if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
         const text = selection.toString().trim();
-        if (text) {
-          const range = selection.getRangeAt(0);
+        const range = selection.getRangeAt(0);
+        // La barra de citas SOLO debe aparecer al seleccionar DENTRO del texto
+        // del lector (libro o recurso), no en cualquier texto de la interfaz
+        // (menús, paneles, notas). Se comprueba que la selección viva dentro
+        // del contenedor marcado con data-reader-surface.
+        const anchor = range.commonAncestorContainer;
+        const anchorEl = anchor instanceof HTMLElement ? anchor : anchor.parentElement;
+        const insideReader = !!anchorEl?.closest('[data-reader-surface]');
+        if (text && insideReader) {
           const rect = range.getBoundingClientRect();
           setSelectedText(text);
           setSelectionRect({ top: rect.top, left: rect.left, width: rect.width, bottom: rect.bottom });
@@ -2914,8 +2922,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                    {/* Fila de colores: resalta la frase actual y crea la nota en silencio.
                        shrink-0: nunca se comprime ni queda oculta por el panel de config.
                        En móvil horizontal se oculta aquí: se muestra como columna lateral
-                       fija a la izquierda de la pantalla (ver bloque tras el widget). */}
-                   {!isMobileLandscape && (
+                       fija a la izquierda de la pantalla (ver bloque tras el widget).
+                       En un RECURSO no se muestran los colores: es solo lector + voz. */}
+                   {!isMobileLandscape && !activeResource && (
                       <div className="flex items-center justify-center gap-3 mb-2 shrink-0">
                          {activePalette.slice(0, 5).map((colorItem) => (
                             <button
@@ -3066,7 +3075,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               pl-16 en horizontal para empezar justo después de la columna,
               sin que los círculos tapen la paginación. Los círculos (máx. 5)
               se reparten el alto disponible con tamaño flexible (clamp). */}
-          {showTtsWidget && isMobileLandscape && (
+          {showTtsWidget && isMobileLandscape && !activeResource && (
              <div onClick={(e) => e.stopPropagation()} className="absolute top-0 left-0 bottom-0 z-40 w-16 flex flex-col items-center justify-evenly gap-2 py-2 px-2 bg-[var(--bg-card)]/95 backdrop-blur-md border-r border-[var(--border-card)]">
                 {activePalette.slice(0, 5).map((colorItem) => (
                    <button
@@ -3403,7 +3412,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
          ref={containerRef}
          className={cn("flex-1 relative overflow-hidden flex", isPortrait ? "flex-col" : "flex-row", (isFullscreen && !showControls) ? "bg-[#e2e8f0]" : "bg-[#e2e8f0]")}
       >
-         {selectionRect && selectedText && (
+         {/* En un RECURSO no se ofrecen colores de cita (solo lector + voz):
+             la barra únicamente aparece si hay al menos una acción disponible
+             (colores en libros, o "leer en voz alta" cuando el TTS está libre). */}
+         {selectionRect && selectedText && (!activeResource || ttsStatus === 'idle' || ttsStatus === 'error') && (
             <div
               className="fixed z-[1000] bg-slate-800 text-white rounded-lg shadow-2xl flex items-center overflow-hidden animate-in fade-in zoom-in-95 duration-100"
               style={{
@@ -3415,7 +3427,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               onMouseDown={e => e.preventDefault()}
             >
                <div className="flex px-4 py-2.5 gap-3 items-center">
-                  {activePalette.map((colorItem) => (
+                  {!activeResource && activePalette.map((colorItem) => (
                      <button
                        key={colorItem.id}
                        onClick={() => {
@@ -3460,7 +3472,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
          {notesPosition === 'right' ? (
              <>
-             <div style={readerPaneStyle2} className="relative z-10 min-w-0 min-h-0">{renderReader()}</div>
+             <div data-reader-surface style={readerPaneStyle2} className="relative z-10 min-w-0 min-h-0">{renderReader()}</div>
              {showNotes && (
                  <>
                      <div 
@@ -3486,7 +3498,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                      </div>
                  </>
              )}
-             <div style={readerPaneStyle2} className="relative z-10 min-w-0 min-h-0">{renderReader()}</div>
+             <div data-reader-surface style={readerPaneStyle2} className="relative z-10 min-w-0 min-h-0">{renderReader()}</div>
              </>
          )}
 
@@ -3519,6 +3531,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                notes={documentNotes}
                activePalette={activePalette}
                savePalette={savePalette}
+               flushPaletteNow={flushPaletteNow}
                saveNotes={saveDocumentNotes}
                resolvePageLabel={activeType === 'epub' ? resolvePageLabel : undefined}
                onClose={() => setActiveTab('reader')}

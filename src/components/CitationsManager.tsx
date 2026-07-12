@@ -41,6 +41,9 @@ interface CitationsManagerProps {
   notes: CitationNote[];
   activePalette: ColorDefinition[];
   savePalette: (updater: ColorDefinition[] | ((prev: ColorDefinition[]) => ColorDefinition[])) => void;
+  // Fuerza el guardado inmediato de la paleta (al cerrar el modal de colores),
+  // sin esperar al debounce.
+  flushPaletteNow?: () => void;
   saveNotes: (updater: CitationNote[] | ((prev: CitationNote[]) => CitationNote[])) => void;
   onClose: () => void;
   onNavigateToPage?: (page: number | string) => void;
@@ -105,7 +108,9 @@ function sortByPageAndTimestamp(list: CitationNote[]): CitationNote[] {
   });
 }
 
-export function CitationsManager({ documentId, notes, activePalette, savePalette, saveNotes, onClose, onNavigateToPage, onNavigateToCitation, currentPage, resolvePageLabel }: CitationsManagerProps) {
+export function CitationsManager({ documentId, notes, activePalette, savePalette, flushPaletteNow, saveNotes, onClose, onNavigateToPage, onNavigateToCitation, currentPage, resolvePageLabel }: CitationsManagerProps) {
+  // Cerrar el modal de colores confirmando el guardado inmediato de la paleta.
+  const closeConfigModal = () => { setShowConfigModal(false); flushPaletteNow?.(); };
   // Etiqueta de página a mostrar: resuelta (EPUB) o cruda. Oculta las anclas
   // topológicas "sN:oM" que no aporten un número.
   const pageLabelOf = (ref: number | string | undefined): string | null => {
@@ -1834,7 +1839,7 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
                      <Settings2 className="w-4 h-4 text-[#00558F]" />
                      <h3 className="font-bold text-slate-800 text-sm">Configuración de Paleta de Colores</h3>
                   </div>
-                  <button onClick={() => setShowConfigModal(false)} className="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
+                  <button onClick={closeConfigModal} className="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
                      <X className="w-4 h-4" />
                   </button>
                </div>
@@ -1901,7 +1906,7 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
 
                <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
                   <button
-                    onClick={() => setShowConfigModal(false)}
+                    onClick={closeConfigModal}
                     className="text-xs font-bold bg-[#00558F] text-white px-4 py-2 rounded-xl hover:bg-[#004d80] transition-colors shadow-sm"
                   >
                      Listo

@@ -121,14 +121,25 @@ export function useDocumentNotes(documentId: string) {
   // pierde un cambio reciente por cerrar el panel rápido).
   const savePaletteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingPaletteRef = useRef<ColorDefinition[] | null>(null);
-  const flushPalette = useCallback((palette: ColorDefinition[]) => {
+  const flushPalette = useCallback(async (palette: ColorDefinition[]) => {
     pendingPaletteRef.current = null;
-    fetch(`/api/documents/${documentId}/settings`, {
-      method: 'PUT',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ colorPalette: palette }),
-    }).catch(err => console.error('No se pudo guardar la paleta de colores:', err));
+    try {
+      const res = await fetch(`/api/documents/${documentId}/settings`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ colorPalette: palette }),
+      });
+      // fetch NO rechaza en 4xx/5xx: un fallo del servidor (columna, RLS,
+      // sesión) llegaba como respuesta OK-a-nivel-promesa y se perdía en
+      // silencio ("los colores no se guardan"). Ahora se detecta y se avisa.
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        console.error(`No se pudo guardar la paleta (HTTP ${res.status}):`, body.slice(0, 300));
+      }
+    } catch (err) {
+      console.error('Error de red al guardar la paleta de colores:', err);
+    }
   }, [documentId]);
 
   const savePalette = useCallback((updater: ColorDefinition[] | ((prev: ColorDefinition[]) => ColorDefinition[])) => {
@@ -136,9 +147,20 @@ export function useDocumentNotes(documentId: string) {
       const updated = typeof updater === 'function' ? updater(prev) : updater;
       pendingPaletteRef.current = updated;
       if (savePaletteTimeoutRef.current) clearTimeout(savePaletteTimeoutRef.current);
-      savePaletteTimeoutRef.current = setTimeout(() => flushPalette(updated), 400);
+      // Debounce corto: agrupa el tecleo del nombre sin arriesgar perder el
+      // cambio si el usuario cierra el modal enseguida (además hay flush
+      // explícito en flushPaletteNow y al desmontar).
+      savePaletteTimeoutRef.current = setTimeout(() => flushPalette(updated), 250);
       return updated;
     });
+  }, [flushPalette]);
+
+  // Fuerza el guardado inmediato de la paleta pendiente (p. ej. al cerrar el
+  // modal de configuración de colores): garantiza que el cambio se escriba
+  // sin esperar al debounce ni depender del desmontaje.
+  const flushPaletteNow = useCallback(() => {
+    if (savePaletteTimeoutRef.current) { clearTimeout(savePaletteTimeoutRef.current); savePaletteTimeoutRef.current = null; }
+    if (pendingPaletteRef.current) flushPalette(pendingPaletteRef.current);
   }, [flushPalette]);
 
   useEffect(() => () => {
@@ -210,6 +232,7 @@ export function useDocumentNotes(documentId: string) {
     loaded,
     saveNotes,
     savePalette,
+    flushPaletteNow,
     addCitation,
     addNote,
     addBookmark,
