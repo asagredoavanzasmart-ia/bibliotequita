@@ -632,7 +632,10 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
       const text = await res.text();
       let data: any;
       try { data = JSON.parse(text); } catch { throw new Error(`Respuesta inesperada del servidor: ${text.slice(0, 200)}`); }
-      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      // El servidor manda `details` con el mensaje real (p.ej. el error crudo
+      // de la API de Gemini) además de `error` (genérico, para mostrar en la
+      // UI); antes se descartaba `details` y el usuario nunca veía la causa.
+      if (!res.ok) throw new Error(data.details ? `${data.error} — ${data.details}` : (data.error || `Error ${res.status}`));
       setResult(data.result);
       saveAuditResult(data.result);
     } catch (e: any) {
