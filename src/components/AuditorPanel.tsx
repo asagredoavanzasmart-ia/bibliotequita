@@ -25,10 +25,39 @@ import { exportToDocx, exportToPrintPdf } from '../utils/exportUtils';
 export type NivelCriterio = 'verde' | 'amarillo' | 'rojo' | 'gris' | 'no_aplica';
 type NivelAfirmacion = 'verde' | 'amarillo' | 'rojo' | 'gris';
 
-interface Criterio { analisis: string; nivel: NivelCriterio; evidencia: string }
-interface Afirmacion { afirmacion: string; soporte_en_los_datos: string; nivel: NivelAfirmacion }
+interface Criterio { analisis: string; nivel: NivelCriterio; evidencia: string; regla_automatica?: string }
+// v3: el nivel de una afirmación NO lo declara la IA — lo deriva el servidor
+// como el peor de sus tres dimensiones (apoyo / seguridad independiente,
+// derivada del anclaje / comprensividad). Modelo de Susan Haack: la
+// justificación no es aditiva, una afirmación vale lo que su eslabón más débil.
+type AnclajeEvidencia =
+  | 'datos_propios_reportados' | 'estudio_empirico_citado' | 'obra_teorica_citada'
+  | 'cita_de_cita' | 'interpretacion_del_autor' | 'sin_anclaje';
+interface Afirmacion {
+  afirmacion: string;
+  soporte_en_los_datos: string;
+  nivel: NivelAfirmacion;
+  es_central?: boolean;
+  anclaje_de_la_evidencia?: AnclajeEvidencia;
+  apoyo?: NivelAfirmacion;
+  comprensividad?: NivelAfirmacion;
+  seguridad_independiente?: NivelAfirmacion;
+  regla_automatica?: string;
+}
+interface CriterioDiseno { familia: string; nombre: string; analisis: string; nivel: NivelCriterio; evidencia: string; regla_automatica?: string }
 
 type CriterioMap = Record<string, Criterio>;
+
+// Etiquetas de anclaje: las "sin suelo" (ámbar) son las que el servidor
+// castiga automáticamente — circularidad y lavado de citas.
+const ANCLAJE_LABEL: Record<AnclajeEvidencia, { texto: string; alerta: boolean }> = {
+  datos_propios_reportados: { texto: 'datos del propio estudio', alerta: false },
+  estudio_empirico_citado: { texto: 'estudio empírico citado', alerta: false },
+  obra_teorica_citada: { texto: 'obra teórica citada como prueba empírica', alerta: true },
+  cita_de_cita: { texto: 'cita de cita: la cadena no toca datos', alerta: true },
+  interpretacion_del_autor: { texto: 'solo la interpretación del autor', alerta: true },
+  sin_anclaje: { texto: 'sin respaldo localizable', alerta: true },
+};
 
 interface AuditResultV2 {
   schema_version: 2;
@@ -39,10 +68,18 @@ interface AuditResultV2 {
     conteos: { verde: number; amarillo: number; rojo: number; gris: number; no_aplica: number };
     regla_aplicada: string;
   };
+  criterios_del_diseno?: CriterioDiseno[];
+  reglas_automaticas_aplicadas?: string[];
   identificacion_y_tipologia: {
     tipo_de_documento: string;
     pregunta_o_afirmacion_central: string;
     poblacion_y_muestra: string;
+    n_total?: number;
+    subgrupos_analiticos?: { etiqueta: string; n: number }[];
+    hace_comparaciones_entre_subgrupos?: boolean;
+    n_weird?: number;
+    n_no_weird?: number;
+    afirma_generalidad_transcultural?: boolean;
     adecuacion_del_diseno: Criterio;
   };
   coherencia_datos_conclusiones: {
@@ -104,6 +141,7 @@ const AUDIT_SECTIONS: SeccionDef[] = [
       { key: 'lenguaje_cargado_y_normativo', label: 'Lenguaje cargado y normativo' },
       { key: 'salto_del_es_al_debe', label: 'Salto del «es» al «debe»' },
       { key: 'encuadre_y_alternativas_silenciadas', label: 'Encuadre y alternativas silenciadas' },
+      { key: 'asimetria_de_exigencia_probatoria', label: 'Asimetría de exigencia probatoria' },
     ],
   },
   {
@@ -113,17 +151,21 @@ const AUDIT_SECTIONS: SeccionDef[] = [
       { key: 'calidad_de_fuentes_en_afirmaciones_clave', label: 'Calidad de fuentes en afirmaciones clave' },
       { key: 'autocitacion_y_endogamia', label: 'Autocitación y endogamia' },
       { key: 'afirmaciones_fuertes_sin_fuente', label: 'Afirmaciones fuertes sin fuente' },
+      { key: 'inflacion_atributiva', label: 'Inflación atributiva («demostró» vs «argumenta»)' },
     ],
   },
   {
     key: 'epistemologia', titulo: 'Epistemología', Icon: Shield,
     criterios: [
-      { key: 'falsabilidad', label: 'Falsabilidad (riesgo popperiano)' },
+      { key: 'falsabilidad', label: 'Falsabilidad (¿qué observación la refutaría?)' },
       { key: 'explicaciones_alternativas', label: 'Explicaciones alternativas' },
       { key: 'hipotesis_ad_hoc', label: 'Hipótesis ad hoc' },
-      { key: 'validez_de_constructo', label: 'Validez de constructo' },
-      { key: 'salto_causal_y_extrapolacion', label: 'Salto causal y extrapolación', critico: true },
-      { key: 'corroboracion_externa', label: 'Corroboración externa' },
+      { key: 'validez_de_constructo', label: 'Definición y validez de constructo' },
+      { key: 'salto_causal_y_extrapolacion', label: 'Salto causal, transporte y factores de soporte', critico: true },
+      { key: 'corroboracion_externa', label: 'Corroboración externa y tasa base del campo' },
+      { key: 'mecanismo_medido_o_narrado', label: '¿Mecanismo medido o narrado?', critico: true },
+      { key: 'compatibilidad_con_el_conocimiento_establecido', label: 'Compatibilidad con el conocimiento establecido' },
+      { key: 'modelo_causal_explicito', label: 'Modelo causal explícito' },
     ],
   },
 ];
@@ -169,6 +211,14 @@ function CriterioRow({ label, criterio, critico }: { label: string; criterio?: C
         <NivelIcon nivel={nivel} />
         <span>{label}</span>
         {critico && <span className="text-[9px] font-black uppercase tracking-wider text-rose-500 bg-rose-50 border border-rose-200 px-1.5 py-px rounded">crítico</span>}
+        {criterio?.regla_automatica && (
+          <span
+            className="text-[9px] font-bold uppercase bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded"
+            title="Nivel impuesto por una regla determinista del sistema (aritmética muestral), no por juicio de la IA."
+          >
+            ⚙ Regla automática
+          </span>
+        )}
         <span className={cn('text-[10px] font-semibold', NIVEL_META[nivel].text)}>· {NIVEL_META[nivel].label}</span>
       </p>
       <p className="text-sm text-slate-700 leading-relaxed">{criterio?.analisis || '—'}</p>
@@ -204,6 +254,12 @@ function AuditorV2Result({ result }: { result: AuditResultV2 }) {
   const ver = result.veredicto_calculado;
   const vMeta = ver ? VEREDICTO_META[ver.nivel] : null;
   const sint = result.sintesis_critica;
+  // Misma condición que la regla dura del servidor (applyHardRules), para que
+  // el chip y el rojo automático nunca se contradigan.
+  const nW = tipo?.n_weird ?? 0;
+  const nNW = tipo?.n_no_weird ?? 0;
+  const weirdAlerta = tipo?.afirma_generalidad_transcultural === true
+    && (nNW === 0 ? nW > 0 : nW / nNW > 2);
 
   return (
     <div className="space-y-5">
@@ -254,6 +310,31 @@ function AuditorV2Result({ result }: { result: AuditResultV2 }) {
           )}
         </div>
       )}
+      {/* Composición de la muestra: es lo que alimenta las reglas duras, así
+          que se muestra explícito para que el lector pueda comprobarlas. */}
+      {(tipo?.subgrupos_analiticos?.length || weirdAlerta) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {!!tipo?.n_total && (
+            <span className="text-[11px] font-mono font-bold bg-slate-100 text-slate-600 border border-slate-200 px-2 py-0.5 rounded">n={tipo.n_total}</span>
+          )}
+          {(tipo?.subgrupos_analiticos || []).map((s, i) => (
+            <span key={i} className={cn(
+              'text-[11px] font-mono px-2 py-0.5 rounded border',
+              s.n > 0 && s.n < 12 ? 'bg-amber-50 text-amber-700 border-amber-200 font-bold' : 'bg-slate-50 text-slate-500 border-slate-200'
+            )}>
+              {s.etiqueta} n={s.n > 0 ? s.n : '?'}
+            </span>
+          ))}
+          {weirdAlerta && (
+            <span
+              className="text-[11px] font-mono font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded"
+              title="Conclusiones con pretensión transcultural sobre una muestra predominantemente occidental (Henrich, Heine & Norenzayan 2010)."
+            >
+              ⚠ WEIRD {tipo?.n_weird ?? 0}:{tipo?.n_no_weird ?? 0}
+            </span>
+          )}
+        </div>
+      )}
       {tipo?.adecuacion_del_diseno && (
         <div className="border border-slate-200 rounded-xl px-4 py-2 bg-white">
           <CriterioRow label="Adecuación del diseño a la pregunta" criterio={tipo.adecuacion_del_diseno} />
@@ -272,11 +353,34 @@ function AuditorV2Result({ result }: { result: AuditResultV2 }) {
               <div className="flex items-start gap-2.5">
                 <span className={cn('mt-1.5 w-2.5 h-2.5 rounded-full shrink-0', afirmacionDot(a.nivel))} />
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-slate-800 leading-snug">{a.afirmacion}</p>
+                  <p className="text-sm font-semibold text-slate-800 leading-snug">
+                    {a.es_central && (
+                      <span className="mr-1.5 text-[9px] font-black uppercase tracking-wider text-[#00558F] bg-[#00558F]/10 border border-[#00558F]/20 px-1.5 py-px rounded align-middle">
+                        central
+                      </span>
+                    )}
+                    {a.afirmacion}
+                  </p>
                   <p className="text-xs text-slate-600 leading-relaxed mt-1">
                     <span className="font-bold text-slate-400 uppercase tracking-wider text-[10px]">Soporte en los datos: </span>
                     {a.soporte_en_los_datos}
                   </p>
+                  {/* Dónde toca el suelo la evidencia: lo ámbar es lo que el
+                      servidor castiga solo (circularidad / lavado de citas). */}
+                  {a.anclaje_de_la_evidencia && ANCLAJE_LABEL[a.anclaje_de_la_evidencia] && (
+                    <span
+                      className={cn(
+                        'inline-block mt-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded border',
+                        ANCLAJE_LABEL[a.anclaje_de_la_evidencia].alerta
+                          ? 'bg-amber-50 text-amber-700 border-amber-200'
+                          : 'bg-slate-50 text-slate-500 border-slate-200'
+                      )}
+                      title="De dónde proviene, en última instancia, el respaldo de esta afirmación."
+                    >
+                      {ANCLAJE_LABEL[a.anclaje_de_la_evidencia].alerta ? '⚠ ' : ''}
+                      {ANCLAJE_LABEL[a.anclaje_de_la_evidencia].texto}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -295,6 +399,25 @@ function AuditorV2Result({ result }: { result: AuditResultV2 }) {
       {AUDIT_SECTIONS.map(def => (
         <SeccionCard key={def.key as string} def={def} data={result[def.key] as CriterioMap} />
       ))}
+
+      {/* Criterios propios del diseño: los exige el tipo de estudio concreto
+          (un cualitativo no se audita con la vara de un ensayo clínico). */}
+      {!!result.criterios_del_diseno?.length && (
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 bg-slate-50 border-b border-slate-200 font-bold text-slate-700 text-sm">
+            <ListChecks className="w-4 h-4 text-[#00558F]" />
+            Criterios propios de este diseño
+            <span className="ml-auto text-[10px] font-mono font-normal text-slate-400 uppercase tracking-wider">
+              {result.criterios_del_diseno[0]?.familia?.replace(/_/g, ' ')}
+            </span>
+          </div>
+          <div className="px-4 py-2 bg-white divide-y divide-slate-100">
+            {result.criterios_del_diseno.map((c, i) => (
+              <CriterioRow key={i} label={c.nombre} criterio={c} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Síntesis crítica — declarativa, SIN recomendaciones */}
       <div className="border-2 border-slate-300 rounded-2xl overflow-hidden">
@@ -427,15 +550,28 @@ function buildMarkdownV2(r: AuditResultV2): string {
   const t = r.identificacion_y_tipologia;
   lines.push(`\n## Identificación\n- **Tipo:** ${t?.tipo_de_documento || '—'}\n- **Pregunta central:** ${t?.pregunta_o_afirmacion_central || '—'}\n- **Población/muestra:** ${t?.poblacion_y_muestra || '—'}`);
   lines.push(crit({ x: t?.adecuacion_del_diseno } as any, 'x', 'Adecuación del diseño'));
+  if (t?.subgrupos_analiticos?.length) {
+    lines.push(`- **Subgrupos:** ${t.subgrupos_analiticos.map(s => `${s.etiqueta} n=${s.n > 0 ? s.n : '?'}`).join(' · ')}`);
+  }
   lines.push(`\n## ¿Los datos soportan las conclusiones?`);
   for (const a of r.coherencia_datos_conclusiones?.afirmaciones || []) {
-    lines.push(`- ${em(a.nivel as NivelCriterio)} **${a.afirmacion}**\n  > Soporte: ${a.soporte_en_los_datos}`);
+    const central = a.es_central ? '**[CENTRAL]** ' : '';
+    const anclaje = a.anclaje_de_la_evidencia && ANCLAJE_LABEL[a.anclaje_de_la_evidencia]
+      ? `\n  > Anclaje: ${ANCLAJE_LABEL[a.anclaje_de_la_evidencia].alerta ? '⚠ ' : ''}${ANCLAJE_LABEL[a.anclaje_de_la_evidencia].texto}`
+      : '';
+    lines.push(`- ${em(a.nivel as NivelCriterio)} ${central}**${a.afirmacion}**\n  > Soporte: ${a.soporte_en_los_datos}${anclaje}`);
   }
   lines.push(crit(r.coherencia_datos_conclusiones as any, 'coherencia_global_datos_conclusiones', 'Coherencia global'));
   lines.push(crit(r.coherencia_datos_conclusiones as any, 'spin_y_enfasis', 'Spin y énfasis'));
   for (const def of AUDIT_SECTIONS) {
     lines.push(`\n## ${def.titulo}`);
     for (const c of def.criterios) lines.push(crit(r[def.key] as CriterioMap, c.key, c.label));
+  }
+  if (r.criterios_del_diseno?.length) {
+    lines.push(`\n## Criterios propios de este diseño (${r.criterios_del_diseno[0]?.familia?.replace(/_/g, ' ') || ''})`);
+    for (const c of r.criterios_del_diseno) {
+      lines.push(`- ${em(c.nivel)} **${c.nombre}:** ${c.analisis || '—'}${c.evidencia ? `\n  > ${c.evidencia}` : ''}`);
+    }
   }
   const s = r.sintesis_critica;
   lines.push(`\n## Síntesis crítica`);
