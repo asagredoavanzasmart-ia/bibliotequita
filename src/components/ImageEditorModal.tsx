@@ -108,13 +108,31 @@ export function ImageEditorModal({ file, onConfirm, onCancel }: ImageEditorModal
   const [crop, setCrop] = useState<CropRect | null>(null);
   const [adjustments, setAdjustments] = useState<Adjustments>(NEUTRAL_ADJUSTMENTS);
   const [showAdjustments, setShowAdjustments] = useState(false);
+  // Fallo de carga (formato no soportado, HEIC de iPhone sin decodificar en
+  // este navegador, blob corrupto) o de exportación final (canvas vacío,
+  // toBlob devolviendo null): antes se quedaba muda sin feedback y a veces
+  // el flujo de arriba terminaba subiendo/guardando una portada rota. Ahora
+  // se corta el flujo y se avisa en vez de dejar avanzar algo inválido.
+  const [error, setError] = useState<string | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ mode: 'move' | 'nw' | 'ne' | 'sw' | 'se'; startX: number; startY: number; start: CropRect } | null>(null);
 
   useEffect(() => {
     const url = URL.createObjectURL(file);
     const img = new Image();
-    img.onload = () => setImgEl(img);
+    img.onload = () => {
+      // Algunos navegadores "cargan" un formato no soportado (p. ej. HEIC en
+      // Chrome/Firefox) con dimensiones 0x0 en vez de disparar onerror: sin
+      // este chequeo, el editor seguía adelante con una imagen inexistente.
+      if (img.naturalWidth <= 0 || img.naturalHeight <= 0) {
+        setError('No se pudo leer esta imagen (formato no compatible). Probá con JPG, PNG o WEBP.');
+        return;
+      }
+      setImgEl(img);
+    };
+    img.onerror = () => {
+      setError('No se pudo abrir esta imagen. El archivo puede estar dañado o en un formato no compatible.');
+    };
     img.src = url;
     return () => URL.revokeObjectURL(url);
   }, [file]);
@@ -202,19 +220,26 @@ export function ImageEditorModal({ file, onConfirm, onCancel }: ImageEditorModal
     rotatedCanvas.width = naturalW;
     rotatedCanvas.height = naturalH;
     const rctx = rotatedCanvas.getContext('2d');
-    if (!rctx) return;
+    if (!rctx) { setError('No se pudo procesar la imagen (canvas no disponible en este navegador).'); return; }
     rctx.save();
     rctx.translate(naturalW / 2, naturalH / 2);
     rctx.rotate(totalAngleRad);
     rctx.drawImage(imgEl, -imgEl.naturalWidth / 2, -imgEl.naturalHeight / 2);
     rctx.restore();
 
-    // 2. Recortar según el rectángulo elegido.
+    // 2. Recortar según el rectángulo elegido. Ancho/alto SIEMPRE deben ser
+    // enteros positivos: un canvas 0x0 (redondeo, recorte degenerado) no
+    // lanza error al dibujar ni al exportar — silenciosamente produce una
+    // imagen vacía que el navegador no puede mostrar después (portada rota).
     const outCanvas = document.createElement('canvas');
-    outCanvas.width = Math.round(crop.width * scaleToNatural);
-    outCanvas.height = Math.round(crop.height * scaleToNatural);
+    outCanvas.width = Math.max(1, Math.round(crop.width * scaleToNatural));
+    outCanvas.height = Math.max(1, Math.round(crop.height * scaleToNatural));
+    if (!Number.isFinite(outCanvas.width) || !Number.isFinite(outCanvas.height)) {
+      setError('No se pudo calcular el recorte de la imagen. Probá ajustar el marco de nuevo.');
+      return;
+    }
     const octx = outCanvas.getContext('2d');
-    if (!octx) return;
+    if (!octx) { setError('No se pudo procesar la imagen (canvas no disponible en este navegador).'); return; }
     octx.drawImage(
       rotatedCanvas,
       crop.x * scaleToNatural, crop.y * scaleToNatural,
@@ -230,7 +255,7 @@ export function ImageEditorModal({ file, onConfirm, onCancel }: ImageEditorModal
     filtered.width = outCanvas.width;
     filtered.height = outCanvas.height;
     const fctx = filtered.getContext('2d');
-    if (!fctx) return;
+    if (!fctx) { setError('No se pudo procesar la imagen (canvas no disponible en este navegador).'); return; }
     fctx.filter = `brightness(${adjustments.brightness}%) contrast(${adjustments.contrast}%) saturate(${adjustments.saturation}%)`;
     fctx.drawImage(outCanvas, 0, 0);
 
@@ -258,7 +283,15 @@ export function ImageEditorModal({ file, onConfirm, onCancel }: ImageEditorModal
     applySharpen(fctx, filtered.width, filtered.height, adjustments.sharpen);
 
     filtered.toBlob((blob) => {
-      if (blob) onConfirm(blob, file);
+      // Blob nulo o vacío: el navegador no pudo codificar el resultado (canvas
+      // "tainted", memoria insuficiente, o el propio bug que motivó este
+      // endurecimiento). Antes esto simplemente no hacía nada — el usuario
+      // creía haber confirmado y la portada quedaba rota o sin cambiar.
+      if (!blob || blob.size === 0) {
+        setError('No se pudo generar la imagen final. Probá con otra foto o sin ajustes de color.');
+        return;
+      }
+      onConfirm(blob, file);
     }, 'image/jpeg', 0.9);
   };
 
@@ -275,7 +308,21 @@ export function ImageEditorModal({ file, onConfirm, onCancel }: ImageEditorModal
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          <div className="flex items-center justify-center p-4 bg-slate-900/5">
+          {error && (
+            <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+              <div className="w-12 h-12 rounded-full bg-rose-50 text-rose-500 flex items-center justify-center">
+                <X className="w-6 h-6" />
+              </div>
+              <p className="text-sm font-semibold text-[var(--text-main)]">{error}</p>
+              <button
+                onClick={onCancel}
+                className="mt-1 text-xs font-bold px-4 py-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
+              >
+                Cerrar
+              </button>
+            </div>
+          )}
+          <div className={cn('flex items-center justify-center p-4 bg-slate-900/5', error && 'hidden')}>
             {imgEl && crop && (
               <div
                 ref={stageRef}
@@ -325,7 +372,7 @@ export function ImageEditorModal({ file, onConfirm, onCancel }: ImageEditorModal
             )}
           </div>
 
-          {showAdjustments && (
+          {showAdjustments && !error && (
             <div className="p-4 border-t border-slate-200/50 flex flex-col gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-[var(--text-main)]">Ajustes</span>
@@ -361,7 +408,7 @@ export function ImageEditorModal({ file, onConfirm, onCancel }: ImageEditorModal
           )}
         </div>
 
-        <div className="flex items-center justify-between gap-2 p-4 border-t border-slate-200/50 shrink-0">
+        <div className={cn('flex items-center justify-between gap-2 p-4 border-t border-slate-200/50 shrink-0', error && 'hidden')}>
           <button onClick={handleRotate90} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors">
             <RotateCw className="w-4 h-4" /> Rotar
           </button>
