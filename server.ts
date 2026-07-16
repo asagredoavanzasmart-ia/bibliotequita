@@ -320,6 +320,105 @@ async function isSafePublicUrl(rawUrl: string): Promise<{ ok: true; url: URL } |
   return { ok: true, url: parsed };
 }
 
+// --- Auditor v3: reglas duras deterministas -------------------------------
+// La aritmética NO se delega al modelo (v2 se la dejó a su juicio y repartía
+// verdes). El modelo solo reporta hechos; aquí se fuerzan las consecuencias.
+// Las reglas solo ESCALAN la gravedad: nunca rebajan un nivel ya peor.
+const NIVEL_RANK: Record<string, number> = { no_aplica: 0, gris: 1, verde: 2, amarillo: 3, rojo: 4 };
+
+// Acumulativa a propósito: dos reglas pueden tocar el mismo criterio y ambas
+// notas deben quedar visibles sin pisarse.
+function escalarCriterio(parsed: any, sec: string, key: string, nivelObjetivo: string, nota: string, slug: string): boolean {
+  const c = parsed?.[sec]?.[key];
+  if (!c || typeof c !== "object") return false;
+  if ((NIVEL_RANK[nivelObjetivo] ?? 0) > (NIVEL_RANK[c.nivel] ?? 0)) c.nivel = nivelObjetivo;
+  const prev = typeof c.analisis === "string" ? c.analisis : "";
+  c.analisis = `[Regla automática] ${nota}\n\n${prev}`.trim();
+  c.regla_automatica = c.regla_automatica ? `${c.regla_automatica},${slug}` : slug;
+  return true;
+}
+
+export function applyHardRules(parsed: any): string[] {
+  const aplicadas: string[] = [];
+  const tipo = parsed?.identificacion_y_tipologia ?? {};
+  const tipoDoc = String(tipo.tipo_de_documento ?? "").toLowerCase();
+  const esCualitativo = /cualitativ|etnogr|entrevista|grupo focal|discurso/.test(tipoDoc);
+  const subgrupos: any[] = Array.isArray(tipo.subgrupos_analiticos) ? tipo.subgrupos_analiticos : [];
+  const compara = tipo.hace_comparaciones_entre_subgrupos === true;
+  const transcultural = tipo.afirma_generalidad_transcultural === true;
+  const nWeird = Number(tipo.n_weird) || 0;
+  const nNoWeird = Number(tipo.n_no_weird) || 0;
+
+  // Regla 1 — Falsa granularidad. SOLO cualitativos: el umbral 12 viene de la
+  // saturación en entrevistas (Guest 2006). Aplicarlo a un brazo de RCT sería
+  // citar una fuente para algo que no sostiene.
+  if (compara && subgrupos.length > 0) {
+    const pequenos = subgrupos.filter(s => Number(s?.n) > 0 && Number(s.n) < 12);
+    const sinN = subgrupos.filter(s => !(Number(s?.n) > 0));
+    if (esCualitativo && pequenos.length > 0) {
+      const detalle = pequenos.map(s => `${s.etiqueta}: n=${s.n}`).join("; ");
+      if (escalarCriterio(parsed, "epistemologia", "salto_causal_y_extrapolacion", "rojo",
+        `Falsa granularidad: el estudio compara subgrupos cualitativos por debajo del umbral de saturación (~12 por grupo homogéneo; Guest, Bunce & Johnson 2006; Sandelowski 1995) — ${detalle}. Las conclusiones comparativas carecen de densidad empírica.`,
+        "falsa_granularidad")) aplicadas.push("falsa_granularidad");
+    } else if (!esCualitativo && pequenos.length > 0) {
+      const detalle = pequenos.map(s => `${s.etiqueta}: n=${s.n}`).join("; ");
+      if (escalarCriterio(parsed, "escrutinio_metodologico_y_estadistico", "potencia_y_tamano_muestral", "amarillo",
+        `Subgrupos comparados de tamaño muy pequeño (${detalle}) sin justificación de potencia visible: los contrastes entre estas celdas son frágiles.`,
+        "subgrupos_pequenos_cuant")) aplicadas.push("subgrupos_pequenos_cuant");
+    } else if (sinN.length > 0) {
+      const detalle = sinN.map(s => s?.etiqueta ?? "(sin etiqueta)").join("; ");
+      if (escalarCriterio(parsed, "epistemologia", "salto_causal_y_extrapolacion", "amarillo",
+        `El estudio compara o segmenta conclusiones por subgrupos sin reportar el tamaño de: ${detalle}. No puede verificarse la densidad empírica de cada celda.`,
+        "subgrupos_sin_n")) aplicadas.push("subgrupos_sin_n");
+    }
+  }
+
+  // Regla 2 — Asimetría WEIRD (Henrich, Heine & Norenzayan 2010). Escala DOS
+  // criterios: la composición de la muestra (sesgo de selección) y la
+  // generalización indebida a partir de ella (salto causal, que es CRÍTICO:
+  // sin esto una sobregeneralización sin subgrupos solo daría "con_reservas").
+  const asimetrico = nNoWeird === 0 ? nWeird > 0 : (nWeird / nNoWeird) > 2;
+  if (transcultural && asimetrico) {
+    const detalle = nNoWeird === 0
+      ? `muestra WEIRD (n=${nWeird}) sin contraste no occidental`
+      : `asimetría ${nWeird}:${nNoWeird} (superior a 2:1)`;
+    const nota = `Asimetría WEIRD: el documento formula conclusiones con pretensión transcultural sobre una ${detalle} (Henrich, Heine & Norenzayan 2010). Su alcance queda limitado al contexto de la submuestra mayoritaria.`;
+    const a = escalarCriterio(parsed, "sesgos_e_incentivos", "sesgo_de_seleccion_y_muestreo", "rojo", nota, "asimetria_weird");
+    const b = escalarCriterio(parsed, "epistemologia", "salto_causal_y_extrapolacion", "rojo", nota, "asimetria_weird");
+    if (a || b) aplicadas.push("asimetria_weird");
+  }
+
+  // Regla 3 — Modelo Haack: el nivel de cada afirmación NO lo decide el modelo.
+  // Se DERIVA la seguridad independiente del anclaje (clasificación factual) y
+  // el nivel es el MÍNIMO de las tres dimensiones: una afirmación vale lo que
+  // su eslabón más débil. Cubre circularidad Y lavado de citas de una vez.
+  const SEGURIDAD_DE_ANCLAJE: Record<string, string> = {
+    datos_propios_reportados: "verde",
+    estudio_empirico_citado: "verde",
+    obra_teorica_citada: "amarillo",   // la cadena no toca datos: lavado de citas
+    cita_de_cita: "amarillo",          // idem
+    interpretacion_del_autor: "rojo",  // circular: sin evidencia externa
+    sin_anclaje: "rojo",
+  };
+  const PEOR = (a: string, b: string) => ((NIVEL_RANK[a] ?? 1) >= (NIVEL_RANK[b] ?? 1) ? a : b);
+  const afirmaciones = parsed?.coherencia_datos_conclusiones?.afirmaciones;
+  if (Array.isArray(afirmaciones)) {
+    for (const a of afirmaciones) {
+      if (!a || typeof a !== "object") continue;
+      const seg = SEGURIDAD_DE_ANCLAJE[a.anclaje_de_la_evidencia] ?? "gris";
+      a.seguridad_independiente = seg;
+      // "Mínimo" en calidad = el PEOR de los tres. El gris significa "no
+      // evaluable", no "malo": no debe arrastrar el mínimo, así que se excluye.
+      const dims = [a.apoyo, seg, a.comprensividad].filter(d => typeof d === "string");
+      const evaluadas = dims.filter(d => d !== "gris");
+      a.nivel = evaluadas.length === 0 ? "gris" : evaluadas.reduce((x, y) => PEOR(x, y));
+      a.regla_automatica = "nivel_derivado";
+    }
+    aplicadas.push("nivel_derivado");
+  }
+  return aplicadas;
+}
+
 async function generateContentWithRetry(options: any, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -2792,9 +2891,26 @@ ${text}
               tipo_de_documento: str,
               pregunta_o_afirmacion_central: str,
               poblacion_y_muestra: str,
+              n_total: { type: Type.INTEGER },
+              subgrupos_analiticos: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: { etiqueta: str, n: { type: Type.INTEGER } },
+                  required: ["etiqueta", "n"],
+                },
+              },
+              hace_comparaciones_entre_subgrupos: { type: Type.BOOLEAN },
+              n_weird: { type: Type.INTEGER },
+              n_no_weird: { type: Type.INTEGER },
+              afirma_generalidad_transcultural: { type: Type.BOOLEAN },
               adecuacion_del_diseno: criterio(),
             },
-            required: ["tipo_de_documento", "pregunta_o_afirmacion_central", "poblacion_y_muestra", "adecuacion_del_diseno"],
+            required: [
+              "tipo_de_documento", "pregunta_o_afirmacion_central", "poblacion_y_muestra",
+              "n_total", "subgrupos_analiticos", "hace_comparaciones_entre_subgrupos",
+              "n_weird", "n_no_weird", "afirma_generalidad_transcultural", "adecuacion_del_diseno",
+            ],
           },
           coherencia_datos_conclusiones: {
             type: Type.OBJECT,
@@ -2805,10 +2921,23 @@ ${text}
                   type: Type.OBJECT,
                   properties: {
                     afirmacion: str,
+                    es_central: { type: Type.BOOLEAN },
                     soporte_en_los_datos: str,
-                    nivel: { type: Type.STRING, enum: ["verde", "amarillo", "rojo", "gris"] },
+                    anclaje_de_la_evidencia: {
+                      type: Type.STRING,
+                      enum: [
+                        "datos_propios_reportados",
+                        "estudio_empirico_citado",
+                        "obra_teorica_citada",
+                        "cita_de_cita",
+                        "interpretacion_del_autor",
+                        "sin_anclaje",
+                      ],
+                    },
+                    apoyo: { type: Type.STRING, enum: ["verde", "amarillo", "rojo", "gris"] },
+                    comprensividad: { type: Type.STRING, enum: ["verde", "amarillo", "rojo", "gris"] },
                   },
-                  required: ["afirmacion", "soporte_en_los_datos", "nivel"],
+                  required: ["afirmacion", "es_central", "soporte_en_los_datos", "anclaje_de_la_evidencia", "apoyo", "comprensividad"],
                 },
               },
               coherencia_global_datos_conclusiones: criterio(),
@@ -2828,15 +2957,36 @@ ${text}
           ]),
           retorica_e_ideologia: criterioSection([
             "lenguaje_cargado_y_normativo", "salto_del_es_al_debe", "encuadre_y_alternativas_silenciadas",
+            "asimetria_de_exigencia_probatoria",
           ]),
           auditoria_bibliografica: criterioSection([
             "uso_real_de_las_fuentes", "calidad_de_fuentes_en_afirmaciones_clave",
             "autocitacion_y_endogamia", "afirmaciones_fuertes_sin_fuente",
+            "inflacion_atributiva",
           ]),
           epistemologia: criterioSection([
             "falsabilidad", "explicaciones_alternativas", "hipotesis_ad_hoc",
             "validez_de_constructo", "salto_causal_y_extrapolacion", "corroboracion_externa",
+            "mecanismo_medido_o_narrado", "compatibilidad_con_el_conocimiento_establecido",
+            "modelo_causal_explicito",
           ]),
+          criterios_del_diseno: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                familia: {
+                  type: Type.STRING,
+                  enum: ["cualitativo", "rct", "observacional", "meta_analisis", "teorico_modelado", "ensayo_divulgacion", "otro"],
+                },
+                nombre: str,
+                analisis: str,
+                nivel: NIVEL5,
+                evidencia: str,
+              },
+              required: ["familia", "nombre", "analisis", "nivel", "evidencia"],
+            },
+          },
           sintesis_critica: {
             type: Type.OBJECT,
             properties: {
@@ -2858,7 +3008,7 @@ ${text}
           "titulo_del_estudio", "veredicto_general", "identificacion_y_tipologia",
           "coherencia_datos_conclusiones", "escrutinio_metodologico_y_estadistico",
           "transparencia_y_datos", "sesgos_e_incentivos", "retorica_e_ideologia",
-          "auditoria_bibliografica", "epistemologia", "sintesis_critica",
+          "auditoria_bibliografica", "epistemologia", "criterios_del_diseno", "sintesis_critica",
         ],
       };
 
@@ -2891,6 +3041,18 @@ REGLA DE ORO — HONESTIDAD DEL SEMÁFORO. Cada criterio lleva un "nivel" de CIN
 - "no_aplica": el criterio no corresponde a este tipo de documento (p. ej. p-hacking en un ensayo teórico sin estadística).
 El campo "evidencia" de cada criterio debe citar textualmente (breve) o referenciar la sección/tabla del documento que ancla tu "analisis". Si el nivel es "gris" o "no_aplica", evidencia = "" o una nota de por qué no es evaluable.
 
+REGLAS ANTI-COMPLACENCIA (obligatorias):
+1. CARGA DE LA PRUEBA DEL VERDE. Solo pon "verde" si puedes CITAR evidencia POSITIVA de que ese aspecto se hizo bien (método descrito, decisión justificada, control presente, dato verificable). "El texto no menciona un problema" NO es verde: es "gris" si falta la información, o "amarillo" si esa ausencia es en sí una debilidad. Un verde con "evidencia" vacía es un error de auditoría.
+2. AFIRMACIONES CONTESTABLES, NO PREMISAS. En "afirmaciones" elige las 3-6 conclusiones MÁS FUERTES Y DISCUTIBLES del documento: las que alguien citaría este estudio para sostener en un debate. NUNCA el marco teórico ni definiciones (eso va en "encuadre_y_alternativas_silenciadas"). Pregunta guía: "¿qué titular sacaría de aquí un periodista o un activista?".
+3. POSTURA ADVERSARIAL CALIBRADA. Tu trabajo es encontrar lo que un revisor complaciente dejó pasar. Si tu borrador tiene 80% o más de verdes en un estudio con muestra de conveniencia, sin pre-registro, o con autor único que diseña, codifica e interpreta, sospecha de ti mismo y revísalo. Esto NO significa inflar rojos: cada nivel se ancla en evidencia.
+4. SISTEMICIDAD (compatibilidad con el conocimiento establecido). El conocimiento científico es un SISTEMA: una hipótesis no vive aislada. Evalúa si la afirmación central es compatible con lo mejor establecido en las ciencias vecinas al fenómeno, y si lo contradice, si el documento lo DECLARA y lo JUSTIFICA con evidencia. Aislarse del resto del saber es un defecto objetivo, venga de la disciplina que venga: un estudio social que explica una conducta como si la fisiología no existiera, y uno biológico que la explica como si la cultura no existiera, cometen el MISMO error. Esto NO es equidistancia entre marcos: es asimetría a favor de lo que está mejor establecido, sea lo que sea. NO dictamines qué hipótesis es la correcta; señala el aislamiento o la contradicción no declarada. Se evalúa en el criterio compatibilidad_con_el_conocimiento_establecido.
+5. ANCLAJE DE LA EVIDENCIA: ¿DÓNDE TOCA EL SUELO? En cada elemento de "afirmaciones", el campo "anclaje_de_la_evidencia" indica DÓNDE termina apoyada esa conclusión, siguiendo el rastro hasta donde el documento te permita: "datos_propios_reportados" = datos del propio estudio (cifras, tablas, estadísticos, o extractos textuales de participantes en un estudio cualitativo); "estudio_empirico_citado" = cita un estudio concreto que sí midió el fenómeno; "obra_teorica_citada" = la afirmación es empírica pero se apoya en una obra teórica, conceptual o programática, como si esta hubiera zanjado un asunto de hecho; "cita_de_cita" = se cita una fuente que a su vez cita a otra, sin que el documento muestre dónde están los datos; "interpretacion_del_autor" = el respaldo es la propia lectura o síntesis del autor (incluye citar la conclusión del paper como si fuera su evidencia); "sin_anclaje" = no hay respaldo localizable ("está establecido que...", "numerosos estudios muestran..." sin cita verificable). Es una clasificación FACTUAL: el sistema aplica las consecuencias, tú no. Y en "soporte_en_los_datos" describe el respaldo REAL, sin reformular la afirmación.
+6. LAS TRES DIMENSIONES DE CADA AFIRMACIÓN. Para cada elemento de "afirmaciones" evalúa por separado, y no las confundas entre sí:
+- "es_central": true SOLO para las conclusiones que sostienen la tesis principal del documento (las del título, el resumen o el titular que alguien citaría). false para las secundarias o accesorias. Marca al menos una como central.
+- "apoyo": dada la evidencia que el documento SÍ presenta, ¿esa evidencia sostiene ESTA afirmación? "verde" = se sigue de los datos; "amarillo" = se sigue solo en parte o con salvedades que el texto no enfatiza; "rojo" = no se sigue (sobreinterpreta, invierte, o los datos dicen otra cosa); "gris" = los datos necesarios no están.
+- "comprensividad": ¿el documento consideró la evidencia relevante DISPONIBLE, incluida la que apunta en contra? "verde" = incorpora y discute la evidencia contraria o las fuentes que lo contradicen; "amarillo" = la menciona superficialmente o selecciona solo lo favorable; "rojo" = omite evidencia contraria conocida y relevante, o solo cita lo que confirma; "gris" = no se puede determinar qué evidencia había disponible.
+NO informes un nivel global de la afirmación: el sistema lo calcula a partir de estas dimensiones.
+
 PROHIBICIONES ESTRICTAS:
 - NO des recomendaciones al lector: nada de "debes", "recomiendo", "confía", "descarta", "usa con cautela". Describe hallazgos; el lector decide.
 - NO inventes el contenido de referencias externas: solo ves este PDF. Lo que exigiría leer la fuente citada para verificarlo va como "gris" con nota. No afirmes qué dice un estudio citado si no está en el documento.
@@ -2902,17 +3064,24 @@ identificacion_y_tipologia:
 - tipo_de_documento: clasifica (ensayo clínico aleatorizado, estudio observacional, meta-análisis/revisión sistemática, revisión narrativa, estudio cualitativo, teórico/modelado, ensayo o libro de divulgación, preprint, u otro). De esto depende qué criterios aplican.
 - pregunta_o_afirmacion_central: qué pretende demostrar o afirmar el documento.
 - poblacion_y_muestra: quiénes, cuántos y cómo se seleccionaron ("" si no aplica).
+- n_total: número TOTAL de participantes/casos analizados. Si no se reporta, 0.
+- subgrupos_analiticos: lista de los subgrupos que el documento distingue o compara (por país, sexo, orientación, condición, brazo de tratamiento, etc.), cada uno con su etiqueta y su n. Si no hay subgrupos, lista vacía. Si hay subgrupos pero no reporta su n, usa n=0.
+- hace_comparaciones_entre_subgrupos: true si el documento compara hallazgos entre subgrupos o segmenta sus conclusiones por subgrupo; false si trata la muestra como un todo.
+- n_weird: nº de participantes de contextos occidentales, educados, industrializados, ricos y democráticos. 0 si no se reporta o no aplica.
+- n_no_weird: nº de participantes fuera de ese perfil. 0 si no se reporta o no aplica.
+- afirma_generalidad_transcultural: true si las conclusiones se formulan como válidas más allá del contexto geopolítico de la submuestra mayoritaria, o si NO acotan explícitamente su alcance a ese contexto.
+Reporta estos seis campos sin juzgar: el sistema aplica los umbrales, tú no. Si no puedes determinar el reparto WEIRD con confianza, usa 0 en ambos (es preferible a inventar una cifra).
 - adecuacion_del_diseno: ¿el diseño elegido PUEDE, en principio, responder esa pregunta? (un observacional no establece causalidad; una encuesta no mide conducta real).
 
 coherencia_datos_conclusiones (el núcleo):
-- afirmaciones: ARRAY de 3 a 6 de las conclusiones principales tal como las formula el documento. Por cada una: {afirmacion (cita o paráfrasis fiel), soporte_en_los_datos (qué resultado concreto la respalda o la contradice), nivel}. verde = se sigue de los datos reportados; amarillo = solo parcialmente o con salvedades que el texto no enfatiza; rojo = NO se sigue (sobreinterpreta, invierte el sentido, o los datos dicen otra cosa); gris = los datos necesarios no están en el documento.
+- afirmaciones: ARRAY de 3 a 6 de las conclusiones principales tal como las formula el documento. Por cada una: {afirmacion (cita o paráfrasis fiel), es_central, soporte_en_los_datos (qué resultado concreto la respalda o la contradice), anclaje_de_la_evidencia, apoyo, comprensividad}, según las reglas anti-complacencia 2, 5 y 6. NO informes un nivel global: lo calcula el sistema.
 - coherencia_global_datos_conclusiones: juicio de conjunto sobre si las conclusiones están soportadas por los resultados.
 - spin_y_enfasis: ¿se re-encuadran resultados nulos como positivos, se entierra el desenlace primario, se promocionan subgrupos o desenlaces secundarios?
 
 escrutinio_metodologico_y_estadistico:
-- controles_y_confusores: grupos control adecuados; variables confusoras no controladas.
+- controles_y_confusores: NO premies el número de variables controladas. Ajustar a ciegas puede EMPEORAR el sesgo: condicionar por un COLISIONADOR (una variable causada por la exposición y por el desenlace) abre una asociación espuria donde no la había, y condicionar por un MEDIADOR (un eslabón del mecanismo que se estudia) borra justamente el efecto que se busca. Evalúa: ¿la elección de covariables está JUSTIFICADA por un modelo causal, o es una lista por conveniencia ("controlamos por todo lo disponible")? ¿Hay confusores relevantes no medidos y se hace análisis de sensibilidad? verde = ajuste justificado por el modelo causal y confusores clave cubiertos; amarillo = ajuste razonable pero sin justificación explícita; rojo = ajuste ciego, o se controla por mediadores/colisionadores, o faltan confusores centrales sin discutirlo.
 - potencia_y_tamano_muestral: ¿n justificado?, ¿cálculo de potencia?, riesgo de falsos negativos/positivos por muestra chica o enorme.
-- magnitud_del_efecto_e_incertidumbre: tamaño del efecto práctico vs. mera significancia estadística; intervalos de confianza; ¿el efecto importa en el mundo real?
+- magnitud_del_efecto_e_incertidumbre: tamaño del efecto práctico vs. mera significancia estadística; intervalos de confianza; ¿el efecto importa en el mundo real? Además: evalúa la PLAUSIBILIDAD del tamaño del efecto. En campos ruidosos y con muestras pequeñas, un efecto grande NO es buena noticia: es señal de error de magnitud (los estimadores que superan el umbral de significancia con poca potencia exageran sistemáticamente el efecto). Un efecto implausiblemente grande para el fenómeno estudiado es amarillo como mínimo, aunque sea estadísticamente significativo.
 - senales_de_p_hacking: selección post-hoc, comparaciones múltiples sin corrección, outcome switching, subgrupos exploratorios presentados como confirmatorios, muestra ampliada hasta p<0.05.
 
 transparencia_y_datos:
@@ -2929,20 +3098,34 @@ retorica_e_ideologia (patrón textual, no etiquetas):
 - lenguaje_cargado_y_normativo: adjetivación valorativa en los resultados, términos militantes o eufemismos; ¿el tono describe o predica?
 - salto_del_es_al_debe: ¿deriva prescripciones (políticas, morales) de datos descriptivos sin puente argumental? (falacia naturalista).
 - encuadre_y_alternativas_silenciadas: ¿presenta un solo marco interpretativo como si fuera el único?, ¿la literatura citada es de una sola corriente?, ¿las conclusiones coinciden sospechosamente con la agenda declarada de autores/institución/revista?
+- asimetria_de_exigencia_probatoria: compara el estándar de prueba que el documento aplica a la hipótesis que DEFIENDE frente al que aplica a las que RECHAZA. Señales de asimetría: la hipótesis rival se despacha con una etiqueta o una frase ("eso es determinismo/reduccionismo", "está superado") sin datos ni cita empírica, mientras la propia se acepta con evidencia igual o más débil; o se exige a la rival un nivel de prueba que la propia no alcanza. Esta asimetría es una propiedad OBSERVABLE del texto, no una opinión sobre el tema: descríbela con las dos citas enfrentadas. rojo si la rival se descarta sin evidencia y la propia se sostiene sin ella. NO dictamines cuál hipótesis es correcta.
 
 auditoria_bibliografica (solo lo verificable desde este PDF; lo demás = gris):
 - uso_real_de_las_fuentes: ¿las citas sostienen pasos del argumento o son relleno decorativo (racimos de citas en generalidades, bibliografía listada que nunca se invoca en el cuerpo)?
 - calidad_de_fuentes_en_afirmaciones_clave: para las afirmaciones CENTRALES, ¿qué se cita? (meta-análisis y estudios primarios sólidos vs. libros de opinión, prensa, blogs, preprints, "datos no publicados", comunicación personal). Fuente débil sosteniendo afirmación fuerte = rojo.
 - autocitacion_y_endogamia: proporción de autocitas y de citas al mismo grupo/escuela; ¿la "corroboración" es un circuito cerrado?
 - afirmaciones_fuertes_sin_fuente: "está establecido que…", "numerosos estudios muestran…" sin cita verificable.
+- inflacion_atributiva: compara el VERBO de atribución con la naturaleza de la fuente. "X argumenta/propone/teoriza" es honesto para una obra teórica; "X demostró/mostró/probó/halló" exige que la fuente contenga datos. Si el documento atribuye demostración empírica a obras teóricas, conceptuales o programáticas, es inflación atributiva: rojo si ocurre en las afirmaciones centrales, amarillo si es marginal. Cita el verbo y la fuente concretos.
 
 epistemologia:
-- falsabilidad: ¿la hipótesis central podría ser refutada por algún resultado posible, o está formulada para ser siempre "verdadera"?
+- falsabilidad: no preguntes en abstracto "¿es falsable?". Pregunta: ¿QUÉ OBSERVACIÓN CONCRETA, de haberse dado, habría refutado la afirmación central? Nómbrala. Si el marco acomoda cualquier resultado posible (p. ej. si los sujetos hacen X lo confirma, y si hacen lo contrario también lo confirma bajo otra etiqueta), entonces no prohíbe nada: explica todo y por tanto no explica nada → rojo. Si puedes nombrar la observación refutadora y el estudio se expuso a ella → verde.
 - explicaciones_alternativas: explicaciones rivales igual de válidas que el documento ignora o descarta sin justificación.
 - hipotesis_ad_hoc: suposiciones auxiliares añadidas para salvar la teoría cuando los datos no encajan.
-- validez_de_constructo: ¿las métricas miden de verdad lo que dicen medir?, ¿buena operacionalización?
-- salto_causal_y_extrapolacion: causalidad inferida de correlación; generalización a poblaciones/contextos no estudiados.
-- corroboracion_externa: ¿los resultados están replicados/corroborados por trabajo independiente? Si no puedes saberlo desde el documento, nivel gris con nota "requiere buscar replicaciones fuera del documento".
+- validez_de_constructo: ¿las métricas miden de verdad lo que dicen medir?, ¿buena operacionalización? Además, y ANTES que nada: ¿el constructo central está DEFINIDO de forma que dos investigadores independientes puedan aplicarlo al mismo caso y coincidir? Si el término clave se usa sin definición operacional (p. ej. se invoca un concepto teórico como si su significado fuera evidente), no hay medición posible y todo lo demás es literatura: rojo. Cita la definición del documento, o señala su ausencia.
+- salto_causal_y_extrapolacion: dos cosas. (1) SALTO CAUSAL: ¿infiere causalidad de datos asociativos sin justificarlo? (2) TRANSPORTE: la extrapolación no es solo un pecado a castigar, es un REQUISITO a exigir. "Funcionó allí" no es "funcionará aquí": los resultados se sostienen dentro de un arreglo concreto de factores de soporte. Pregunta: ¿el documento dice QUÉ debe ser verdad del contexto destino para que su resultado se sostenga allí (qué factores de soporte, qué población, qué condiciones)? Un estudio que generaliza sin nombrar sus factores de soporte ni acotar su alcance es amarillo mínimo; rojo si extiende conclusiones a poblaciones o contextos que no estudió. Nombrar el alcance con precisión es una virtud, no una limitación.
+- corroboracion_externa: ¿los resultados están replicados/corroborados por trabajo independiente? Si no puedes saberlo desde el documento, nivel gris con nota "requiere buscar replicaciones fuera del documento". Además: considera la TASA BASE DEL CAMPO. La probabilidad de que un hallazgo sea verdadero depende de las probabilidades pre-estudio de su disciplina, no solo de la prolijidad del paper. Si el documento pertenece a un campo con historial conocido de baja replicación (p. ej. psicología social de efectos sutiles, epidemiología nutricional de observacionales, estudios de gen candidato), señálalo explícitamente como contexto de interpretación, aunque el estudio esté bien hecho. Esto NO es descalificar el campo: es informar la probabilidad previa. Si no conoces el historial del campo, gris con esa nota.
+- mecanismo_medido_o_narrado: si el documento afirma una cadena causal (A causa C a través de B), verifica si CADA eslabón fue MEDIDO y ENLAZADO a nivel individual (p. ej. análisis de mediación, correlación intra-sujeto), o si solo hay dos hechos agregados unidos por una historia plausible. Ejemplo de mecanismo NARRADO: se observa que un grupo muere más, se observa que existe un discurso cultural, y se afirma que el discurso causa la muerte sin haber medido en las mismas personas su adhesión al discurso ni su conducta. Un mecanismo narrado es una hipótesis, no un hallazgo: rojo si se presenta como demostrado; amarillo si se presenta explícitamente como conjetura.
+- compatibilidad_con_el_conocimiento_establecido: ¿la afirmación central es compatible con lo mejor establecido en las ciencias vecinas al fenómeno? Tres casos: (a) compatible, o la contradicción se DECLARA y se JUSTIFICA con evidencia → verde; (b) el documento ignora un cuerpo de conocimiento vecino directamente relevante para su afirmación causal, sin mencionarlo → amarillo; (c) lo contradice sin declararlo, o lo despacha con una etiqueta sin evidencia, y aun así extrae conclusiones fuertes → rojo. Nombra el cuerpo de conocimiento concreto que quedó fuera. Ejemplo: un estudio que afirma que una norma cultural causa la conducta de riesgo masculina sin mencionar siquiera la literatura endocrinológica sobre el tema está aislado del sistema de la ciencia (caso b como mínimo). El mismo criterio se aplica en sentido inverso a un estudio biológico que ignore la evidencia sobre mediación cultural. NO dictamines cuál explicación es correcta: señala el aislamiento. Si el fenómeno no tiene ciencias vecinas con evidencia relevante, no_aplica.
+- modelo_causal_explicito: si el documento hace una afirmación causal, ¿explicita el MODELO causal supuesto (grafo, diagrama, estrategia de identificación: variable instrumental, emparejamiento, diferencias en diferencias, discontinuidad de regresión...), y el efecto que estima es identificable dado ese modelo? Sin modelo causal declarado, una afirmación causal no está siquiera formulada: no se puede evaluar si el ajuste elegido es correcto ni si el efecto es recuperable. verde = modelo explícito y estimando identificable; amarillo = la estrategia se intuye pero no se declara; rojo = afirmación causal fuerte sin modelo alguno, solo asociaciones ajustadas. no_aplica si el documento no hace afirmaciones causales (p. ej. es puramente descriptivo).
+
+criterios_del_diseno: array de 4 a 8 criterios ESPECÍFICOS del tipo de documento que identificaste. Cada elemento: {familia, nombre, analisis, nivel, evidencia}. Un mismo checklist no sirve para todo: aplica SOLO el que corresponde al diseño, con el mismo rigor de evidencia que el resto. El campo "familia" usa el vocabulario controlado del schema.
+- Si es ESTUDIO CUALITATIVO (entrevistas, etnografía, grupos focales, análisis del discurso) → familia "cualitativo". Evalúa: (a) Reflexividad: ¿el investigador explicita su posición y cómo condiciona la interpretación?; (b) Saturación declarada: ¿se justifica el n y cómo se determinó que no emergían temas nuevos?; (c) Acuerdo intercodificador: ¿hubo un segundo codificador o el autor codificó solo?; (d) Triangulación: ¿múltiples fuentes, métodos o investigadores?; (e) Análisis de casos negativos: ¿se buscaron y reportaron datos que CONTRADICEN la interpretación?; (f) Member checking: ¿se devolvieron los hallazgos a los participantes?; (g) Trazabilidad: ¿se puede seguir el camino de los datos crudos a las conclusiones?; (h) Descripción densa: ¿hay contexto suficiente para juzgar la transferibilidad?
+- Si es ENSAYO CLÍNICO ALEATORIZADO → familia "rct". Evalúa: método de aleatorización y ocultamiento de la secuencia; cegamiento (participantes, personal, evaluadores); análisis por intención de tratar vs. por protocolo; pérdidas de seguimiento y cómo se manejaron; outcome primario declarado de antemano y sin cambiar; adherencia a CONSORT.
+- Si es ESTUDIO OBSERVACIONAL → familia "observacional". Evalúa: estrategia de identificación causal (¿solo ajuste por covariables, o DAG/variable instrumental/emparejamiento?); confusores no medidos y análisis de sensibilidad; causalidad inversa; sesgo de tiempo inmortal o de supervivencia; adherencia a STROBE.
+- Si es META-ANÁLISIS O REVISIÓN SISTEMÁTICA → familia "meta_analisis". Evalúa: estrategia de búsqueda reproducible y criterios de inclusión pre-especificados; heterogeneidad (I², modelo de efectos fijos vs aleatorios); evaluación del sesgo de publicación (funnel plot, Egger); calidad de los estudios incluidos (si entra basura, sale basura); adherencia a PRISMA.
+- Si es TEÓRICO O DE MODELADO → familia "teorico_modelado". Evalúa: supuestos explicitados; análisis de sensibilidad a los supuestos; consistencia interna; validación contra datos externos; riesgo de sobreajuste.
+- Si es ENSAYO, LIBRO O DIVULGACIÓN → familia "ensayo_divulgacion". Evalúa: estructura del argumento y premisas explícitas; evidencia aportada por cada afirmación fuerte; proporción de anécdota vs dato; si las fuentes citadas sostienen realmente lo que se les hace decir.
+- Si el diseño no encaja en ninguno → familia "otro": construye tú los 4-8 criterios que un experto de ESA disciplina exigiría, y explica en "nombre" qué evalúa cada uno.
 
 sintesis_critica (declarativa, SIN recomendaciones):
 - lo_que_dicen_los_datos: 1-3 frases sobre qué muestran realmente los datos reportados, sin el spin de los autores.
@@ -2967,6 +3150,14 @@ sintesis_critica (declarativa, SIN recomendaciones):
         parsed = JSON.parse(text);
       } catch {
         return res.status(500).json({ error: "Respuesta de Gemini no es JSON válido." });
+      }
+
+      // Reglas duras ANTES del veredicto: los niveles forzados deben entrar en
+      // los conteos y en la lista de críticos que decide el veredicto global.
+      try {
+        (parsed as any).reglas_automaticas_aplicadas = applyHardRules(parsed);
+      } catch (e) {
+        console.error("[Auditor] Fallo aplicando reglas duras:", e);
       }
 
       // Veredicto global CALCULADO en el servidor (no lo decide la IA): reglas
@@ -3002,24 +3193,41 @@ sintesis_critica (declarativa, SIN recomendaciones):
           nivelDe("escrutinio_metodologico_y_estadistico", "senales_de_p_hacking"),
           nivelDe("transparencia_y_datos", "reporte_selectivo_de_resultados"),
           nivelDe("epistemologia", "salto_causal_y_extrapolacion"),
+          nivelDe("epistemologia", "mecanismo_medido_o_narrado"),
         ];
         const rojosCriticos = criticos.filter(n => n === "rojo").length;
         const evaluables = conteos.verde + conteos.amarillo + conteos.rojo;
         const financiacionRoja = nivelDe("sesgos_e_incentivos", "financiacion_y_conflictos") === "rojo";
 
+        // Override estructural (modelo Haack): una afirmación CENTRAL sin
+        // anclaje sano derriba la tesis, por muchos verdes periféricos que haya.
+        // La justificación no es aditiva: es un crucigrama, y si la entrada que
+        // cruza a todas las demás está rota, no se compensa contando casillas.
+        const centralesRojas = Array.isArray(afirmaciones)
+          ? afirmaciones.filter((a: any) => a?.es_central === true && a?.nivel === "rojo").length
+          : 0;
+
+        // Umbrales PROPORCIONALES: los fijos (3) se calibraron para los ~13
+        // criterios de v2; con ~35 criterios, 3 amarillos es ruido, no señal.
         let nivel: string;
         let regla: string;
         if (evaluables < 6) {
           nivel = "insuficiente";
           regla = `Solo ${evaluables} criterios evaluables (el resto gris/no aplica): el documento no aporta información suficiente para un juicio.`;
-        } else if (rojosCriticos >= 1 || conteos.rojo >= 3) {
+        } else if (centralesRojas >= 1) {
           nivel = "debil";
-          regla = rojosCriticos >= 1
-            ? `${rojosCriticos} criterio(s) crítico(s) en rojo.`
-            : `${conteos.rojo} criterios en rojo.`;
-        } else if (conteos.rojo >= 1 || conteos.amarillo >= 3) {
+          regla = `${centralesRojas} afirmación(es) CENTRAL(es) sin sostén: la tesis principal no se sigue de la evidencia presentada, con independencia del resto de criterios.`;
+        } else if (rojosCriticos >= 1) {
+          nivel = "debil";
+          regla = `${rojosCriticos} criterio(s) crítico(s) en rojo.`;
+        } else if (conteos.rojo >= Math.max(3, Math.ceil(evaluables * 0.15))) {
+          nivel = "debil";
+          regla = `${conteos.rojo} criterios en rojo sobre ${evaluables} evaluables.`;
+        } else if (conteos.rojo >= 1 || conteos.amarillo >= Math.max(3, Math.ceil(evaluables * 0.3))) {
           nivel = "con_reservas";
-          regla = conteos.rojo >= 1 ? `${conteos.rojo} criterio en rojo (no crítico).` : `${conteos.amarillo} criterios en amarillo.`;
+          regla = conteos.rojo >= 1
+            ? `${conteos.rojo} criterio en rojo (no crítico).`
+            : `${conteos.amarillo} criterios en amarillo sobre ${evaluables} evaluables.`;
         } else {
           nivel = "solido";
           regla = "Sin rojos y pocos amarillos en lo evaluable.";

@@ -1,0 +1,56 @@
+{
+  "_proposito": "Calibración del Auditor Científico. El auditor es un INSTRUMENTO DE MEDICIÓN: hasta medir su concordancia con jueces humanos, no puede afirmarse que 'mejora' nada, solo que cambió. Un termómetro sin calibrar no mide temperatura: produce números.",
+  "estado": "semilla",
+  "n_casos": 2,
+  "n_minimo_para_declarar_utilizable": 8,
+  "_protocolo": {
+    "que_se_mide": [
+      "concordancia_de_veredicto: aciertos / N (veredicto_humano vs veredicto_auditor)",
+      "sensibilidad_a_defectos: defectos esperados detectados / defectos esperados totales"
+    ],
+    "jueces": "DOS evaluadores humanos independientes, sin verse entre sí. Se reporta el acuerdo entre ellos (kappa de Cohen) ANTES de compararlos con el auditor.",
+    "por_que_dos_jueces": "Si los dos humanos no concuerdan entre sí, no hay patrón contra el cual medir al auditor: la discrepancia auditor-humano sería indistinguible del desacuerdo humano-humano. Un instrumento no puede ser más fiable que su patrón.",
+    "regla_de_parada": "Si kappa < 0.6, el problema son los criterios (están mal definidos), no el auditor: reportar y parar.",
+    "orden_obligatorio": "El veredicto_humano_esperado se fija ANTES de auditar. Nunca después, o el ejercicio es circular: el mismo pecado que este auditor persigue.",
+    "criterio_de_aceptacion": "Concordancia >= 6/8 Y ningún control negativo marcado 'debil'. Un paper sólido marcado débil = sobrecorrección: el instrumento es inservible."
+  },
+  "_composicion_objetivo": {
+    "cualitativos": 2,
+    "cuantitativos_solidos": 2,
+    "meta_analisis": 1,
+    "ensayo_divulgacion": 1,
+    "controles_positivos": "2 papers que el usuario sepa que son malos (deben salir 'debil')",
+    "controles_negativos": "al menos 1 paper reconocidamente sólido (NO debe salir 'debil')"
+  },
+  "casos": [
+    {
+      "id": "f9fd2074-a5f2-4c94-8349-ae2cc82810c1",
+      "titulo": "Cuerpos desbordados. La construcción corporal de la masculinidad (Enguix 2013)",
+      "tipo": "estudio cualitativo",
+      "rol": "control_positivo",
+      "veredicto_humano_esperado": "debil",
+      "defectos_esperados": [
+        "falsa_granularidad",
+        "asimetria_weird",
+        "evidencia_sin_suelo",
+        "mecanismo_narrado"
+      ],
+      "justificacion": "Subgrupos de n=4 comparados entre países (umbral de saturación ~12); muestra 71% española con lectura transcultural; conclusiones ancladas en la interpretación de la autora, no en datos (la codificación de la autora coincidiendo con la decodificación de los participantes NO es validación externa: es circular).",
+      "veredicto_v2_observado": "con_reservas",
+      "conteos_v2_observados": { "verde": 19, "amarillo": 6, "rojo": 0, "gris": 4, "no_aplica": 2 },
+      "nota": "Este es el caso que motivó v3: 19 verdes y 0 rojos. El diagnóstico inicial fue 'el modelo es complaciente'; el diagnóstico real fue que los criterios v2 eran cuantitativo-céntricos y no tenían con qué acusar a un cualitativo."
+    },
+    {
+      "id": "1f0c4d3b-d2d8-422f-a377-ff0b91cd875d",
+      "titulo": "The Development and Evaluation of a Brief Form of the Normative Male Alexithymia Scale (NMAS-BF)",
+      "tipo": "psicométrico",
+      "rol": "control_negativo",
+      "veredicto_humano_esperado": "con_reservas",
+      "defectos_esperados": [],
+      "justificacion": "Validación de escala con método declarado. En v2 dio 2 rojos y 12 amarillos, distribución plausible. Sirve de control anti-sobrecorrección: si con v3 sale 'debil' sin causa clara, se sobrecorrigió.",
+      "veredicto_v2_observado": "con_reservas",
+      "conteos_v2_observados": { "verde": 15, "amarillo": 12, "rojo": 2, "gris": 3, "no_aplica": 0 }
+    }
+  ],
+  "mediciones": []
+}
