@@ -1,7 +1,7 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { BookItem, PlaylistData, StageData } from '../types';
-import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag, Download, WifiOff, Loader2 } from 'lucide-react';
+import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag, Download, WifiOff, Loader2, RefreshCw } from 'lucide-react';
 import { bookOfflineUrls, downloadBookOffline, removeBookOffline, isBookOffline, offlineSupported } from '../lib/offlineBooks';
 import { ImageEditorModal } from './ImageEditorModal';
 import { cn, colorSwatchProps } from '../lib/utils';
@@ -9,6 +9,8 @@ import { useLibrary } from '../hooks/useLibrary';
 import { StarRating } from './StarRating';
 import { DraggableProgress } from './BookGrid';
 import { pdfjs } from 'react-pdf';
+import ePub from 'epubjs';
+import { get as idbGet } from 'idb-keyval';
 // Migrado de idb-keyval a almacenamiento real en el servidor (ver src/lib/uploadFile.ts).
 import { uploadFile, deleteUploadedFile } from '../lib/uploadFile';
 
@@ -76,6 +78,14 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   // coverOriginalUrl bajo demanda, no se mantiene cargado siempre).
   const [reeditingOriginal, setReeditingOriginal] = useState<Blob | null>(null);
   const [loadingOriginal, setLoadingOriginal] = useState(false);
+  // La portada actual falló al cargar en el <img> (URL rota/404, archivo
+  // corrupto). Se resetea de forma optimista cada vez que coverUrl cambia
+  // (la nueva URL merece su propio intento); si ESA también falla, el
+  // onError del <img> lo vuelve a marcar.
+  const [coverBroken, setCoverBroken] = useState(false);
+  useEffect(() => { setCoverBroken(false); }, [coverUrl]);
+  const [reextractingCover, setReextractingCover] = useState(false);
+  const [reextractError, setReextractError] = useState<string | null>(null);
   const [type, setType] = useState(item.type || 'externa');
   const [rating, setRating] = useState(item.rating || 0);
   // Estado local = IDs de TagData asignados a este libro (no nombres).
@@ -367,6 +377,69 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     }
   };
 
+  // Trae el contenido de pdfSource/epubSource como ArrayBuffer sin importar
+  // dónde viva: servidor (/api/files/...), IndexedDB (idb://, libros locales
+  // pre-servidor) o una blob: url ya en memoria. Mismo esquema que usa
+  // EpubHtmlReader para resolver `url`.
+  const fetchSourceArrayBuffer = async (source: string): Promise<ArrayBuffer> => {
+    if (source.startsWith('idb://')) {
+      const file = await idbGet(source);
+      if (!file) throw new Error('Archivo no encontrado en el dispositivo (IndexedDB).');
+      return (file as Blob).arrayBuffer();
+    }
+    const res = await fetch(source);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.arrayBuffer();
+  };
+
+  // Vuelve a extraer la portada desde la primera página del PDF o EPUB ya
+  // cargado — para cuando no hay portada, o la que hay quedó rota (404,
+  // archivo corrupto). Reusa uploadCover: mismo pipeline de subida/rollback
+  // que cualquier otra portada, y su detección best-effort de título/autor.
+  const handleReextractCover = async () => {
+    const source = pdfSource || epubSource;
+    if (!source) return;
+    setReextractingCover(true);
+    setReextractError(null);
+    try {
+      const buffer = await fetchSourceArrayBuffer(source);
+      let blob: Blob | null = null;
+      if (pdfSource) {
+        const pdf = await pdfjs.getDocument({ data: buffer }).promise;
+        const page = await pdf.getPage(1);
+        const viewport = page.getViewport({ scale: 1.0 });
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        if (context) {
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          await page.render({ canvasContext: context, viewport } as any).promise;
+          blob = await new Promise((res) => canvas.toBlob((b) => res(b), 'image/jpeg', 0.85));
+        }
+      } else {
+        const book = ePub(buffer);
+        await book.ready;
+        const coverBlobUrl = await book.coverUrl();
+        if (coverBlobUrl) {
+          const coverRes = await fetch(coverBlobUrl);
+          blob = await coverRes.blob();
+        }
+      }
+      if (!blob) {
+        setReextractError(pdfSource
+          ? 'No se pudo generar una imagen de la primera página.'
+          : 'Este EPUB no trae una portada incrustada.');
+        return;
+      }
+      await uploadCover(blob);
+    } catch (err) {
+      console.error('No se pudo re-extraer la portada:', err);
+      setReextractError('No se pudo leer el archivo para extraer la portada.');
+    } finally {
+      setReextractingCover(false);
+    }
+  };
+
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const applyExtractedData = (extracted: any) => {
@@ -525,19 +598,20 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                    solo. Recorte mínimo (2% por lado) únicamente para limpiar
                    bordes con imperfecciones, no para encuadrar la portada. */}
                <div className="relative group h-72 flex items-center justify-center overflow-hidden transition-all">
-                  {coverUrl ? (
+                  {coverUrl && !coverBroken ? (
                      <div className="h-full w-full overflow-hidden rounded-2xl flex items-center justify-center">
                         <img
                            src={coverUrl}
                            alt={title || 'Cover'}
                            className="h-full w-auto max-w-none object-contain rounded-xl"
                            style={{ clipPath: 'inset(0 2% 0 2%)' }}
+                           onError={() => setCoverBroken(true)}
                         />
                      </div>
                   ) : (
-                     <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl">
-                        <ImageIcon className="w-12 h-12 mb-2 opacity-50" />
-                        <span className="text-xs font-medium">Sin portada</span>
+                     <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl gap-1">
+                        <ImageIcon className="w-12 h-12 mb-1 opacity-50" />
+                        <span className="text-xs font-medium">{coverBroken ? 'La portada no cargó' : 'Sin portada'}</span>
                      </div>
                   )}
                   {/* Único control para cambiar la portada: un icono, siempre
@@ -552,7 +626,21 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   >
                      <Pencil className="w-4 h-4" />
                   </button>
-                  {coverUrl && (
+                  {/* Actualizar (re-extraer de la 1ª página): solo tiene sentido si
+                      no hay portada o la que hay está rota, Y existe un PDF/EPUB del
+                      que sacarla. Al lado del botón de cambiar portada. */}
+                  {(!coverUrl || coverBroken) && (pdfSource || epubSource) && (
+                     <button
+                        type="button"
+                        onClick={handleReextractCover}
+                        disabled={reextractingCover}
+                        className="absolute top-2 right-12 w-9 h-9 rounded-full bg-white/95 text-[var(--primary)] shadow-md flex items-center justify-center hover:scale-110 active:scale-95 transition-transform disabled:opacity-50"
+                        title="Actualizar portada desde la primera página"
+                     >
+                        {reextractingCover ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                     </button>
+                  )}
+                  {coverUrl && !coverBroken && (
                      <button
                         type="button"
                         onClick={() => { setCoverUrl(''); coverUrlRef.current = ''; }}
@@ -563,6 +651,9 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   )}
                   <input type="file" ref={coverInputRef} accept="image/*" className="hidden" onChange={handleCoverFileSelected} />
                </div>
+               {reextractError && (
+                  <p className="text-[11px] text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">{reextractError}</p>
+               )}
 
                {/* Editar la portada existente: con original guardado se parte
                    de él (sin los ajustes ya "quemados"); sin original (portadas
@@ -1235,18 +1326,18 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                  <div className="flex flex-col gap-2">
                     <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block">Portada</label>
                     <div className="aspect-[3/4] bg-[var(--bg-app)] rounded-2xl border-2 border-dashed border-slate-200/50 flex flex-col items-center justify-center cursor-pointer relative overflow-hidden group shadow-sm transition-all hover:border-[var(--primary)]/50" onClick={() => coverInputRef.current?.click()}>
-                       {coverUrl ? (
-                         <img src={coverUrl} alt="Cover layout" className="w-full h-full object-cover" />
+                       {coverUrl && !coverBroken ? (
+                         <img src={coverUrl} alt="Cover layout" className="w-full h-full object-cover" onError={() => setCoverBroken(true)} />
                        ) : (
                          <div className="flex flex-col items-center justify-center text-slate-400">
                             <ImageIcon className="w-12 h-12 mb-3 opacity-50 group-hover:scale-110 transition-transform" />
-                            <span className="text-sm font-medium">Subir Imagen</span>
+                            <span className="text-sm font-medium">{coverBroken ? 'La portada no cargó' : 'Subir Imagen'}</span>
                          </div>
                        )}
-                       
+
                        <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center flex-col gap-3">
                           <span className="text-white text-sm font-bold flex items-center gap-2"><UploadCloud className="w-5 h-5" /> Cambiar</span>
-                          {coverUrl && (
+                          {coverUrl && !coverBroken && (
                              <button type="button" onClick={(e) => { e.stopPropagation(); setCoverUrl(''); coverUrlRef.current = ''; }} className="text-rose-400 hover:text-white hover:bg-rose-500 px-3 py-1.5 rounded text-xs font-bold transition-colors">
                                 Eliminar
                              </button>
@@ -1263,8 +1354,25 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                        >
                           <Pencil className="w-4 h-4" />
                        </button>
+                       {/* Actualizar (re-extraer de la 1ª página): solo si no hay
+                           portada o la que hay está rota, y existe un PDF/EPUB del
+                           que sacarla. Al lado del botón de cambiar portada. */}
+                       {(!coverUrl || coverBroken) && (pdfSource || epubSource) && (
+                          <button
+                             type="button"
+                             onClick={(e) => { e.stopPropagation(); handleReextractCover(); }}
+                             disabled={reextractingCover}
+                             className="absolute top-2 right-12 w-9 h-9 rounded-full bg-white/95 text-[var(--primary)] shadow-md flex items-center justify-center hover:scale-110 active:scale-95 transition-transform disabled:opacity-50"
+                             title="Actualizar portada desde la primera página"
+                          >
+                             {reextractingCover ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                          </button>
+                       )}
                     </div>
                     <input type="file" ref={coverInputRef} accept="image/*" className="hidden" onChange={handleCoverFileSelected} />
+                    {reextractError && (
+                       <p className="text-[11px] text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">{reextractError}</p>
+                    )}
                  </div>
 
                  <div className="flex flex-col gap-2 relative mt-4">
