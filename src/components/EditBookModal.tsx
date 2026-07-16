@@ -840,6 +840,44 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   </div>
                </div>
 
+               {/* Colección / Saga: debajo de Autor/Año — los miembros de una
+                   misma colección se muestran juntos en la biblioteca
+                   (ordenados por volumen), salvo el que esté fijado con pin. */}
+               <div className="flex flex-col gap-2 px-0.5">
+                  <div className="flex items-center justify-between gap-2">
+                     <span className="text-[11px] font-semibold text-slate-500 flex items-center gap-1.5">
+                        <Library className="w-3.5 h-3.5" /> Colección / Saga
+                     </span>
+                     <button
+                        type="button"
+                        onClick={() => setCollectionOn(v => !v)}
+                        title={collectionOn ? 'Quitar de colección' : 'Pertenece a una colección o saga'}
+                        className={cn('relative w-8 h-[18px] rounded-full transition-colors shrink-0', collectionOn ? 'bg-[var(--primary)]' : 'bg-slate-200')}
+                     >
+                        <span className={cn('absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-all', collectionOn ? 'left-[15px]' : 'left-0.5')} />
+                     </button>
+                  </div>
+                  {collectionOn && (
+                     <div className="flex gap-2">
+                        <input
+                           type="text"
+                           value={collectionName}
+                           onChange={e => setCollectionName(e.target.value)}
+                           placeholder="Nombre de la colección"
+                           className="flex-1 min-w-0 text-xs px-3 py-2 bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
+                        />
+                        <input
+                           type="text"
+                           value={collectionVolume}
+                           onChange={e => setCollectionVolume(e.target.value)}
+                           placeholder="Vol."
+                           title="Volumen / tomo (ej. 1, 2, 3…)"
+                           className="w-14 text-xs px-2 py-2 text-center bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
+                        />
+                     </div>
+                  )}
+               </div>
+
                <div>
                   <label className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1 block">Materia / Editorial</label>
                   <input
@@ -1038,45 +1076,6 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                         <CheckCircle2 className="w-5 h-5" />
                      </button>
                   </div>
-               </div>
-
-               {/* Colección / Saga: los miembros de una misma colección se
-                   muestran juntos en la biblioteca (ordenados por volumen),
-                   salvo el que esté fijado con pin. Debajo del resto de la
-                   información (no es identidad del libro, es agrupación). */}
-               <div className="flex flex-col gap-2 px-0.5">
-                  <div className="flex items-center justify-between gap-2">
-                     <span className="text-[11px] font-semibold text-slate-500 flex items-center gap-1.5">
-                        <Library className="w-3.5 h-3.5" /> Colección / Saga
-                     </span>
-                     <button
-                        type="button"
-                        onClick={() => setCollectionOn(v => !v)}
-                        title={collectionOn ? 'Quitar de colección' : 'Pertenece a una colección o saga'}
-                        className={cn('relative w-8 h-[18px] rounded-full transition-colors shrink-0', collectionOn ? 'bg-[var(--primary)]' : 'bg-slate-200')}
-                     >
-                        <span className={cn('absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-all', collectionOn ? 'left-[15px]' : 'left-0.5')} />
-                     </button>
-                  </div>
-                  {collectionOn && (
-                     <div className="flex gap-2">
-                        <input
-                           type="text"
-                           value={collectionName}
-                           onChange={e => setCollectionName(e.target.value)}
-                           placeholder="Nombre de la colección"
-                           className="flex-1 min-w-0 text-xs px-3 py-2 bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
-                        />
-                        <input
-                           type="text"
-                           value={collectionVolume}
-                           onChange={e => setCollectionVolume(e.target.value)}
-                           placeholder="Vol."
-                           title="Volumen / tomo (ej. 1, 2, 3…)"
-                           className="w-14 text-xs px-2 py-2 text-center bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
-                        />
-                     </div>
-                  )}
                </div>
             </div>
 
@@ -1345,6 +1344,44 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                     </div>
                  </div>
 
+                 {/* Colección / Saga: debajo de Autor/Año — los miembros de una
+                     misma colección se muestran juntos en la biblioteca
+                     (ordenados por volumen), salvo el que esté fijado con pin. */}
+                 <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-2">
+                       <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-1.5">
+                          <Library className="w-3.5 h-3.5" /> Colección / Saga
+                       </span>
+                       <button
+                          type="button"
+                          onClick={() => setCollectionOn(v => !v)}
+                          title={collectionOn ? 'Quitar de colección' : 'Pertenece a una colección o saga'}
+                          className={cn('relative w-9 h-5 rounded-full transition-colors shrink-0', collectionOn ? 'bg-[var(--primary)]' : 'bg-slate-200')}
+                       >
+                          <span className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-all', collectionOn ? 'left-[18px]' : 'left-0.5')} />
+                       </button>
+                    </div>
+                    {collectionOn && (
+                       <div className="flex gap-2">
+                          <input
+                             type="text"
+                             value={collectionName}
+                             onChange={e => setCollectionName(e.target.value)}
+                             placeholder="Nombre de la colección"
+                             className="flex-1 min-w-0 text-sm px-4 py-2.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400 transition-all shadow-sm"
+                          />
+                          <input
+                             type="text"
+                             value={collectionVolume}
+                             onChange={e => setCollectionVolume(e.target.value)}
+                             placeholder="Vol."
+                             title="Volumen / tomo (ej. 1, 2, 3…)"
+                             className="w-20 text-sm px-2 py-2.5 text-center bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400 transition-all shadow-sm"
+                          />
+                       </div>
+                    )}
+                 </div>
+
                  <div>
                     <label className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-1 block">Materia / Editorial</label>
                     <input value={subject} onChange={e => setSubject(e.target.value)} className="w-full text-sm px-4 py-2.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] transition-all shadow-sm" placeholder="Ej. Filosofía, Ed. Planeta" />
@@ -1573,44 +1610,6 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                     </div>
                  </div>
 
-              </div>
-
-              {/* Colección / Saga: debajo de toda la demás información (título,
-                  autor, etiquetas, posesión, listas...), no es identidad del
-                  libro sino agrupación con otros volúmenes. */}
-              <div className="md:col-span-2 flex flex-col gap-2">
-                 <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-1.5">
-                       <Library className="w-3.5 h-3.5" /> Colección / Saga
-                    </span>
-                    <button
-                       type="button"
-                       onClick={() => setCollectionOn(v => !v)}
-                       title={collectionOn ? 'Quitar de colección' : 'Pertenece a una colección o saga'}
-                       className={cn('relative w-9 h-5 rounded-full transition-colors shrink-0', collectionOn ? 'bg-[var(--primary)]' : 'bg-slate-200')}
-                    >
-                       <span className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-all', collectionOn ? 'left-[18px]' : 'left-0.5')} />
-                    </button>
-                 </div>
-                 {collectionOn && (
-                    <div className="flex gap-2">
-                       <input
-                          type="text"
-                          value={collectionName}
-                          onChange={e => setCollectionName(e.target.value)}
-                          placeholder="Nombre de la colección"
-                          className="flex-1 min-w-0 text-sm px-4 py-2.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400 transition-all shadow-sm"
-                       />
-                       <input
-                          type="text"
-                          value={collectionVolume}
-                          onChange={e => setCollectionVolume(e.target.value)}
-                          placeholder="Vol."
-                          title="Volumen / tomo (ej. 1, 2, 3…)"
-                          className="w-20 text-sm px-2 py-2.5 text-center bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400 transition-all shadow-sm"
-                       />
-                    </div>
-                 )}
               </div>
            </div>
          </div>
