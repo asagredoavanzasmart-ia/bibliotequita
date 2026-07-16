@@ -59,6 +59,7 @@ const ALL_POSSIBLE_COLORS: ColorDefinition[] = [
   { id: 'sky-400', color: 'sky-400', bgClass: 'bg-sky-50/50', borderClass: 'border-sky-400', textClass: 'text-sky-600', name: 'Azul', hex: '#38bdf8' },
   { id: 'emerald-400', color: 'emerald-400', bgClass: 'bg-emerald-50/50', borderClass: 'border-emerald-400', textClass: 'text-emerald-600', name: 'Verde', hex: '#34d399' },
   { id: 'amber-400', color: 'amber-400', bgClass: 'bg-amber-50/50', borderClass: 'border-amber-400', textClass: 'text-amber-600', name: 'Amarillo', hex: '#fbbf24' },
+  { id: 'slate-400', color: 'slate-400', bgClass: 'bg-slate-50/50', borderClass: 'border-slate-400', textClass: 'text-slate-600', name: 'Gris', hex: '#94a3b8' },
   { id: 'violet-400', color: 'violet-400', bgClass: 'bg-violet-50/50', borderClass: 'border-violet-400', textClass: 'text-violet-600', name: 'Morado', hex: '#a78bfa' },
   { id: 'orange-400', color: 'orange-400', bgClass: 'bg-orange-50/50', borderClass: 'border-orange-400', textClass: 'text-orange-600', name: 'Naranja', hex: '#fb923c' }
 ];
