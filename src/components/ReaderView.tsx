@@ -2750,7 +2750,15 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
              // absolute, el EPUB/PDF se renderizaba a la altura completa sin
              // saber del widget y este quedaba tapando la parte de abajo.
              <div ref={ttsWidgetRef} onClick={(e) => e.stopPropagation()} className="shrink-0 w-full z-40 bg-[var(--bg-card)] border-t border-[var(--border-card)] shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-2 duration-300 flex flex-col overflow-hidden" style={{ paddingBottom: 'env(safe-area-inset-bottom)', maxHeight: '85dvh' }}>
-                <div className="max-w-xl mx-auto px-3 pt-2 pb-2 sm:px-4 w-full flex flex-col min-h-0 overflow-hidden">
+                {/* max-w-3xl (no max-w-xl): en escritorio/horizontal esta fila
+                    FUSIONA la paginación/zoom del PDF con los controles del TTS
+                    en una sola fila (ver mergedBarSlotEl más abajo) — con el
+                    tope angosto de antes (576px), esa fila más larga se recortaba
+                    en silencio por el overflow-x-auto sin scrollbar visible:
+                    los botones del final quedaban "cortados" sin ninguna pista
+                    de que había más contenido. En móvil vertical no cambia nada
+                    (la pantalla ya es más angosta que el tope). */}
+                <div className="max-w-3xl mx-auto px-3 pt-2 pb-2 sm:px-4 w-full flex flex-col min-h-0 overflow-hidden">
 
                    {/* Panel de configuración colapsable (modelo/voz/origen).
                        Única zona scrolleable del widget; nunca empuja ni oculta
