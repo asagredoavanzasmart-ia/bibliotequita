@@ -1,7 +1,7 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { BookItem, PlaylistData, StageData } from '../types';
-import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag, Download, Camera, WifiOff, Loader2 } from 'lucide-react';
+import { X, Image as ImageIcon, Book, Link as LinkIcon, UploadCloud, CheckCircle2, BookmarkCheck, Library, Bookmark, Save, Plus, Trash2, ChevronRight, Layers, Pencil, ShoppingBag, Tag, Download, WifiOff, Loader2 } from 'lucide-react';
 import { bookOfflineUrls, downloadBookOffline, removeBookOffline, isBookOffline, offlineSupported } from '../lib/offlineBooks';
 import { ImageEditorModal } from './ImageEditorModal';
 import { cn, colorSwatchProps } from '../lib/utils';
@@ -119,8 +119,11 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   const [epubSource, setEpubSource] = useState(
     item.epubSource || (item.type === 'epub' ? item.source : '') || ''
   );
+  // Un solo input (sin `capture`) para toda selección de portada: en móvil el
+  // selector nativo del sistema YA ofrece "Cámara" y "Galería" juntos, así que
+  // un único botón/icono basta — antes había dos inputs y dos botones
+  // separados ("Tomar foto" con capture=environment, y "Galería").
   const coverInputRef = useRef<HTMLInputElement>(null);
-  const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const epubInputRef = useRef<HTMLInputElement>(null);
@@ -331,10 +334,17 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     reader.readAsDataURL(file);
   };
 
-  const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Cualquier foto elegida (cámara o galería, el selector nativo del sistema
+  // ofrece ambas) pasa SIEMPRE por el editor de recorte/rotación antes de
+  // subirse — antes una foto de galería subía directo sin pasar por el
+  // editor, y el flujo de cámara sí lo hacía: dos caminos distintos para lo
+  // mismo. Unificarlos también deja UN solo lugar que puede romper una
+  // portada (ImageEditorModal, ya endurecido contra formatos/blobs inválidos).
+  const [pendingCoverFile, setPendingCoverFile] = useState<File | null>(null);
+  const handleCoverFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-    await uploadCover(file);
+    if (file) setPendingCoverFile(file);
+    e.target.value = '';
   };
 
   // Abre el editor sobre el original guardado si existe; si no (portada
@@ -355,15 +365,6 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     } finally {
       setLoadingOriginal(false);
     }
-  };
-
-  // Foto tomada con la cámara: se abre el editor de recorte/rotación antes
-  // de subirla (caso típico: el usuario solo tiene el libro físico).
-  const [pendingCameraFile, setPendingCameraFile] = useState<File | null>(null);
-  const handleCameraCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) setPendingCameraFile(file);
-    e.target.value = '';
   };
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -539,57 +540,28 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                         <span className="text-xs font-medium">Sin portada</span>
                      </div>
                   )}
-                  {/* Acción rápida: icono de lápiz visible al hover */}
+                  {/* Único control para cambiar la portada: un icono, siempre
+                      visible (no solo al hover — en móvil no hay hover). El
+                      selector nativo del input ofrece Cámara y Galería juntos,
+                      así que un botón alcanza para ambos casos. */}
                   <button
                      type="button"
                      onClick={() => coverInputRef.current?.click()}
-                     className="absolute top-2 right-2 w-9 h-9 rounded-full bg-white/95 text-[var(--primary)] shadow-md flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:scale-110 active:scale-95"
+                     className="absolute top-2 right-2 w-9 h-9 rounded-full bg-white/95 text-[var(--primary)] shadow-md flex items-center justify-center hover:scale-110 active:scale-95 transition-transform"
                      title="Cambiar portada"
                   >
                      <Pencil className="w-4 h-4" />
                   </button>
-                  {/* Overlay completo con acciones secundarias */}
-                  <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 pointer-events-none">
+                  {coverUrl && (
                      <button
                         type="button"
-                        onClick={() => coverInputRef.current?.click()}
-                        className="pointer-events-auto bg-white text-[var(--primary)] px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 shadow"
+                        onClick={() => { setCoverUrl(''); coverUrlRef.current = ''; }}
+                        className="absolute bottom-2 right-2 text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-900/70 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-rose-500/90"
                      >
-                        <UploadCloud className="w-4 h-4" /> Cambiar portada
+                        Quitar
                      </button>
-                     {coverUrl && (
-                        <button
-                           type="button"
-                           onClick={() => { setCoverUrl(''); coverUrlRef.current = ''; }}
-                           className="pointer-events-auto text-rose-200 hover:text-white hover:bg-rose-500/80 px-3 py-1 rounded-lg text-xs font-bold transition-colors"
-                        >
-                           Quitar portada
-                        </button>
-                     )}
-                  </div>
-                  <input type="file" ref={coverInputRef} accept="image/*" className="hidden" onChange={handleCoverUpload} />
-               </div>
-
-               {/* Solo en pantallas táctiles pequeñas: "Tomar foto" abre la
-                   cámara directo (capture="environment") — útil cuando el
-                   usuario solo tiene el libro físico y quiere fotografiar
-                   la portada. "Galería" usa el selector normal. */}
-               <div className="sm:hidden flex gap-2">
-                  <button
-                     type="button"
-                     onClick={() => cameraInputRef.current?.click()}
-                     className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200"
-                  >
-                     <Camera className="w-3.5 h-3.5" /> Tomar foto
-                  </button>
-                  <button
-                     type="button"
-                     onClick={() => coverInputRef.current?.click()}
-                     className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200"
-                  >
-                     <ImageIcon className="w-3.5 h-3.5" /> Galería
-                  </button>
-                  <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handleCameraCapture} />
+                  )}
+                  <input type="file" ref={coverInputRef} accept="image/*" className="hidden" onChange={handleCoverFileSelected} />
                </div>
 
                {/* Editar la portada existente: con original guardado se parte
@@ -650,45 +622,6 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                   >
                      <ShoppingBag className="w-4 h-4" /> Wishlist
                   </button>
-               </div>
-
-               {/* Colección / Saga: los miembros de una misma colección se
-                   muestran juntos en la biblioteca (ordenados por volumen),
-                   salvo el que esté fijado con pin. Guardar con el botón
-                   Guardar de la pestaña, como el resto de metadatos. */}
-               <div className="flex flex-col gap-2 px-0.5">
-                  <div className="flex items-center justify-between gap-2">
-                     <span className="text-[11px] font-semibold text-slate-500 flex items-center gap-1.5">
-                        <Library className="w-3.5 h-3.5" /> Colección / Saga
-                     </span>
-                     <button
-                        type="button"
-                        onClick={() => setCollectionOn(v => !v)}
-                        title={collectionOn ? 'Quitar de colección' : 'Pertenece a una colección o saga'}
-                        className={cn('relative w-8 h-[18px] rounded-full transition-colors shrink-0', collectionOn ? 'bg-[var(--primary)]' : 'bg-slate-200')}
-                     >
-                        <span className={cn('absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-all', collectionOn ? 'left-[15px]' : 'left-0.5')} />
-                     </button>
-                  </div>
-                  {collectionOn && (
-                     <div className="flex gap-2">
-                        <input
-                           type="text"
-                           value={collectionName}
-                           onChange={e => setCollectionName(e.target.value)}
-                           placeholder="Nombre de la colección"
-                           className="flex-1 min-w-0 text-xs px-3 py-2 bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
-                        />
-                        <input
-                           type="text"
-                           value={collectionVolume}
-                           onChange={e => setCollectionVolume(e.target.value)}
-                           placeholder="Vol."
-                           title="Volumen / tomo (ej. 1, 2, 3…)"
-                           className="w-14 text-xs px-2 py-2 text-center bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
-                        />
-                     </div>
-                  )}
                </div>
 
                {/* Slots independientes: PDF y EPUB pueden coexistir en el mismo libro.
@@ -1106,6 +1039,45 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                      </button>
                   </div>
                </div>
+
+               {/* Colección / Saga: los miembros de una misma colección se
+                   muestran juntos en la biblioteca (ordenados por volumen),
+                   salvo el que esté fijado con pin. Debajo del resto de la
+                   información (no es identidad del libro, es agrupación). */}
+               <div className="flex flex-col gap-2 px-0.5">
+                  <div className="flex items-center justify-between gap-2">
+                     <span className="text-[11px] font-semibold text-slate-500 flex items-center gap-1.5">
+                        <Library className="w-3.5 h-3.5" /> Colección / Saga
+                     </span>
+                     <button
+                        type="button"
+                        onClick={() => setCollectionOn(v => !v)}
+                        title={collectionOn ? 'Quitar de colección' : 'Pertenece a una colección o saga'}
+                        className={cn('relative w-8 h-[18px] rounded-full transition-colors shrink-0', collectionOn ? 'bg-[var(--primary)]' : 'bg-slate-200')}
+                     >
+                        <span className={cn('absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-all', collectionOn ? 'left-[15px]' : 'left-0.5')} />
+                     </button>
+                  </div>
+                  {collectionOn && (
+                     <div className="flex gap-2">
+                        <input
+                           type="text"
+                           value={collectionName}
+                           onChange={e => setCollectionName(e.target.value)}
+                           placeholder="Nombre de la colección"
+                           className="flex-1 min-w-0 text-xs px-3 py-2 bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
+                        />
+                        <input
+                           type="text"
+                           value={collectionVolume}
+                           onChange={e => setCollectionVolume(e.target.value)}
+                           placeholder="Vol."
+                           title="Volumen / tomo (ej. 1, 2, 3…)"
+                           className="w-14 text-xs px-2 py-2 text-center bg-[var(--bg-card)] border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400"
+                        />
+                     </div>
+                  )}
+               </div>
             </div>
 
             {/* ---------- Col 3: Listas + Etapas ---------- */}
@@ -1281,27 +1253,19 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                              </button>
                           )}
                        </div>
+                       {/* Icono siempre visible (no solo al hover — en móvil no
+                           hay hover): un único control para cambiar la portada.
+                           El selector nativo ofrece Cámara y Galería juntos. */}
+                       <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); coverInputRef.current?.click(); }}
+                          className="absolute top-2 right-2 w-9 h-9 rounded-full bg-white/95 text-[var(--primary)] shadow-md flex items-center justify-center hover:scale-110 active:scale-95 transition-transform"
+                          title="Cambiar portada"
+                       >
+                          <Pencil className="w-4 h-4" />
+                       </button>
                     </div>
-                    <input type="file" ref={coverInputRef} accept="image/*" className="hidden" onChange={handleCoverUpload} />
-                 </div>
-
-                 {/* Solo en pantallas táctiles pequeñas: cámara directa vs galería */}
-                 <div className="sm:hidden flex gap-2">
-                    <button
-                       type="button"
-                       onClick={() => cameraInputRef.current?.click()}
-                       className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/30"
-                    >
-                       <Camera className="w-3.5 h-3.5" /> Tomar foto
-                    </button>
-                    <button
-                       type="button"
-                       onClick={() => coverInputRef.current?.click()}
-                       className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200"
-                    >
-                       <ImageIcon className="w-3.5 h-3.5" /> Galería
-                    </button>
-                    <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handleCameraCapture} />
+                    <input type="file" ref={coverInputRef} accept="image/*" className="hidden" onChange={handleCoverFileSelected} />
                  </div>
 
                  <div className="flex flex-col gap-2 relative mt-4">
@@ -1610,6 +1574,44 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
                  </div>
 
               </div>
+
+              {/* Colección / Saga: debajo de toda la demás información (título,
+                  autor, etiquetas, posesión, listas...), no es identidad del
+                  libro sino agrupación con otros volúmenes. */}
+              <div className="md:col-span-2 flex flex-col gap-2">
+                 <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-1.5">
+                       <Library className="w-3.5 h-3.5" /> Colección / Saga
+                    </span>
+                    <button
+                       type="button"
+                       onClick={() => setCollectionOn(v => !v)}
+                       title={collectionOn ? 'Quitar de colección' : 'Pertenece a una colección o saga'}
+                       className={cn('relative w-9 h-5 rounded-full transition-colors shrink-0', collectionOn ? 'bg-[var(--primary)]' : 'bg-slate-200')}
+                    >
+                       <span className={cn('absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-all', collectionOn ? 'left-[18px]' : 'left-0.5')} />
+                    </button>
+                 </div>
+                 {collectionOn && (
+                    <div className="flex gap-2">
+                       <input
+                          type="text"
+                          value={collectionName}
+                          onChange={e => setCollectionName(e.target.value)}
+                          placeholder="Nombre de la colección"
+                          className="flex-1 min-w-0 text-sm px-4 py-2.5 bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400 transition-all shadow-sm"
+                       />
+                       <input
+                          type="text"
+                          value={collectionVolume}
+                          onChange={e => setCollectionVolume(e.target.value)}
+                          placeholder="Vol."
+                          title="Volumen / tomo (ej. 1, 2, 3…)"
+                          className="w-20 text-sm px-2 py-2.5 text-center bg-[var(--bg-card)] border border-slate-200/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-[var(--text-main)] placeholder-slate-400 transition-all shadow-sm"
+                       />
+                    </div>
+                 )}
+              </div>
            </div>
          </div>
        </div>
@@ -1635,11 +1637,11 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
     </div>
   );
 
-  const cropModal = pendingCameraFile && (
+  const cropModal = pendingCoverFile && (
     <ImageEditorModal
-      file={pendingCameraFile}
-      onCancel={() => setPendingCameraFile(null)}
-      onConfirm={(edited, original) => { setPendingCameraFile(null); uploadCover(edited, original); }}
+      file={pendingCoverFile}
+      onCancel={() => setPendingCoverFile(null)}
+      onConfirm={(edited, original) => { setPendingCoverFile(null); uploadCover(edited, original); }}
     />
   );
 
