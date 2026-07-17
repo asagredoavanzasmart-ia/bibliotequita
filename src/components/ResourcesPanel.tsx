@@ -20,7 +20,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, Minimize2, ChevronLeft, ChevronRight, Volume1, Volume2, VolumeX } from 'lucide-react';
+import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, Minimize2, ChevronLeft, ChevronRight, Volume1, Volume2, VolumeX, ClipboardPaste } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { uploadFile, getMaxUploadMb } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
@@ -30,6 +30,7 @@ import { ResourceItem, ResourceKind, ResourceType } from '../types';
 import { NotesPanel } from './NotesPanel';
 import { pdfjs } from 'react-pdf';
 import ePub from 'epubjs';
+import mammoth from 'mammoth';
 
 interface ResourcesPanelProps {
   bookId: string;
@@ -40,7 +41,7 @@ interface ResourcesPanelProps {
 const KINDS: { id: ResourceKind; label: string; Icon: any; accept: string }[] = [
   { id: 'video', label: 'Videos', Icon: Video, accept: 'video/*' },
   { id: 'audio', label: 'Audios', Icon: Music, accept: 'audio/*' },
-  { id: 'text', label: 'Textos', Icon: FileText, accept: '.pdf,.epub,.txt' },
+  { id: 'text', label: 'Textos', Icon: FileText, accept: '.pdf,.epub,.txt,.docx' },
   { id: 'image', label: 'Imágenes', Icon: ImageIcon, accept: 'image/*' },
 ];
 
@@ -494,6 +495,12 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [linkValue, setLinkValue] = useState('');
   const [linkName, setLinkName] = useState('');
+  // Pegar texto ya copiado (en vez de subir un archivo): se guarda como un
+  // recurso .txt más, mismo camino que cualquier otro texto.
+  const [showPasteText, setShowPasteText] = useState(false);
+  const [pasteTitle, setPasteTitle] = useState('');
+  const [pasteContent, setPasteContent] = useState('');
+  const [pastingText, setPastingText] = useState(false);
   // Menú lateral de tipos colapsable (manija con chevrón en la orilla).
   const [kindMenuOpen, setKindMenuOpen] = useState(true);
   // Pantalla completa del PANEL (mismo botón ⛶ que el resto de la app): el
@@ -598,11 +605,36 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    let file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
     setUploadProgress(0);
     setUploadError(null);
+
+    // DOCX no tiene un lector propio en la app (a diferencia de PDF/EPUB/TXT):
+    // se extrae el texto plano EN EL NAVEGADOR (mammoth, sin pasar por el
+    // servidor) y se sube como .txt — mismo camino que cualquier otro recurso
+    // de texto, sin agregar un lector nuevo para un formato más.
+    if (activeKind === 'text' && file.name.toLowerCase().endsWith('.docx')) {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const { value: text } = await mammoth.extractRawText({ arrayBuffer });
+        if (!text.trim()) {
+          setUploading(false);
+          setUploadError('No se pudo extraer texto de este .docx (¿está vacío o son solo imágenes escaneadas?).');
+          if (fileInputRef.current) fileInputRef.current.value = '';
+          return;
+        }
+        file = new File([text], file.name.replace(/\.docx$/i, '.txt'), { type: 'text/plain' });
+      } catch (err) {
+        console.error('No se pudo convertir el .docx a texto:', err);
+        setUploading(false);
+        setUploadError('No se pudo leer este archivo .docx. Puede estar dañado o protegido con contraseña.');
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
+    }
+
     // Rechazar de inmediato archivos que superan el límite del servidor: sin
     // esto, el usuario esperaba minutos de subida para recibir un 413. La
     // DURACIÓN del audio/video no importa, solo el PESO: 1 hora de audio en
@@ -662,6 +694,30 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
       setShowLinkInput(false);
     } catch (err) {
       console.error('Error añadiendo enlace de video:', err);
+    }
+  };
+
+  // Texto ya copiado (de un PDF, una web, un mensaje) sin pasar por un
+  // archivo: se sube como blob .txt y queda como cualquier otro recurso de
+  // texto, con el mismo lector.
+  const handleAddPastedText = async () => {
+    const content = pasteContent.trim();
+    if (!content) return;
+    setPastingText(true);
+    setUploadError(null);
+    try {
+      const title = pasteTitle.trim() || 'Texto pegado';
+      const blob = new Blob([content], { type: 'text/plain' });
+      const { url } = await uploadFile(blob, `${title}.txt`);
+      await addResource({ kind: 'text', title, source: url, fileType: 'txt' });
+      setPasteTitle('');
+      setPasteContent('');
+      setShowPasteText(false);
+    } catch (err) {
+      console.error('No se pudo guardar el texto pegado:', err);
+      setUploadError('No se pudo guardar el texto. Verifica tu conexión e inténtalo de nuevo.');
+    } finally {
+      setPastingText(false);
     }
   };
 
@@ -792,6 +848,14 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                 <LinkIcon className="w-4 h-4" /> Enlace
               </button>
             )}
+            {activeKind === 'text' && (
+              <button
+                onClick={() => setShowPasteText((v) => !v)}
+                className={cn('flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors', showPasteText ? 'bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30' : 'bg-white text-slate-600 border-slate-200 hover:border-[var(--primary)]/40')}
+              >
+                <ClipboardPaste className="w-4 h-4" /> Pegar texto
+              </button>
+            )}
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
@@ -861,6 +925,37 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
               />
               <button onClick={handleAddLink} disabled={!linkValue.trim()} className="px-3 py-2 rounded-lg text-xs font-bold bg-[var(--primary)] text-white disabled:opacity-50 transition-colors shrink-0">
                 Añadir
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Pegar texto ya copiado (de un PDF, una web, un mensaje) en vez de
+            subir un archivo: se guarda como un recurso .txt más. */}
+        {activeKind === 'text' && showPasteText && (
+          <div className="flex flex-col gap-2 mb-4">
+            <input
+              autoFocus
+              value={pasteTitle}
+              onChange={(e) => setPasteTitle(e.target.value)}
+              placeholder="Título (cómo quieres que aparezca)…"
+              className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+            />
+            <textarea
+              value={pasteContent}
+              onChange={(e) => setPasteContent(e.target.value)}
+              placeholder="Pega aquí el texto copiado…"
+              rows={6}
+              className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-[var(--primary)] resize-y"
+            />
+            <div className="flex justify-end">
+              <button
+                onClick={handleAddPastedText}
+                disabled={!pasteContent.trim() || pastingText}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold bg-[var(--primary)] text-white disabled:opacity-50 transition-colors shrink-0"
+              >
+                {pastingText ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                {pastingText ? 'Guardando…' : 'Guardar texto'}
               </button>
             </div>
           </div>
