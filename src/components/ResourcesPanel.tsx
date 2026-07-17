@@ -91,6 +91,30 @@ function getVideoEmbedUrl(url: string): string | null {
 
 const isYouTubeEmbed = (embedUrl: string | null) => !!embedUrl && embedUrl.includes('youtube');
 
+// Miniatura para la galería de videos: YouTube expone una directo por ID
+// (img.youtube.com, sin costo de decodificar el video). Vimeo y archivos
+// directos (.mp4) no tienen una URL de miniatura pública sin llamar a su
+// API o decodificar el archivo — esos casos se resuelven con un placeholder
+// (icono) en vez de sumar una petición de red extra por cada tarjeta.
+function getVideoThumbnailUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    let id: string | null = null;
+    if (u.hostname.includes('youtube.com')) {
+      id = u.searchParams.get('v');
+      if (!id) {
+        const m = u.pathname.match(/^\/(shorts|embed)\/([^/?]+)/);
+        if (m) id = m[2];
+      }
+    } else if (u.hostname.includes('youtu.be')) {
+      id = u.pathname.slice(1) || null;
+    }
+    return id ? `https://i.ytimg.com/vi/${id}/mqdefault.jpg` : null;
+  } catch {
+    return null;
+  }
+}
+
 function formatTime(totalSeconds: number): string {
   const s = Math.max(0, Math.floor(totalSeconds));
   const m = Math.floor(s / 60);
@@ -492,8 +516,86 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
   const mediaApiRef = useRef<MediaApi | null>(null);
   const [mediaTimeSec, setMediaTimeSec] = useState(0);
 
-  const current = resources.filter((r) => r.kind === activeKind);
+  // Videos: dos modos. GALERÍA (grid de miniaturas, reordenable arrastrando)
+  // y REPRODUCCIÓN (clic en una miniatura → video + notas lado a lado, para
+  // estudiar tomando apuntes mientras se mira). Al cambiar de pestaña de
+  // tipo se sale de reproducción — evita quedar "atrapado" viendo un video
+  // de otra categoría al volver a Videos.
+  const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
+  useEffect(() => { setPlayingVideoId(null); }, [activeKind]);
+  const [draggedVideoIndex, setDraggedVideoIndex] = useState<number | null>(null);
+
+  // Columnas video/notas SOLO en escritorio (pedido explícito): en móvil no
+  // hay ancho de sobra para dos columnas, así que se apilan verticalmente
+  // sin divisor arrastrable. `isDesktopSplit` refleja el viewport (no un
+  // breakpoint CSS) porque el ancho de columna se aplica con estilo inline
+  // en píxeles/porcentaje, no con clases.
+  const [isDesktopSplit, setIsDesktopSplit] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 640);
+  useEffect(() => {
+    const onResize = () => setIsDesktopSplit(window.innerWidth >= 640);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // Divisor arrastrable entre video y notas (solo escritorio): mismo
+  // mecanismo de Pointer Events + setPointerCapture que el divisor
+  // lector/notas de ReaderView (captura el puntero para que el arrastre no
+  // se corte al pasar por encima del iframe/video).
+  const [videoSplitRatio, setVideoSplitRatio] = useState(60); // % de ancho para el video
+  const [isDraggingSplit, setIsDraggingSplit] = useState(false);
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onPointerMove = (e: PointerEvent) => {
+      if (!isDraggingSplit) return;
+      const el = splitContainerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+      const p = (x / rect.width) * 100;
+      setVideoSplitRatio(Math.min(80, Math.max(20, p))); // ninguna columna desaparece del todo
+    };
+    const onPointerUp = () => setIsDraggingSplit(false);
+    if (isDraggingSplit) {
+      document.addEventListener('pointermove', onPointerMove);
+      document.addEventListener('pointerup', onPointerUp);
+      document.addEventListener('pointercancel', onPointerUp);
+      document.body.style.userSelect = 'none';
+    } else {
+      document.body.style.userSelect = '';
+    }
+    return () => {
+      document.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerup', onPointerUp);
+      document.removeEventListener('pointercancel', onPointerUp);
+      document.body.style.userSelect = '';
+    };
+  }, [isDraggingSplit]);
+  const handleSplitPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* navegadores viejos */ }
+    e.preventDefault();
+    setIsDraggingSplit(true);
+  }, []);
+
+  // Orden manual persistido (listIndex, mismo campo que usa la biblioteca
+  // principal para "Orden manual" en BookGrid). Se aplica a todos los tipos
+  // por consistencia; por ahora solo Videos ofrece arrastrar para reordenar.
+  const current = resources.filter((r) => r.kind === activeKind).sort((a, b) => (a.listIndex ?? 0) - (b.listIndex ?? 0));
   const activeMeta = KINDS.find((k) => k.id === activeKind)!;
+  const playingResource = playingVideoId ? resources.find((r) => r.id === playingVideoId) ?? null : null;
+
+  const handleVideoDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedVideoIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+  const handleVideoDragOver = (e: React.DragEvent) => { e.preventDefault(); };
+  const handleVideoDrop = (index: number) => {
+    if (draggedVideoIndex === null || draggedVideoIndex === index) { setDraggedVideoIndex(null); return; }
+    const items = [...current];
+    const [moved] = items.splice(draggedVideoIndex, 1);
+    items.splice(index, 0, moved);
+    items.forEach((r, i) => { if ((r.listIndex ?? 0) !== i) updateResource(r.id, { listIndex: i }); });
+    setDraggedVideoIndex(null);
+  };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -611,7 +713,72 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
       </button>
 
       {/* Contenido de la categoría activa */}
-      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+      <div className={cn('flex-1', playingResource ? 'overflow-hidden flex flex-col' : 'overflow-y-auto p-4 custom-scrollbar')}>
+        {activeKind === 'video' && playingResource ? (
+          // ---------------------------------------------------------------
+          // MODO REPRODUCCIÓN: video + notas para estudiar. En escritorio,
+          // columnas lado a lado con divisor arrastrable; en móvil, apiladas
+          // (sin divisor — no hay ancho de sobra para dos columnas).
+          // ---------------------------------------------------------------
+          <>
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-200 bg-white shrink-0">
+              <button
+                onClick={() => setPlayingVideoId(null)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors shrink-0"
+              >
+                <ChevronLeft className="w-4 h-4" /> Galería
+              </button>
+              <span className="flex-1 min-w-0 truncate text-sm font-bold text-slate-800" title={playingResource.title}>
+                {/^https?:\/\//i.test(playingResource.title) ? 'Video' : playingResource.title}
+              </span>
+              <button onClick={() => { if (confirm('¿Eliminar este video?')) { deleteResource(playingResource.id); setPlayingVideoId(null); } }} className="p-1.5 text-slate-400 hover:text-rose-500 shrink-0" title="Eliminar">
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+            <div
+              ref={splitContainerRef}
+              className={cn('flex-1 min-h-0 overflow-hidden flex', isDesktopSplit ? 'flex-row' : 'flex-col')}
+            >
+              <div
+                className={cn('flex flex-col shrink-0 bg-black', isDesktopSplit && 'min-h-0 h-full')}
+                style={isDesktopSplit ? { width: `${videoSplitRatio}%` } : undefined}
+              >
+                <MediaPlayer
+                  resource={playingResource}
+                  kind="video"
+                  onPlayingChange={handlePlayingChange}
+                  apiRef={mediaApiRef}
+                  onTimeChange={setMediaTimeSec}
+                  tall
+                />
+              </div>
+              {isDesktopSplit && (
+                <div
+                  onPointerDown={handleSplitPointerDown}
+                  className="w-1.5 shrink-0 cursor-col-resize bg-slate-200 hover:bg-[var(--primary)] active:bg-[var(--primary)] transition-colors touch-none flex items-center justify-center"
+                  title="Arrastrar para ajustar el ancho"
+                >
+                  <div className="w-0.5 h-8 rounded-full bg-white/60" />
+                </div>
+              )}
+              <div className={cn('flex flex-col min-h-0', isDesktopSplit ? 'flex-1 h-full border-l border-slate-200' : 'flex-1 border-t border-slate-200')}>
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border-b border-slate-100 shrink-0">
+                  <MessageSquareQuote className="w-3.5 h-3.5 text-[var(--primary)]" />
+                  <span className="text-[10px] font-bold uppercase text-slate-500">Notas</span>
+                </div>
+                <div className="flex-1 min-h-0 overflow-hidden">
+                  <ResourceNotesPanel
+                    documentId={`${bookId}::res::${playingResource.id}`}
+                    currentPage={mediaTimeSec}
+                    onNavigateToPage={(page) => mediaApiRef.current?.seekTo(Number(page) || 0)}
+                    timeReferences
+                  />
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+        <>
         <div className="flex items-center justify-between mb-4 gap-2">
           <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
             <activeMeta.Icon className="w-5 h-5 text-[var(--primary)]" /> {activeMeta.label}
@@ -699,7 +866,80 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
           </div>
         )}
 
-        {current.length === 0 ? (
+        {activeKind === 'video' ? (
+          // -----------------------------------------------------------------
+          // GALERÍA de videos: grid de miniaturas, arrastrables para
+          // reordenar (persistido en listIndex). Clic → modo reproducción.
+          // -----------------------------------------------------------------
+          current.length === 0 ? (
+            <div className="text-center text-sm text-slate-400 py-16 border-2 border-dashed border-slate-200 rounded-xl">
+              No hay videos todavía. Pulsa «Subir» o «Enlace» para añadir.
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+              {current.map((r, index) => {
+                const thumb = getVideoThumbnailUrl(r.source);
+                return (
+                  <div
+                    key={r.id}
+                    draggable
+                    onDragStart={(e) => handleVideoDragStart(e, index)}
+                    onDragOver={handleVideoDragOver}
+                    onDrop={() => handleVideoDrop(index)}
+                    onDragEnd={() => setDraggedVideoIndex(null)}
+                    onClick={() => setPlayingVideoId(r.id)}
+                    className={cn(
+                      'group relative bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm cursor-pointer hover:shadow-md hover:border-[var(--primary)]/40 transition-all',
+                      draggedVideoIndex === index && 'opacity-40'
+                    )}
+                    title="Arrastrar para reordenar · clic para reproducir"
+                  >
+                    <div className="aspect-video bg-slate-800 relative flex items-center justify-center overflow-hidden">
+                      {thumb ? (
+                        <img src={thumb} alt={r.title} className="w-full h-full object-cover" loading="lazy" />
+                      ) : (
+                        <Video className="w-8 h-8 text-slate-500" />
+                      )}
+                      <div className="absolute inset-0 bg-black/10 group-hover:bg-black/25 transition-colors flex items-center justify-center">
+                        <div className="w-9 h-9 rounded-full bg-white/90 flex items-center justify-center shadow group-hover:scale-110 transition-transform">
+                          <Play className="w-4 h-4 text-slate-800 fill-current ml-0.5" />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 px-2 py-1.5">
+                      {renamingId === r.id ? (
+                        <input
+                          autoFocus
+                          value={renameValue}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onBlur={() => commitRename(r)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') commitRename(r); if (e.key === 'Escape') setRenamingId(null); }}
+                          className="flex-1 min-w-0 text-[11px] border border-slate-200 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+                        />
+                      ) : (
+                        <span
+                          onClick={(e) => { e.stopPropagation(); startRename(r); }}
+                          className="flex-1 min-w-0 text-[11px] text-slate-600 truncate cursor-text hover:text-slate-900"
+                          title="Renombrar"
+                        >
+                          {/^https?:\/\//i.test(r.title) ? <span className="text-slate-400 italic">Video · toca para renombrar</span> : r.title}
+                        </span>
+                      )}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); if (confirm('¿Eliminar este video?')) deleteResource(r.id); }}
+                        className="p-1 text-slate-400 hover:text-rose-500 shrink-0"
+                        title="Eliminar"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+        ) : current.length === 0 ? (
           <div className="text-center text-sm text-slate-400 py-16 border-2 border-dashed border-slate-200 rounded-xl">
             No hay {activeMeta.label.toLowerCase()} todavía. Pulsa «Subir» para añadir.
           </div>
@@ -811,6 +1051,8 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
               </div>
             ))}
           </div>
+        )}
+        </>
         )}
       </div>
 
