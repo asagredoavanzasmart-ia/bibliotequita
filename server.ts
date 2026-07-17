@@ -2977,6 +2977,16 @@ ${text}
           sesgos_e_incentivos: criterioSection([
             "financiacion_y_conflictos", "sesgo_de_seleccion_y_muestreo", "independencia_del_analisis",
           ]),
+        },
+        required: [
+          "titulo_del_estudio", "veredicto_general", "escrutinio_metodologico_y_estadistico",
+          "transparencia_y_datos", "sesgos_e_incentivos",
+        ],
+      };
+
+      const auditResponseSchemaC = {
+        type: Type.OBJECT,
+        properties: {
           retorica_e_ideologia: criterioSection([
             "lenguaje_cargado_y_normativo", "salto_del_es_al_debe", "encuadre_y_alternativas_silenciadas",
             "asimetria_de_exigencia_probatoria",
@@ -3029,8 +3039,7 @@ ${text}
           },
         },
         required: [
-          "titulo_del_estudio", "veredicto_general", "escrutinio_metodologico_y_estadistico",
-          "transparencia_y_datos", "sesgos_e_incentivos", "retorica_e_ideologia",
+          "retorica_e_ideologia",
           "auditoria_bibliografica", "epistemologia", "criterios_del_diseno", "sintesis_critica",
         ],
       };
@@ -3144,20 +3153,17 @@ sintesis_critica (declarativa, SIN recomendaciones):
 
       const pdfPart = { inlineData: { mimeType: "application/pdf", data: base64Data } };
 
-      // Dos llamadas EN PARALELO sobre el mismo PDF (ver comentario arriba de
-      // los schemas): cada una constreñida a la mitad de los campos. El
-      // systemInstruction completo viaja en ambas — es texto libre, no forma
-      // parte del schema que Gemini compila a autómata, así que no contribuye
-      // al error "too many states"; y cada llamada necesita las reglas
-      // completas (p. ej. Parte B elige criterios_del_diseno según el tipo de
-      // documento, que clasifica ella misma, sin depender de la Parte A).
-      const [responseA, responseB] = await Promise.all([
+      // Tres llamadas EN PARALELO sobre el mismo PDF: partición aún más
+      // agresiva que la anterior (de 2 a 3) porque Gemini sigue rechazando
+      // el schema con "too many states". El systemInstruction viaja en todas,
+      // permitiendo que cada parte sea independiente.
+      const [responseA, responseB, responseC] = await Promise.all([
         ai.models.generateContent({
           model: "gemini-2.5-flash",
           contents: [{
             role: "user",
             parts: [
-              { text: `PARTE 1 de 2 de la auditoría del PDF adjunto: completa SOLO "identificacion_y_tipologia" y "coherencia_datos_conclusiones", siguiendo EXACTAMENTE el system prompt (las reglas anti-complacencia 1, 2, 5 y 6 aplican de lleno aquí). Ancla todo en texto concreto del documento (cifras, tablas, frases). Nada genérico.` },
+              { text: `PARTE 1 de 3 de la auditoría del PDF adjunto: completa SOLO "identificacion_y_tipologia" y "coherencia_datos_conclusiones", siguiendo EXACTAMENTE el system prompt (las reglas anti-complacencia 1, 2, 5 y 6 aplican de lleno aquí). Ancla todo en texto concreto del documento (cifras, tablas, frases). Nada genérico.` },
               pdfPart,
             ],
           }],
@@ -3168,21 +3174,33 @@ sintesis_critica (declarativa, SIN recomendaciones):
           contents: [{
             role: "user",
             parts: [
-              { text: `PARTE 2 de 2 de la auditoría del PDF adjunto: completa el resto del schema (escrutinio metodológico, transparencia, sesgos, retórica, bibliografía, epistemología, criterios_del_diseno, síntesis crítica, título y veredicto general), siguiendo EXACTAMENTE el system prompt. Clasifica tú mismo el tipo de documento para elegir los criterios_del_diseno que correspondan (esta llamada es independiente de la otra parte de la auditoría). Recuerda: si un criterio no se puede juzgar con lo que el documento aporta, su nivel es "gris" (NO "verde"). Ancla todo en texto concreto.` },
+              { text: `PARTE 2 de 3 de la auditoría del PDF adjunto: completa SOLO "titulo_del_estudio", "veredicto_general", "escrutinio_metodologico_y_estadistico", "transparencia_y_datos", "sesgos_e_incentivos", siguiendo EXACTAMENTE el system prompt. Ancla todo en texto concreto.` },
               pdfPart,
             ],
           }],
           config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json", responseSchema: auditResponseSchemaB },
         }),
+        ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: [{
+            role: "user",
+            parts: [
+              { text: `PARTE 3 de 3 de la auditoría del PDF adjunto: completa SOLO "retorica_e_ideologia", "auditoria_bibliografica", "epistemologia", "criterios_del_diseno", "sintesis_critica", siguiendo EXACTAMENTE el system prompt. Clasifica tú mismo el tipo de documento para elegir los criterios_del_diseno (RCT, cualitativo, observacional, etc.). Recuerda: si un criterio no se puede juzgar, su nivel es "gris". Ancla todo en texto concreto.` },
+              pdfPart,
+            ],
+          }],
+          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json", responseSchema: auditResponseSchemaC },
+        }),
       ]);
 
       const textA = responseA.text;
       const textB = responseB.text;
-      if (!textA || !textB) return res.status(500).json({ error: "Gemini no devolvió resultado." });
+      const textC = responseC.text;
+      if (!textA || !textB || !textC) return res.status(500).json({ error: "Gemini no devolvió resultado." });
 
       let parsed: any;
       try {
-        parsed = { ...JSON.parse(textA), ...JSON.parse(textB) };
+        parsed = { ...JSON.parse(textA), ...JSON.parse(textB), ...JSON.parse(textC) };
       } catch {
         return res.status(500).json({ error: "Respuesta de Gemini no es JSON válido." });
       }
