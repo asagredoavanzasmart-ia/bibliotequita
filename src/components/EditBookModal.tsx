@@ -69,6 +69,19 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
   // vista previa blob: (así fue como desaparecían las portadas editadas).
   const coverUrlRef = useRef(sanitizeUrl(item.thumbnailUrl));
   const coverUploadRef = useRef<Promise<void> | null>(null);
+  // Borrar el archivo de portada anterior EN CUANTO subía el nuevo dejaba el
+  // libro apuntando a un archivo ya inexistente si luego se cerraba sin
+  // guardar: la portada "desaparecía". Ahora el borrado se aplaza:
+  //  - staleFilesRef: portadas viejas, se borran AL GUARDAR (ya no se usan).
+  //  - orphanFilesRef: portadas recién subidas, se borran AL CANCELAR (nunca
+  //    llegaron a referenciarse).
+  const staleFilesRef = useRef<string[]>([]);
+  const orphanFilesRef = useRef<string[]>([]);
+  const flushFiles = (ref: React.MutableRefObject<string[]>) => {
+    const urls = ref.current.filter(u => u?.startsWith('/api/files/'));
+    ref.current = [];
+    for (const u of urls) deleteUploadedFile(u);
+  };
   const [coverError, setCoverError] = useState<string | null>(null);
   // Portada SIN editar, conservada para poder reabrir el editor (ver
   // ImageEditorModal / botón "Reeditar portada" más abajo).
@@ -240,6 +253,18 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
       collectionName: collectionOn && collectionName.trim() ? collectionName.trim() : '',
       collectionVolume: collectionOn && collectionVolume.trim() ? collectionVolume.trim() : '',
     });
+    // Guardado hecho: las portadas nuevas ya están referenciadas (dejan de ser
+    // huérfanas) y recién ahora es seguro borrar las que quedaron sin uso.
+    orphanFilesRef.current = [];
+    flushFiles(staleFilesRef);
+    onClose();
+  };
+
+  // Cierre SIN guardar: el libro conserva su portada anterior, así que hay que
+  // borrar lo recién subido (huérfano) y NO tocar la portada vieja.
+  const handleCancel = () => {
+    staleFilesRef.current = [];
+    flushFiles(orphanFilesRef);
     onClose();
   };
 
@@ -311,14 +336,18 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
         setCoverUrl(url);
         coverUrlRef.current = url;
         URL.revokeObjectURL(previewUrl);
+        // El archivo nuevo aún no está guardado en el libro: si se cancela, es
+        // un huérfano. El viejo solo se borra si el guardado llega a ocurrir.
+        orphanFilesRef.current.push(url);
         if (previousUrl?.startsWith('/api/files/') && previousUrl !== url) {
-          deleteUploadedFile(previousUrl);
+          staleFilesRef.current.push(previousUrl);
         }
         if (original) {
           const { url: originalUrl } = await uploadFile(original, `cover-original-${Date.now()}.jpg`);
           setCoverOriginalUrl(originalUrl);
+          orphanFilesRef.current.push(originalUrl);
           if (previousOriginalUrl?.startsWith('/api/files/') && previousOriginalUrl !== originalUrl) {
-            deleteUploadedFile(previousOriginalUrl);
+            staleFilesRef.current.push(previousOriginalUrl);
           }
         }
       } catch (err) {
@@ -1282,7 +1311,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
          {showDeleteConfirm ? (
             <div className="flex items-center gap-2">
                <span className="text-xs font-bold text-rose-500">¿Eliminar definitivamente?</span>
-               <button onClick={() => { deleteItem(item.id); onClose(); }} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500 text-white hover:bg-rose-600">Sí, eliminar</button>
+               <button onClick={() => { deleteItem(item.id); handleCancel(); }} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500 text-white hover:bg-rose-600">Sí, eliminar</button>
                <button onClick={() => setShowDeleteConfirm(false)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-200 text-slate-600 hover:bg-slate-300">Cancelar</button>
             </div>
          ) : (
@@ -1312,7 +1341,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
              <button onClick={handleSave} className="px-3 md:px-4 py-1.5 md:py-2 bg-[var(--primary)] text-white text-xs md:text-sm font-bold rounded-lg hover:opacity-90 transition-all flex items-center justify-center shadow-md">
                 Guardar
              </button>
-             <button onClick={onClose} className="text-slate-400 hover:text-[var(--text-main)] transition-colors p-1.5 rounded-full hover:bg-[var(--primary)]/10">
+             <button onClick={handleCancel} className="text-slate-400 hover:text-[var(--text-main)] transition-colors p-1.5 rounded-full hover:bg-[var(--primary)]/10">
                <X className="w-5 h-5 md:w-6 md:h-6" />
              </button>
            </div>
@@ -1728,7 +1757,7 @@ export function EditBookModal({ item, onClose, onSave, inline = false }: EditBoo
            {showDeleteConfirm ? (
               <div className="flex items-center gap-2">
                  <span className="text-xs font-bold text-rose-500">¿Estás seguro?</span>
-                 <button onClick={() => { deleteItem(item.id); onClose(); }} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500 text-white hover:bg-rose-600 transition-colors">Sí, eliminar</button>
+                 <button onClick={() => { deleteItem(item.id); handleCancel(); }} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500 text-white hover:bg-rose-600 transition-colors">Sí, eliminar</button>
                  <button onClick={() => setShowDeleteConfirm(false)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-200 text-slate-600 hover:bg-slate-300 transition-colors">Cancelar</button>
               </div>
            ) : (

@@ -795,8 +795,13 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
               ref={splitContainerRef}
               className={cn('flex-1 min-h-0 overflow-hidden flex', isDesktopSplit ? 'flex-row' : 'flex-col')}
             >
+              {/* self-start (solo en PC): sin él, la columna se estira a toda la
+                  altura del split mientras el reproductor solo ocupa la suya,
+                  y todo el sobrante quedaba pintado de negro bajo el video.
+                  En móvil el contenedor es flex-col y self-start encogería el
+                  ANCHO (eje cruzado), así que ahí no se aplica. */}
               <div
-                className={cn('flex flex-col shrink-0 bg-black', isDesktopSplit && 'min-h-0 h-full')}
+                className={cn('flex flex-col shrink-0', isDesktopSplit && 'min-h-0 self-start')}
                 style={isDesktopSplit ? { width: `${videoSplitRatio}%` } : undefined}
               >
                 <MediaPlayer

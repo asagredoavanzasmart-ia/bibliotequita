@@ -335,10 +335,11 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
           <button type="button" onClick={handleToggleToRead} className="w-7 h-7 rounded-md bg-[var(--bg-app)]/90 shadow-md flex items-center justify-center transition-transform hover:scale-110" title={item.toRead ? "Quitar de Por Leer" : "Por Leer"}>
             <Hourglass className={cn("w-4 h-4", item.toRead ? "text-sky-500 fill-sky-400/30" : "text-slate-500 hover:text-sky-500")} />
           </button>
-          {/* En la vista compacta (2 columnas) en móvil la portada es muy baja
-              y el 4º botón quedaba cortado; se oculta el check ahí (el estado
-              "leído" sigue marcándose desde la barra de progreso/otras vistas). */}
-          <button type="button" onClick={handleToggleRead} className={cn("w-7 h-7 rounded-md bg-[var(--bg-app)]/90 shadow-md items-center justify-center transition-transform hover:scale-110", viewMode === 'grid-compact' ? "hidden sm:flex" : "flex")} title={item.read ? "Marcar como no leído" : "Marcar como leído"}>
+          {/* En la vista compacta la portada es demasiado baja para 4 botones y
+              el check quedaba cortado por el borde: ahí no se muestra (el
+              estado "leído" se marca desde la barra de avance o las otras
+              vistas). */}
+          <button type="button" onClick={handleToggleRead} className={cn("w-7 h-7 rounded-md bg-[var(--bg-app)]/90 shadow-md items-center justify-center transition-transform hover:scale-110", viewMode === 'grid-compact' ? "hidden" : "flex")} title={item.read ? "Marcar como no leído" : "Marcar como leído"}>
             <CheckCircle2 className={cn("w-4 h-4", item.read ? "text-emerald-500 fill-emerald-500/30" : "text-slate-500 hover:text-emerald-500")} />
           </button>
         </div>
@@ -346,9 +347,13 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
       <div className="flex-1 p-4 flex flex-col justify-between relative bg-[var(--bg-card)] rounded-b-2xl">
          <div className="relative min-w-0">
             <div className="flex justify-between items-start mb-2 min-w-0">
-              <div className="flex flex-col min-w-0 overflow-hidden">
-                {cardSettings.showAuthor && <span className="text-xs font-bold text-[var(--primary)] truncate pr-2 hover:underline z-20 relative cursor-pointer block" onClick={(e) => { e.stopPropagation(); onOpen(); }}>{item.author || 'Sin autor'}</span>}
-                {cardSettings.showYear && item.year && <span className="text-[12px] text-[var(--text-muted)] mt-0.5">{item.year}</span>}
+              {/* En la vista compacta el año va en la MISMA línea del autor: el
+                  autor ocupa el resto y se corta contra el año, con gap-2 para
+                  que ambos textos respiren. En la grilla normal siguen
+                  apilados (hay altura de sobra). */}
+              <div className={cn("min-w-0 overflow-hidden", viewMode === 'grid-compact' ? "flex flex-row items-baseline gap-2" : "flex flex-col")}>
+                {cardSettings.showAuthor && <span className={cn("text-xs font-bold text-[var(--primary)] truncate hover:underline z-20 relative cursor-pointer", viewMode === 'grid-compact' ? "min-w-0 flex-1" : "pr-2 block")} onClick={(e) => { e.stopPropagation(); onOpen(); }}>{item.author || 'Sin autor'}</span>}
+                {cardSettings.showYear && item.year && <span className={cn("text-[12px] text-[var(--text-muted)]", viewMode === 'grid-compact' ? "shrink-0" : "mt-0.5")}>{item.year}</span>}
               </div>
 
               <div className="flex gap-1 shrink-0 px-2 py-0.5 rounded overflow-hidden">
@@ -367,13 +372,20 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
           {cardSettings.showProgress && (
             <div className="w-full flex items-center gap-2 mt-2" title={`Progreso: ${pValue}%`}>
                <DraggableProgress value={pValue} color={progState.color} onChange={(v) => updateItem(item.id, { progress: v, ...(item.read && v < 100 ? { read: false } : {}) })} />
-               <span className={cn("text-[12px] font-bold w-[72px] shrink-0 text-right whitespace-nowrap", progState.color.replace('bg-', 'text-'))}>{progState.text}</span>
+               <span className={cn("text-[12px] font-bold shrink-0 text-right whitespace-nowrap", viewMode === 'grid-compact' ? "w-auto" : "w-[72px]", progState.color.replace('bg-', 'text-'))}>{progState.text}</span>
+               {/* Vista compacta: el rating (1 estrella + puntaje) comparte la
+                   línea de la barra, en vez de ocupar un renglón propio. */}
+               {viewMode === 'grid-compact' && cardSettings.showRating && (
+                 <div onPointerDown={(e) => e.stopPropagation()} className="shrink-0">
+                   <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" compact />
+                 </div>
+               )}
             </div>
           )}
           <div className={cn("flex items-end justify-between", cardSettings.showProgress ? "mt-1" : "mt-2")}>
-            {cardSettings.showRating ? (
+            {cardSettings.showRating && !(viewMode === 'grid-compact' && cardSettings.showProgress) ? (
               <div onPointerDown={(e) => e.stopPropagation()}>
-                <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" />
+                <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" compact={viewMode === 'grid-compact'} />
               </div>
             ) : <div />}
             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all z-20 relative bg-[var(--bg-app)]/80 p-0.5 rounded shadow-sm backdrop-blur-sm border border-slate-200/50">
@@ -505,7 +517,7 @@ export function BookGrid({ category, viewMode, sortBy, stageFilter, playlistFilt
           viewMode === 'covers' && "grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3",
           viewMode === 'grid' && "grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-5",
           viewMode === 'grid-compact' && "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3",
-          viewMode === 'list' && "grid-cols-1 lg:grid-cols-2 gap-4"
+          viewMode === 'list' && "grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4"
         )}>
           {filteredItems.map(item => (
             <SortableItem 

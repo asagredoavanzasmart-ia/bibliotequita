@@ -20,6 +20,10 @@ interface StarRatingProps {
   onChange: (value: number) => void;
   size?: 'sm' | 'md' | 'lg';
   readOnly?: boolean;
+  // Vista de grilla pequeña: UNA estrella + el puntaje (mismo color por tramo)
+  // en vez de las 5 estrellas, para caber en la línea de la barra de avance.
+  // El número sigue siendo editable in-place, que es como se fija el valor.
+  compact?: boolean;
 }
 
 // Puntos del polígono de estrella (lucide-react Star). Debe ser una lista de
@@ -40,7 +44,7 @@ function ratingColor(v: number): string {
   return 'text-slate-400';
 }
 
-export function StarRating({ value, onChange, size = 'sm', readOnly = false }: StarRatingProps) {
+export function StarRating({ value, onChange, size = 'sm', readOnly = false, compact = false }: StarRatingProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -101,6 +105,46 @@ export function StarRating({ value, onChange, size = 'sm', readOnly = false }: S
     setEditing(false);
   };
 
+  const numberField = editing ? (
+    <input
+      autoFocus
+      type="text"
+      inputMode="decimal"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value.replace(/\./g, ','))}
+      onBlur={commitEdit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') { e.currentTarget.blur(); }
+        if (e.key === 'Escape') { setEditing(false); }
+      }}
+      onClick={(e) => e.stopPropagation()}
+      className={cn(textSize, numGap, "font-bold bg-transparent border-0 outline-none p-0", ratingColor(value))}
+      style={{ width: `${Math.max(draft.length, 2) + 0.5}ch` }}
+    />
+  ) : (
+    <span
+      onClick={startEditing}
+      className={cn(textSize, numGap, "font-bold cursor-text select-none", ratingColor(value))}
+    >
+      {value > 0 ? value.toFixed(1).replace('.', ',') : '–'}
+    </span>
+  );
+
+  if (compact) {
+    return (
+      <div className={cn("flex items-center", gap)} onClick={(e) => e.stopPropagation()}>
+        <svg
+          className={cn(starSize, "shrink-0", value > 0 ? "text-amber-400 fill-amber-400" : "text-slate-400")}
+          viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+          fill={value > 0 ? undefined : "none"}
+        >
+          <polygon points={STAR_POINTS} />
+        </svg>
+        {numberField}
+      </div>
+    );
+  }
+
   return (
     <div className={cn("flex items-center", gap)} onClick={(e) => e.stopPropagation()}>
       <div
@@ -132,30 +176,7 @@ export function StarRating({ value, onChange, size = 'sm', readOnly = false }: S
         </div>
       </div>
 
-      {editing ? (
-        <input
-          autoFocus
-          type="text"
-          inputMode="decimal"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value.replace(/\./g, ','))}
-          onBlur={commitEdit}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') { e.currentTarget.blur(); }
-            if (e.key === 'Escape') { setEditing(false); }
-          }}
-          onClick={(e) => e.stopPropagation()}
-          className={cn(textSize, numGap, "font-bold bg-transparent border-0 outline-none p-0", ratingColor(value))}
-          style={{ width: `${Math.max(draft.length, 2) + 0.5}ch` }}
-        />
-      ) : (
-        <span
-          onClick={startEditing}
-          className={cn(textSize, numGap, "font-bold cursor-text select-none", ratingColor(value))}
-        >
-          {value > 0 ? value.toFixed(1).replace('.', ',') : '–'}
-        </span>
-      )}
+      {numberField}
 
       {!readOnly && value > 0 && (
         <button

@@ -2862,186 +2862,184 @@ ${text}
       const fileBuffer = fs.readFileSync(filePath);
       const base64Data = fileBuffer.toString("base64");
 
-      // Cada criterio del schema v2 es un objeto uniforme {analisis, nivel,
-      // evidencia}. `nivel` tiene 5 estados (ver systemInstruction): verde,
-      // amarillo, rojo, gris (no evaluable con la info del documento) y
-      // no_aplica (no corresponde a este tipo de documento).
-      const NIVEL5 = { type: Type.STRING, enum: ["verde", "amarillo", "rojo", "gris", "no_aplica"] };
-      const criterio = () => ({
-        type: Type.OBJECT,
-        properties: { analisis: { type: Type.STRING }, nivel: NIVEL5, evidencia: { type: Type.STRING } },
-        required: ["analisis", "nivel", "evidencia"],
-      });
-      // Sección compuesta solo por criterios uniformes.
-      const criterioSection = (keys: string[]) => ({
-        type: Type.OBJECT,
-        properties: Object.fromEntries(keys.map(k => [k, criterio()])),
-        required: keys,
-      });
-      const str = { type: Type.STRING };
+      // Por qué NO se usa responseSchema
+      // ---------------------------------
+      // Gemini compila el responseSchema a un autómata para forzar la forma de
+      // la salida, y este schema (≈35 criterios, cada uno objeto con enum de 5
+      // valores, más nombres de propiedad largos) lo desbordaba siempre:
+      //   400 "the specified schema produces a constraint that has too many
+      //        states for serving".
+      // Se intentó acotar arrays con maxItems y partir el schema en 2 y luego
+      // en 3 llamadas; el 400 siguió. En vez de seguir adivinando dónde está
+      // el umbral, se elimina la restricción: responseMimeType JSON (que sí
+      // garantiza JSON válido, sin vallas markdown) + la forma exacta escrita
+      // en el prompt + normalizeAudit(), que impone la forma en el servidor.
+      // Así el error es imposible por construcción, y si el modelo se desvía
+      // de la forma, el normalizador la corrige en vez de romper la UI.
+      const CRITERIO_SHAPE = '{ "analisis": "…", "nivel": "verde|amarillo|rojo|gris|no_aplica", "evidencia": "cita textual del documento" }';
 
-      // El schema completo en una sola llamada disparaba un 400 de Gemini
-      // ("the specified schema produces a constraint that has too many
-      // states for serving"). El propio mensaje señala las causas típicas:
-      // nombres de propiedad/enum largos y arrays sin longitud acotada
-      // (sobre todo anidados) — este schema tiene ambas cosas. Fix de dos
-      // frentes: (1) acotar con maxItems los 3 arrays de objetos complejos
-      // (antes sin límite explícito, así que el compilador del schema debía
-      // representar "repetir N veces" sin cota); (2) partir en DOS llamadas
-      // en paralelo sobre el mismo PDF, cada una con la mitad del schema —
-      // reduce el tamaño de la restricción por llamada sin sacrificar
-      // ningún criterio. El systemInstruction (texto libre, NO forma parte
-      // del schema) se mantiene completo e idéntico en ambas.
-      const auditResponseSchemaA = {
-        type: Type.OBJECT,
-        properties: {
-          identificacion_y_tipologia: {
-            type: Type.OBJECT,
-            properties: {
-              tipo_de_documento: str,
-              pregunta_o_afirmacion_central: str,
-              poblacion_y_muestra: str,
-              n_total: { type: Type.INTEGER },
-              subgrupos_analiticos: {
-                type: Type.ARRAY,
-                maxItems: "12",
-                items: {
-                  type: Type.OBJECT,
-                  properties: { etiqueta: str, n: { type: Type.INTEGER } },
-                  required: ["etiqueta", "n"],
-                },
-              },
-              hace_comparaciones_entre_subgrupos: { type: Type.BOOLEAN },
-              n_weird: { type: Type.INTEGER },
-              n_no_weird: { type: Type.INTEGER },
-              afirma_generalidad_transcultural: { type: Type.BOOLEAN },
-              adecuacion_del_diseno: criterio(),
-            },
-            required: [
-              "tipo_de_documento", "pregunta_o_afirmacion_central", "poblacion_y_muestra",
-              "n_total", "subgrupos_analiticos", "hace_comparaciones_entre_subgrupos",
-              "n_weird", "n_no_weird", "afirma_generalidad_transcultural", "adecuacion_del_diseno",
-            ],
-          },
-          coherencia_datos_conclusiones: {
-            type: Type.OBJECT,
-            properties: {
-              afirmaciones: {
-                type: Type.ARRAY,
-                minItems: "3",
-                maxItems: "6",
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    afirmacion: str,
-                    es_central: { type: Type.BOOLEAN },
-                    soporte_en_los_datos: str,
-                    anclaje_de_la_evidencia: {
-                      type: Type.STRING,
-                      enum: [
-                        "datos_propios_reportados",
-                        "estudio_empirico_citado",
-                        "obra_teorica_citada",
-                        "cita_de_cita",
-                        "interpretacion_del_autor",
-                        "sin_anclaje",
-                      ],
-                    },
-                    apoyo: { type: Type.STRING, enum: ["verde", "amarillo", "rojo", "gris"] },
-                    comprensividad: { type: Type.STRING, enum: ["verde", "amarillo", "rojo", "gris"] },
-                  },
-                  required: ["afirmacion", "es_central", "soporte_en_los_datos", "anclaje_de_la_evidencia", "apoyo", "comprensividad"],
-                },
-              },
-              coherencia_global_datos_conclusiones: criterio(),
-              spin_y_enfasis: criterio(),
-            },
-            required: ["afirmaciones", "coherencia_global_datos_conclusiones", "spin_y_enfasis"],
-          },
-        },
-        required: ["identificacion_y_tipologia", "coherencia_datos_conclusiones"],
-      };
-
-      const auditResponseSchemaB = {
-        type: Type.OBJECT,
-        properties: {
-          titulo_del_estudio: str,
-          veredicto_general: str,
-          escrutinio_metodologico_y_estadistico: criterioSection([
-            "controles_y_confusores", "potencia_y_tamano_muestral",
-            "magnitud_del_efecto_e_incertidumbre", "senales_de_p_hacking",
-          ]),
-          transparencia_y_datos: criterioSection([
-            "preregistro_y_protocolo", "disponibilidad_de_datos_y_codigo", "reporte_selectivo_de_resultados",
-          ]),
-          sesgos_e_incentivos: criterioSection([
-            "financiacion_y_conflictos", "sesgo_de_seleccion_y_muestreo", "independencia_del_analisis",
-          ]),
-        },
-        required: [
-          "titulo_del_estudio", "veredicto_general", "escrutinio_metodologico_y_estadistico",
-          "transparencia_y_datos", "sesgos_e_incentivos",
+      // Claves de cada sección de criterios uniformes. Fuente de verdad ÚNICA:
+      // se usa tanto para describir la forma en el prompt como para normalizar
+      // la respuesta — no pueden desincronizarse.
+      const SECCIONES_CRITERIOS: Record<string, string[]> = {
+        escrutinio_metodologico_y_estadistico: [
+          "controles_y_confusores", "potencia_y_tamano_muestral",
+          "magnitud_del_efecto_e_incertidumbre", "senales_de_p_hacking",
+        ],
+        transparencia_y_datos: [
+          "preregistro_y_protocolo", "disponibilidad_de_datos_y_codigo", "reporte_selectivo_de_resultados",
+        ],
+        sesgos_e_incentivos: [
+          "financiacion_y_conflictos", "sesgo_de_seleccion_y_muestreo", "independencia_del_analisis",
+        ],
+        retorica_e_ideologia: [
+          "lenguaje_cargado_y_normativo", "salto_del_es_al_debe", "encuadre_y_alternativas_silenciadas",
+          "asimetria_de_exigencia_probatoria",
+        ],
+        auditoria_bibliografica: [
+          "uso_real_de_las_fuentes", "calidad_de_fuentes_en_afirmaciones_clave",
+          "autocitacion_y_endogamia", "afirmaciones_fuertes_sin_fuente",
+          "inflacion_atributiva",
+        ],
+        epistemologia: [
+          "falsabilidad", "explicaciones_alternativas", "hipotesis_ad_hoc",
+          "validez_de_constructo", "salto_causal_y_extrapolacion", "corroboracion_externa",
+          "mecanismo_medido_o_narrado", "compatibilidad_con_el_conocimiento_establecido",
+          "modelo_causal_explicito",
         ],
       };
+      const SINTESIS_KEYS = [
+        "lo_que_dicen_los_datos", "lo_que_el_estudio_si_soporta", "lo_que_el_estudio_no_soporta",
+        "precauciones_de_lectura", "incertidumbres_abiertas", "conceptos_para_profundizar",
+        "preguntas_para_el_lector",
+      ];
+      const seccionShape = (k: string) =>
+        '"' + k + '": {\n' + SECCIONES_CRITERIOS[k].map(c => '    "' + c + '": ' + CRITERIO_SHAPE).join(',\n') + '\n  }';
 
-      const auditResponseSchemaC = {
-        type: Type.OBJECT,
-        properties: {
-          retorica_e_ideologia: criterioSection([
-            "lenguaje_cargado_y_normativo", "salto_del_es_al_debe", "encuadre_y_alternativas_silenciadas",
-            "asimetria_de_exigencia_probatoria",
-          ]),
-          auditoria_bibliografica: criterioSection([
-            "uso_real_de_las_fuentes", "calidad_de_fuentes_en_afirmaciones_clave",
-            "autocitacion_y_endogamia", "afirmaciones_fuertes_sin_fuente",
-            "inflacion_atributiva",
-          ]),
-          epistemologia: criterioSection([
-            "falsabilidad", "explicaciones_alternativas", "hipotesis_ad_hoc",
-            "validez_de_constructo", "salto_causal_y_extrapolacion", "corroboracion_externa",
-            "mecanismo_medido_o_narrado", "compatibilidad_con_el_conocimiento_establecido",
-            "modelo_causal_explicito",
-          ]),
-          criterios_del_diseno: {
-            type: Type.ARRAY,
-            minItems: "4",
-            maxItems: "8",
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                familia: {
-                  type: Type.STRING,
-                  enum: ["cualitativo", "rct", "observacional", "meta_analisis", "teorico_modelado", "ensayo_divulgacion", "otro"],
-                },
-                nombre: str,
-                analisis: str,
-                nivel: NIVEL5,
-                evidencia: str,
-              },
-              required: ["familia", "nombre", "analisis", "nivel", "evidencia"],
-            },
-          },
-          sintesis_critica: {
-            type: Type.OBJECT,
-            properties: {
-              lo_que_dicen_los_datos: str,
-              lo_que_el_estudio_si_soporta: str,
-              lo_que_el_estudio_no_soporta: str,
-              precauciones_de_lectura: str,
-              incertidumbres_abiertas: str,
-              conceptos_para_profundizar: str,
-              preguntas_para_el_lector: str,
-            },
-            required: [
-              "lo_que_dicen_los_datos", "lo_que_el_estudio_si_soporta", "lo_que_el_estudio_no_soporta",
-              "precauciones_de_lectura", "incertidumbres_abiertas", "conceptos_para_profundizar", "preguntas_para_el_lector",
-            ],
-          },
-        },
-        required: [
-          "retorica_e_ideologia",
-          "auditoria_bibliografica", "epistemologia", "criterios_del_diseno", "sintesis_critica",
-        ],
+      const SHAPE_A = `{
+  "identificacion_y_tipologia": {
+    "tipo_de_documento": "p. ej. ensayo de divulgación, RCT, estudio cualitativo…",
+    "pregunta_o_afirmacion_central": "…",
+    "poblacion_y_muestra": "…",
+    "n_total": 0,
+    "subgrupos_analiticos": [{ "etiqueta": "…", "n": 0 }],
+    "hace_comparaciones_entre_subgrupos": false,
+    "n_weird": 0,
+    "n_no_weird": 0,
+    "afirma_generalidad_transcultural": false,
+    "adecuacion_del_diseno": ${CRITERIO_SHAPE}
+  },
+  "coherencia_datos_conclusiones": {
+    "afirmaciones": [{
+      "afirmacion": "afirmación textual del documento",
+      "es_central": true,
+      "soporte_en_los_datos": "qué dato concreto la sostiene (o su ausencia)",
+      "anclaje_de_la_evidencia": "datos_propios_reportados|estudio_empirico_citado|obra_teorica_citada|cita_de_cita|interpretacion_del_autor|sin_anclaje",
+      "apoyo": "verde|amarillo|rojo|gris",
+      "comprensividad": "verde|amarillo|rojo|gris"
+    }],
+    "coherencia_global_datos_conclusiones": ${CRITERIO_SHAPE},
+    "spin_y_enfasis": ${CRITERIO_SHAPE}
+  }
+}`;
+
+      const SHAPE_B = `{
+  "titulo_del_estudio": "…",
+  "veredicto_general": "2-3 frases descriptivas, ancladas en los criterios",
+  ${seccionShape("escrutinio_metodologico_y_estadistico")},
+  ${seccionShape("transparencia_y_datos")},
+  ${seccionShape("sesgos_e_incentivos")}
+}`;
+
+      const SHAPE_C = `{
+  ${seccionShape("retorica_e_ideologia")},
+  ${seccionShape("auditoria_bibliografica")},
+  ${seccionShape("epistemologia")},
+  "criterios_del_diseno": [{
+    "familia": "cualitativo|rct|observacional|meta_analisis|teorico_modelado|ensayo_divulgacion|otro",
+    "nombre": "nombre del criterio propio de este diseño",
+    "analisis": "…",
+    "nivel": "verde|amarillo|rojo|gris|no_aplica",
+    "evidencia": "cita textual"
+  }],
+  "sintesis_critica": {
+${SINTESIS_KEYS.map(k => '    "' + k + '": "…"').join(',\n')}
+  }
+}`;
+
+      // Impone la forma esperada por el cliente pase lo que pase con el modelo.
+      // Un criterio ausente NO es "verde": es "gris" (no evaluable), la misma
+      // regla de oro del prompt — así la falta de datos nunca se lee como
+      // aprobación, ni siquiera cuando el fallo es nuestro.
+      const NIVELES_VALIDOS = new Set(["verde", "amarillo", "rojo", "gris", "no_aplica"]);
+      const normCriterio = (c: any) => ({
+        analisis: typeof c?.analisis === "string" ? c.analisis : "",
+        nivel: NIVELES_VALIDOS.has(c?.nivel) ? c.nivel : "gris",
+        evidencia: typeof c?.evidencia === "string" ? c.evidencia : "",
+      });
+      const normalizeAudit = (raw: any) => {
+        const p: any = raw && typeof raw === "object" ? raw : {};
+        for (const [sec, keys] of Object.entries(SECCIONES_CRITERIOS)) {
+          const src = p[sec] && typeof p[sec] === "object" ? p[sec] : {};
+          const out: any = {};
+          for (const k of keys) out[k] = normCriterio(src[k]);
+          p[sec] = out;
+        }
+        const tip = p.identificacion_y_tipologia && typeof p.identificacion_y_tipologia === "object"
+          ? p.identificacion_y_tipologia : {};
+        const numero = (v: any) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+        p.identificacion_y_tipologia = {
+          tipo_de_documento: typeof tip.tipo_de_documento === "string" ? tip.tipo_de_documento : "",
+          pregunta_o_afirmacion_central: typeof tip.pregunta_o_afirmacion_central === "string" ? tip.pregunta_o_afirmacion_central : "",
+          poblacion_y_muestra: typeof tip.poblacion_y_muestra === "string" ? tip.poblacion_y_muestra : "",
+          n_total: numero(tip.n_total),
+          subgrupos_analiticos: Array.isArray(tip.subgrupos_analiticos)
+            ? tip.subgrupos_analiticos
+                .filter((s: any) => s && typeof s === "object")
+                .map((s: any) => ({ etiqueta: typeof s.etiqueta === "string" ? s.etiqueta : "", n: numero(s.n) }))
+            : [],
+          hace_comparaciones_entre_subgrupos: tip.hace_comparaciones_entre_subgrupos === true,
+          n_weird: numero(tip.n_weird),
+          n_no_weird: numero(tip.n_no_weird),
+          afirma_generalidad_transcultural: tip.afirma_generalidad_transcultural === true,
+          adecuacion_del_diseno: normCriterio(tip.adecuacion_del_diseno),
+        };
+        const coh = p.coherencia_datos_conclusiones && typeof p.coherencia_datos_conclusiones === "object"
+          ? p.coherencia_datos_conclusiones : {};
+        const NIVEL4 = new Set(["verde", "amarillo", "rojo", "gris"]);
+        const nivel4 = (v: any) => (NIVEL4.has(v) ? v : "gris");
+        p.coherencia_datos_conclusiones = {
+          afirmaciones: Array.isArray(coh.afirmaciones)
+            ? coh.afirmaciones
+                .filter((a: any) => a && typeof a === "object" && typeof a.afirmacion === "string")
+                .map((a: any) => ({
+                  afirmacion: a.afirmacion,
+                  es_central: a.es_central === true,
+                  soporte_en_los_datos: typeof a.soporte_en_los_datos === "string" ? a.soporte_en_los_datos : "",
+                  anclaje_de_la_evidencia: typeof a.anclaje_de_la_evidencia === "string" ? a.anclaje_de_la_evidencia : "sin_anclaje",
+                  apoyo: nivel4(a.apoyo),
+                  comprensividad: nivel4(a.comprensividad),
+                }))
+            : [],
+          coherencia_global_datos_conclusiones: normCriterio(coh.coherencia_global_datos_conclusiones),
+          spin_y_enfasis: normCriterio(coh.spin_y_enfasis),
+        };
+        p.criterios_del_diseno = Array.isArray(p.criterios_del_diseno)
+          ? p.criterios_del_diseno
+              .filter((c: any) => c && typeof c === "object" && typeof c.nombre === "string")
+              .map((c: any) => ({
+                familia: typeof c.familia === "string" ? c.familia : "otro",
+                nombre: c.nombre,
+                ...normCriterio(c),
+              }))
+          : [];
+        const sint = p.sintesis_critica && typeof p.sintesis_critica === "object" ? p.sintesis_critica : {};
+        const sintOut: any = {};
+        for (const k of SINTESIS_KEYS) sintOut[k] = typeof sint[k] === "string" ? sint[k] : "";
+        p.sintesis_critica = sintOut;
+        p.titulo_del_estudio = typeof p.titulo_del_estudio === "string" ? p.titulo_del_estudio : "";
+        p.veredicto_general = typeof p.veredicto_general === "string" ? p.veredicto_general : "";
+        return p;
       };
 
       const AUDIT_SYSTEM_INSTRUCTION = `Eres un epistemólogo y metodólogo de la ciencia que audita estudios, artículos y documentos con rigor escéptico. Tu trabajo NO es recomendar ni tranquilizar: es exponer, con precisión y anclado al texto, qué sostiene el documento y qué no, para que el LECTOR saque sus propias conclusiones. Respondes en español, directo y sin eufemismos.
@@ -3153,43 +3151,57 @@ sintesis_critica (declarativa, SIN recomendaciones):
 
       const pdfPart = { inlineData: { mimeType: "application/pdf", data: base64Data } };
 
-      // Tres llamadas EN PARALELO sobre el mismo PDF: partición aún más
-      // agresiva que la anterior (de 2 a 3) porque Gemini sigue rechazando
-      // el schema con "too many states". El systemInstruction viaja en todas,
-      // permitiendo que cada parte sea independiente.
+      // Tres llamadas EN PARALELO sobre el mismo PDF. El motivo de partir ya no
+      // es el schema (ya no hay), sino la LONGITUD de salida: ~35 criterios con
+      // análisis y cita en una sola respuesta se truncaban. El
+      // systemInstruction completo viaja en las tres, así que cada parte es
+      // independiente y puede clasificar el documento por su cuenta.
+      const parte = (n: number, campos: string, extra = "") =>
+        `PARTE ${n} de 3 de la auditoría del PDF adjunto. Devuelve ÚNICAMENTE un objeto JSON con ${campos}, siguiendo EXACTAMENTE el system prompt. Ancla todo en texto concreto del documento (cifras, tablas, frases textuales). Nada genérico.${extra ? " " + extra : ""}`;
+      const conForma = (instruccion: string, forma: string) =>
+        `${instruccion}\n\nFORMA EXACTA de la respuesta (mismas claves, mismo anidamiento; los valores son ejemplos ilustrativos, reemplázalos por tu análisis real):\n${forma}`;
+
       const [responseA, responseB, responseC] = await Promise.all([
         ai.models.generateContent({
           model: "gemini-2.5-flash",
           contents: [{
             role: "user",
             parts: [
-              { text: `PARTE 1 de 3 de la auditoría del PDF adjunto: completa SOLO "identificacion_y_tipologia" y "coherencia_datos_conclusiones", siguiendo EXACTAMENTE el system prompt (las reglas anti-complacencia 1, 2, 5 y 6 aplican de lleno aquí). Ancla todo en texto concreto del documento (cifras, tablas, frases). Nada genérico.` },
+              { text: conForma(
+                parte(1, 'las claves "identificacion_y_tipologia" y "coherencia_datos_conclusiones"',
+                  'Las reglas anti-complacencia 1, 2, 5 y 6 aplican de lleno aquí. Incluye entre 3 y 6 afirmaciones, marcando con "es_central": true las que sostienen la tesis principal.'),
+                SHAPE_A) },
               pdfPart,
             ],
           }],
-          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json", responseSchema: auditResponseSchemaA },
+          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json" },
         }),
         ai.models.generateContent({
           model: "gemini-2.5-flash",
           contents: [{
             role: "user",
             parts: [
-              { text: `PARTE 2 de 3 de la auditoría del PDF adjunto: completa SOLO "titulo_del_estudio", "veredicto_general", "escrutinio_metodologico_y_estadistico", "transparencia_y_datos", "sesgos_e_incentivos", siguiendo EXACTAMENTE el system prompt. Ancla todo en texto concreto.` },
+              { text: conForma(
+                parte(2, 'las claves "titulo_del_estudio", "veredicto_general", "escrutinio_metodologico_y_estadistico", "transparencia_y_datos" y "sesgos_e_incentivos"'),
+                SHAPE_B) },
               pdfPart,
             ],
           }],
-          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json", responseSchema: auditResponseSchemaB },
+          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json" },
         }),
         ai.models.generateContent({
           model: "gemini-2.5-flash",
           contents: [{
             role: "user",
             parts: [
-              { text: `PARTE 3 de 3 de la auditoría del PDF adjunto: completa SOLO "retorica_e_ideologia", "auditoria_bibliografica", "epistemologia", "criterios_del_diseno", "sintesis_critica", siguiendo EXACTAMENTE el system prompt. Clasifica tú mismo el tipo de documento para elegir los criterios_del_diseno (RCT, cualitativo, observacional, etc.). Recuerda: si un criterio no se puede juzgar, su nivel es "gris". Ancla todo en texto concreto.` },
+              { text: conForma(
+                parte(3, 'las claves "retorica_e_ideologia", "auditoria_bibliografica", "epistemologia", "criterios_del_diseno" y "sintesis_critica"',
+                  'Clasifica tú mismo el tipo de documento para elegir entre 4 y 8 criterios_del_diseno que le correspondan. Recuerda: si un criterio no se puede juzgar con lo que el documento aporta, su nivel es "gris", NO "verde".'),
+                SHAPE_C) },
               pdfPart,
             ],
           }],
-          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json", responseSchema: auditResponseSchemaC },
+          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json" },
         }),
       ]);
 
@@ -3198,10 +3210,15 @@ sintesis_critica (declarativa, SIN recomendaciones):
       const textC = responseC.text;
       if (!textA || !textB || !textC) return res.status(500).json({ error: "Gemini no devolvió resultado." });
 
+      // responseMimeType JSON ya evita las vallas markdown, pero se limpian por
+      // si acaso: un solo ```json de más tiraba la auditoría entera.
+      const parseJson = (t: string) => JSON.parse(t.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
+
       let parsed: any;
       try {
-        parsed = { ...JSON.parse(textA), ...JSON.parse(textB), ...JSON.parse(textC) };
-      } catch {
+        parsed = normalizeAudit({ ...parseJson(textA), ...parseJson(textB), ...parseJson(textC) });
+      } catch (e) {
+        console.error("[Auditor] Respuesta no parseable:", e);
         return res.status(500).json({ error: "Respuesta de Gemini no es JSON válido." });
       }
 
