@@ -91,6 +91,47 @@ function toRgba(color: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+// Fusiona los rectángulos de un resaltado PDF en bloques continuos por renglón.
+// En PDFs justificados pdf.js emite un span POR PALABRA (el espacio es solo
+// distancia horizontal, no un carácter), así que el match produce un rect por
+// palabra y la marca se ve "punteada". Se agrupa por renglón visual
+// (solapamiento vertical) y se fusionan huecos menores a ~1× la altura del
+// renglón: cierra espacios de palabra pero NO cruza el medianil de un PDF a
+// dos columnas (varias veces más ancho que la altura de línea).
+type HLRect = { left: number; top: number; right: number; bottom: number };
+function mergeHighlightRects(rects: HLRect[]): HLRect[] {
+  const lines: HLRect[][] = [];
+  const sorted = [...rects].sort((a, b) => (a.top - b.top) || (a.left - b.left));
+  for (const r of sorted) {
+    const line = lines.find(l => {
+      const ref = l[0];
+      const overlap = Math.min(ref.bottom, r.bottom) - Math.max(ref.top, r.top);
+      return overlap > 0.5 * Math.min(ref.bottom - ref.top, r.bottom - r.top);
+    });
+    if (line) line.push(r);
+    else lines.push([r]);
+  }
+  const out: HLRect[] = [];
+  for (const line of lines) {
+    line.sort((a, b) => a.left - b.left);
+    let cur = { ...line[0] };
+    for (let i = 1; i < line.length; i++) {
+      const r = line[i];
+      const h = Math.max(cur.bottom - cur.top, r.bottom - r.top);
+      if (r.left - cur.right <= h) {
+        cur.right = Math.max(cur.right, r.right);
+        cur.top = Math.min(cur.top, r.top);
+        cur.bottom = Math.max(cur.bottom, r.bottom);
+      } else {
+        out.push(cur);
+        cur = { ...r };
+      }
+    }
+    out.push(cur);
+  }
+  return out;
+}
+
 export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   const { items, updateItem, categories } = useLibrary();
   const item = items.find(i => i.id === bookId);
@@ -156,6 +197,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   const [selectedText, setSelectedText ] = useState('');
   const [selectionRect, setSelectionRect ] = useState<{ top: number, left: number, width: number, bottom: number } | null>(null);
+  // Range clonado de la última selección capturada. En móvil, tocar un botón
+  // de la barrita de citas COLAPSA la selección nativa antes de que dispare el
+  // click; este ref conserva el rango para poder reconstruir el texto exacto
+  // (con espacios geométricos) en ese momento. No se limpia al colapsar la
+  // selección — ese es justamente el caso en el que se necesita.
+  const selectedRangeRef = useRef<Range | null>(null);
 
   // Referencia a la Rendition de epubjs — necesaria para acceder al contenido
   // del iframe interno (selección de texto para citas y extracción para TTS).
@@ -575,11 +622,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // descartando invisibles (soft hyphen U+00AD, zero-width) y colapsando
   // rachas de espacios — PDFs con ese tipo de caracteres hacían fallar el
   // match exacto de la frase ("en este PDF no marca nada").
-  const buildPageLines = useCallback((pageEl: Element): { top: number; text: string; charMap: { node: Text; offset: number }[] }[] => {
+  const buildPageLines = useCallback((pageEl: Element): { top: number; text: string; charMap: ({ node: Text; offset: number } | null)[] }[] => {
     const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
     if (!textLayer) return [];
     const allSpans = Array.from(textLayer.querySelectorAll('span')) as HTMLElement[];
-    const realSpans = allSpans.filter(s => (s.textContent || '').trim().length > 0);
+    // Se conservan también los spans de SOLO espacio: en algunos PDFs el
+    // espacio entre palabras vive en su propio span, y filtrarlos pegaba las
+    // palabras ("todoslosseres").
+    const realSpans = allSpans.filter(s => (s.textContent || '').length > 0);
     if (realSpans.length === 0) return [];
 
     const TOLERANCE = 6; // px: spans con top dentro de este margen = misma línea
@@ -592,13 +642,35 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
     rawLines.sort((a, b) => a.top - b.top);
 
+    // Hueco horizontal mínimo (en proporción a la altura de línea) para
+    // considerar que entre dos spans hay un espacio de palabra. Los espacios
+    // tipográficos reales miden ≥ ~0.2× el tamaño de fuente; el kerning entre
+    // sub-spans de una misma palabra es mucho menor (o negativo).
+    const WORD_GAP_RATIO = 0.15;
+
     const INVISIBLES = new Set(['\u00AD', '\u200B', '\u200C', '\u200D', '\uFEFF']);
-    const lines: { top: number; text: string; charMap: { node: Text; offset: number }[] }[] = [];
+    const lines: { top: number; text: string; charMap: ({ node: Text; offset: number } | null)[] }[] = [];
     for (const rl of rawLines) {
       let text = '';
-      const charMap: { node: Text; offset: number }[] = [];
+      const charMap: ({ node: Text; offset: number } | null)[] = [];
       let prevSpace = true; // true inicial = trim izquierdo implícito
+      let prevRight: number | null = null;
       for (const span of rl.spans) {
+        // En PDFs justificados el generador suele emitir UN span por palabra
+        // SIN carácter de espacio entre ellos (el hueco es solo posición CSS):
+        // el join de spans devolvía las palabras pegadas ("todoslosseres") y
+        // el resaltado salía punteado. El espacio se reconstruye por geometría.
+        // getBoundingClientRect y no offsetLeft/offsetWidth: pdf.js escala los
+        // spans con transform:scaleX y las métricas offset* ignoran transforms.
+        const rect = span.getBoundingClientRect();
+        if (rect.width > 0) {
+          if (!prevSpace && prevRight !== null && rect.left - prevRight > rect.height * WORD_GAP_RATIO) {
+            text += ' ';
+            charMap.push(null); // espacio sintético: no existe como carácter en el DOM
+            prevSpace = true;
+          }
+          prevRight = rect.right;
+        }
         const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
         let tn: Node | null;
         while ((tn = walker.nextNode())) {
@@ -627,6 +699,61 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     }
     return lines;
   }, []);
+
+  // Texto EXACTO de la selección actual en un PDF, reconstruido desde el
+  // charMap de buildPageLines (que ya trae los espacios geométricos), en vez
+  // de selection.toString() — que concatena los spans del text layer tal cual
+  // y en PDFs con un span por palabra devuelve todo pegado ("todoslosseres").
+  // Devuelve null si no aplica (no es PDF, selección perdida, PDF escaneado):
+  // el llamador usa entonces selectedText tal como está.
+  const getAccurateSelectionText = useCallback((): string | null => {
+    if (activeType !== 'pdf') return null;
+    let range: Range | null = null;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.rangeCount > 0) range = sel.getRangeAt(0);
+    // En móvil, tocar la barrita colapsa la selección nativa antes del click:
+    // se usa el Range clonado en la última captura.
+    if (!range) range = selectedRangeRef.current;
+    if (!range || range.collapsed) return null;
+    try {
+      const parts: string[] = [];
+      for (const pageEl of Array.from(document.querySelectorAll('.react-pdf__Page'))) {
+        if (!range.intersectsNode(pageEl)) continue;
+        const cleanLines = buildPageLines(pageEl);
+        if (cleanLines.length === 0) continue;
+        // Mismo ensamblado global que highlightPhraseInDOM (renglones unidos
+        // con un espacio), pero conservando mayúsculas: es texto para guardar.
+        let normText = '';
+        const charMap: ({ node: Text; offset: number } | null)[] = [];
+        cleanLines.forEach((line, idx) => {
+          if (idx > 0) { normText += ' '; charMap.push(null); }
+          normText += line.text;
+          charMap.push(...line.charMap);
+        });
+        // Primer y último carácter REAL dentro del rango; los espacios
+        // sintéticos (null) interiores quedan incluidos por el slice.
+        let first = -1, last = -1;
+        for (let k = 0; k < charMap.length; k++) {
+          const e = charMap[k];
+          if (!e) continue;
+          // comparePoint === 0 ⇒ el punto está dentro del rango [start, end];
+          // se excluye el caso "== end" (el offset final es exclusivo).
+          const inside = range.comparePoint(e.node, e.offset) === 0 &&
+            !(range.endContainer === e.node && range.endOffset === e.offset);
+          if (inside) { if (first === -1) first = k; last = k; }
+        }
+        if (first !== -1) {
+          const part = normText.slice(first, last + 1).replace(/\s+/g, ' ').trim();
+          if (part.length > 0) parts.push(part);
+        }
+      }
+      const joined = parts.join(' ').trim();
+      return joined.length > 0 ? joined : null;
+    } catch {
+      // Nodos ya desmontados (la página se re-renderizó): mejor el texto crudo.
+      return null;
+    }
+  }, [activeType, buildPageLines]);
 
   // Texto ESTRUCTURADO de una página PDF concreta (bloques '\n\n' por gap
   // vertical, renglones '\n'). Parametrizado por número de página para que el
@@ -791,6 +918,20 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     for (let i = 0; i < phraseList.length; i++) {
       if (phraseList[i].toLowerCase().includes(needle) || needle.includes(phraseList[i].toLowerCase().replace(/\.$/, ''))) {
         return i;
+      }
+    }
+    // Respaldo insensible a espacios: una selección hecha sobre spans "por
+    // palabra" de pdf.js puede llegar con las palabras pegadas
+    // ("todoslosseres") mientras las frases de página ya traen espacios
+    // reconstruidos. Sin esto, el TTS "leer desde la selección" arrancaría
+    // en silencio desde la frase 0.
+    const compactNeedle = needle.replace(/ /g, '');
+    if (compactNeedle.length >= 6) {
+      for (let i = 0; i < phraseList.length; i++) {
+        const compactPhrase = phraseList[i].toLowerCase().replace(/ /g, '');
+        if (compactPhrase.includes(compactNeedle) || compactNeedle.includes(compactPhrase.replace(/\.$/, ''))) {
+          return i;
+        }
       }
     }
     // Fallback: comparar solo las primeras palabras
@@ -1028,7 +1169,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     // La frase proviene del MISMO pipeline de normalización de buildPageLines
     // (vía getPdfPageStructuredText → splitIntoPhrases), así que basta
     // lowercase + colapso de espacios para el matching.
-    const cleanPhrase = phraseText.replace(/\s+/g, ' ').trim().toLowerCase();
+    // NFKC + sin invisibles ANTES de comparar: las citas guardadas desde
+    // selection.toString() (texto crudo del DOM) pueden traer soft hyphens o
+    // ligaduras que el texto de página (ya normalizado) no tiene.
+    const cleanPhrase = phraseText.normalize('NFKC').replace(/[\u00AD\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
     if (cleanPhrase.length < 3) return;
 
     const pageEls = Array.from(document.querySelectorAll('.react-pdf__Page'));
@@ -1051,6 +1195,26 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
       let matchIndex = normText.indexOf(cleanPhrase);
       let matchLen = cleanPhrase.length;
+      if (matchIndex === -1) {
+        // Respaldo insensible a espacios: las citas guardadas ANTES de la
+        // reconstrucción geométrica de espacios traen las palabras pegadas
+        // ("todoslosseres") y ya no coinciden con el texto de página (que
+        // ahora sí tiene espacios). Se comparan ambos lados SIN espacios y
+        // el resultado se mapea de vuelta a los índices del texto real.
+        const compact = cleanPhrase.replace(/ /g, '');
+        if (compact.length >= 3) {
+          let noSpace = '';
+          const idxMap: number[] = [];
+          for (let i = 0; i < normText.length; i++) {
+            if (normText[i] !== ' ') { noSpace += normText[i]; idxMap.push(i); }
+          }
+          const j = noSpace.indexOf(compact);
+          if (j !== -1) {
+            matchIndex = idxMap[j];
+            matchLen = idxMap[j + compact.length - 1] - matchIndex + 1;
+          }
+        }
+      }
       if (matchIndex === -1) {
         // Respaldo acotado: primeras palabras con longitud mínima exigente,
         // para no pintar por una coincidencia trivial.
@@ -1077,7 +1241,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
       const layer = ensurePdfHighlightLayer(pageEl);
       const baseRect = pageEl.getBoundingClientRect();
-      let firstDiv: HTMLElement | null = null;
+      // 1) Recolectar TODOS los rectángulos del match. Con un span por
+      //    palabra (PDFs justificados) sale un rect por palabra; pintarlos
+      //    tal cual dejaba la marca "punteada", con un hueco entre palabras.
+      const rawRects: HLRect[] = [];
       for (const run of runs) {
         try {
           const range = document.createRange();
@@ -1085,19 +1252,24 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           range.setEnd(run.node, Math.min(run.b + 1, run.node.length));
           for (const r of Array.from(range.getClientRects())) {
             if (r.width <= 0 || r.height <= 0) continue;
-            const d = document.createElement('div');
-            d.style.position = 'absolute';
-            d.style.left = `${r.left - baseRect.left}px`;
-            d.style.top = `${r.top - baseRect.top}px`;
-            d.style.width = `${r.width}px`;
-            d.style.height = `${r.height}px`;
-            d.style.backgroundColor = toRgba(color, 0.45);
-            d.style.borderRadius = '3px';
-            if (persistent) d.dataset.persistent = 'true';
-            layer.appendChild(d);
-            if (!firstDiv) firstDiv = d;
+            rawRects.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
           }
         } catch { /* el nodo pudo mutar entre la extracción y el pintado */ }
+      }
+      // 2) Fusionar por renglón visual y pintar bloques continuos.
+      let firstDiv: HTMLElement | null = null;
+      for (const r of mergeHighlightRects(rawRects)) {
+        const d = document.createElement('div');
+        d.style.position = 'absolute';
+        d.style.left = `${r.left - baseRect.left}px`;
+        d.style.top = `${r.top - baseRect.top}px`;
+        d.style.width = `${r.right - r.left}px`;
+        d.style.height = `${r.bottom - r.top}px`;
+        d.style.backgroundColor = toRgba(color, 0.45);
+        d.style.borderRadius = '3px';
+        if (persistent) d.dataset.persistent = 'true';
+        layer.appendChild(d);
+        if (!firstDiv) firstDiv = d;
       }
       if (firstDiv) {
         // 'center': la frase leída siempre queda centrada en el área visible
@@ -2022,7 +2194,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     // arrancando en la frase de la selección, para que la lectura continúe con
     // el texto que sigue (no solo el fragmento seleccionado) y se pueda
     // pausar/detener con los controles normales.
-    const selectionSnippet = (selectedText && selectedText.trim().length > 0) ? selectedText.trim() : null;
+    // En PDF se prefiere el texto reconstruido desde el charMap (con espacios
+    // geométricos): selection.toString() puede venir con las palabras pegadas
+    // y entonces el snippet no encontraría su frase en la página.
+    const selectionSnippet = (selectedText && selectedText.trim().length > 0)
+      ? (getAccurateSelectionText() ?? selectedText.trim())
+      : null;
 
     {
       // "Inicio del capítulo" en EPUB requiere navegar la rendition al inicio
@@ -2549,6 +2726,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         const insideReader = !!anchorEl?.closest('[data-reader-surface]');
         if (text && insideReader) {
           const rect = range.getBoundingClientRect();
+          // Clonar el Range (O(1)): permite reconstruir el texto exacto de la
+          // selección en PDF al crear la cita, incluso si el toque sobre la
+          // barrita ya colapsó la selección nativa (móvil).
+          selectedRangeRef.current = range.cloneRange();
           setSelectedText(text);
           setSelectionRect({ top: rect.top, left: rect.left, width: rect.width, bottom: rect.bottom });
           return true;
@@ -3443,7 +3624,10 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                          // (currentPage queda fijo en el bookmark inicial), así
                          // que omitimos la referencia de página para no guardar
                          // un dato incorrecto.
-                         addCitation({ text: selectedText, color: colorItem.color, page: activeType === 'epub' ? currentEpubAnchorString() : currentPage });
+                         // En PDF, el texto se reconstruye desde el charMap
+                         // (espacios geométricos); selectedText crudo puede
+                         // venir con las palabras pegadas ("todoslosseres").
+                         addCitation({ text: getAccurateSelectionText() ?? selectedText, color: colorItem.color, page: activeType === 'epub' ? currentEpubAnchorString() : currentPage });
                          // Abrir el panel ya es solo una decisión de UX (feedback
                          // visual inmediato), no una condición para que la cita
                          // se guarde — addCitation() ya la persistió.
