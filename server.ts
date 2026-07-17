@@ -2880,11 +2880,21 @@ ${text}
       });
       const str = { type: Type.STRING };
 
-      const auditResponseSchema = {
+      // El schema completo en una sola llamada disparaba un 400 de Gemini
+      // ("the specified schema produces a constraint that has too many
+      // states for serving"). El propio mensaje señala las causas típicas:
+      // nombres de propiedad/enum largos y arrays sin longitud acotada
+      // (sobre todo anidados) — este schema tiene ambas cosas. Fix de dos
+      // frentes: (1) acotar con maxItems los 3 arrays de objetos complejos
+      // (antes sin límite explícito, así que el compilador del schema debía
+      // representar "repetir N veces" sin cota); (2) partir en DOS llamadas
+      // en paralelo sobre el mismo PDF, cada una con la mitad del schema —
+      // reduce el tamaño de la restricción por llamada sin sacrificar
+      // ningún criterio. El systemInstruction (texto libre, NO forma parte
+      // del schema) se mantiene completo e idéntico en ambas.
+      const auditResponseSchemaA = {
         type: Type.OBJECT,
         properties: {
-          titulo_del_estudio: str,
-          veredicto_general: str,
           identificacion_y_tipologia: {
             type: Type.OBJECT,
             properties: {
@@ -2894,6 +2904,7 @@ ${text}
               n_total: { type: Type.INTEGER },
               subgrupos_analiticos: {
                 type: Type.ARRAY,
+                maxItems: "12",
                 items: {
                   type: Type.OBJECT,
                   properties: { etiqueta: str, n: { type: Type.INTEGER } },
@@ -2917,6 +2928,8 @@ ${text}
             properties: {
               afirmaciones: {
                 type: Type.ARRAY,
+                minItems: "3",
+                maxItems: "6",
                 items: {
                   type: Type.OBJECT,
                   properties: {
@@ -2945,6 +2958,15 @@ ${text}
             },
             required: ["afirmaciones", "coherencia_global_datos_conclusiones", "spin_y_enfasis"],
           },
+        },
+        required: ["identificacion_y_tipologia", "coherencia_datos_conclusiones"],
+      };
+
+      const auditResponseSchemaB = {
+        type: Type.OBJECT,
+        properties: {
+          titulo_del_estudio: str,
+          veredicto_general: str,
           escrutinio_metodologico_y_estadistico: criterioSection([
             "controles_y_confusores", "potencia_y_tamano_muestral",
             "magnitud_del_efecto_e_incertidumbre", "senales_de_p_hacking",
@@ -2972,6 +2994,8 @@ ${text}
           ]),
           criterios_del_diseno: {
             type: Type.ARRAY,
+            minItems: "4",
+            maxItems: "8",
             items: {
               type: Type.OBJECT,
               properties: {
@@ -3005,33 +3029,13 @@ ${text}
           },
         },
         required: [
-          "titulo_del_estudio", "veredicto_general", "identificacion_y_tipologia",
-          "coherencia_datos_conclusiones", "escrutinio_metodologico_y_estadistico",
+          "titulo_del_estudio", "veredicto_general", "escrutinio_metodologico_y_estadistico",
           "transparencia_y_datos", "sesgos_e_incentivos", "retorica_e_ideologia",
           "auditoria_bibliografica", "epistemologia", "criterios_del_diseno", "sintesis_critica",
         ],
       };
 
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: `Audita el documento PDF adjunto siguiendo EXACTAMENTE el system prompt. Rellena todos los campos con análisis específicos de ESTE documento, anclados en texto concreto (cifras, tablas, frases). Nada genérico. Empieza clasificando el tipo de documento y adapta qué criterios aplican. Recuerda: si un criterio no se puede juzgar con lo que el documento aporta, su nivel es "gris" (NO "verde").`
-              },
-              {
-                inlineData: {
-                  mimeType: "application/pdf",
-                  data: base64Data,
-                }
-              }
-            ]
-          }
-        ],
-        config: {
-          systemInstruction: `Eres un epistemólogo y metodólogo de la ciencia que audita estudios, artículos y documentos con rigor escéptico. Tu trabajo NO es recomendar ni tranquilizar: es exponer, con precisión y anclado al texto, qué sostiene el documento y qué no, para que el LECTOR saque sus propias conclusiones. Respondes en español, directo y sin eufemismos.
+      const AUDIT_SYSTEM_INSTRUCTION = `Eres un epistemólogo y metodólogo de la ciencia que audita estudios, artículos y documentos con rigor escéptico. Tu trabajo NO es recomendar ni tranquilizar: es exponer, con precisión y anclado al texto, qué sostiene el documento y qué no, para que el LECTOR saque sus propias conclusiones. Respondes en español, directo y sin eufemismos.
 
 REGLA DE ORO — HONESTIDAD DEL SEMÁFORO. Cada criterio lleva un "nivel" de CINCO estados:
 - "verde": lo evaluaste y NO hay problema relevante en ese aspecto.
@@ -3136,18 +3140,49 @@ sintesis_critica (declarativa, SIN recomendaciones):
 - conceptos_para_profundizar: 2-4 términos o métodos que vale la pena entender bien.
 - preguntas_para_el_lector: 2-3 preguntas críticas para hacerse al terminar.
 
-- veredicto_general: 2-3 frases que resuman la solidez global ANCLADAS en los criterios anteriores. Describe, no recomiendes.`,
-          responseMimeType: "application/json",
-          responseSchema: auditResponseSchema,
-        },
-      });
+- veredicto_general: 2-3 frases que resuman la solidez global ANCLADAS en los criterios anteriores. Describe, no recomiendes.`;
 
-      const text = response.text;
-      if (!text) return res.status(500).json({ error: "Gemini no devolvió resultado." });
+      const pdfPart = { inlineData: { mimeType: "application/pdf", data: base64Data } };
+
+      // Dos llamadas EN PARALELO sobre el mismo PDF (ver comentario arriba de
+      // los schemas): cada una constreñida a la mitad de los campos. El
+      // systemInstruction completo viaja en ambas — es texto libre, no forma
+      // parte del schema que Gemini compila a autómata, así que no contribuye
+      // al error "too many states"; y cada llamada necesita las reglas
+      // completas (p. ej. Parte B elige criterios_del_diseno según el tipo de
+      // documento, que clasifica ella misma, sin depender de la Parte A).
+      const [responseA, responseB] = await Promise.all([
+        ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: [{
+            role: "user",
+            parts: [
+              { text: `PARTE 1 de 2 de la auditoría del PDF adjunto: completa SOLO "identificacion_y_tipologia" y "coherencia_datos_conclusiones", siguiendo EXACTAMENTE el system prompt (las reglas anti-complacencia 1, 2, 5 y 6 aplican de lleno aquí). Ancla todo en texto concreto del documento (cifras, tablas, frases). Nada genérico.` },
+              pdfPart,
+            ],
+          }],
+          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json", responseSchema: auditResponseSchemaA },
+        }),
+        ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: [{
+            role: "user",
+            parts: [
+              { text: `PARTE 2 de 2 de la auditoría del PDF adjunto: completa el resto del schema (escrutinio metodológico, transparencia, sesgos, retórica, bibliografía, epistemología, criterios_del_diseno, síntesis crítica, título y veredicto general), siguiendo EXACTAMENTE el system prompt. Clasifica tú mismo el tipo de documento para elegir los criterios_del_diseno que correspondan (esta llamada es independiente de la otra parte de la auditoría). Recuerda: si un criterio no se puede juzgar con lo que el documento aporta, su nivel es "gris" (NO "verde"). Ancla todo en texto concreto.` },
+              pdfPart,
+            ],
+          }],
+          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json", responseSchema: auditResponseSchemaB },
+        }),
+      ]);
+
+      const textA = responseA.text;
+      const textB = responseB.text;
+      if (!textA || !textB) return res.status(500).json({ error: "Gemini no devolvió resultado." });
 
       let parsed: any;
       try {
-        parsed = JSON.parse(text);
+        parsed = { ...JSON.parse(textA), ...JSON.parse(textB) };
       } catch {
         return res.status(500).json({ error: "Respuesta de Gemini no es JSON válido." });
       }
