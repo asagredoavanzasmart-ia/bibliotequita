@@ -14,6 +14,7 @@ import {
   X, FlaskConical, BookOpen, Lightbulb, Microscope, Target, Activity,
   ShieldAlert, Shield, EyeOff, Search, ScrollText, Scale, Quote, ListChecks,
   Copy, Check, Download, FileSpreadsheet, Printer, AlertTriangle, MinusCircle, HelpCircle,
+  Volume2, VolumeX,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { BookItem } from '../types';
@@ -600,6 +601,7 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [speakingError, setSpeakingError] = useState(false);
 
   const fileName = item.source?.replace('/api/files/', '') ?? '';
 
@@ -656,6 +658,20 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
     const title = `Auditoría Científica - ${result.titulo_del_estudio || item.title}`;
     if (format === 'pdf') exportToPrintPdf(title, md);
     else exportToDocx(`Auditoria_Cientifica_${item.id}.docx`, md);
+  };
+
+  const handleSpeakError = () => {
+    if (speakingError) {
+      window.speechSynthesis.cancel();
+      setSpeakingError(false);
+      return;
+    }
+    if (!error) return;
+    setSpeakingError(true);
+    const utterance = new SpeechSynthesisUtterance(error);
+    utterance.lang = 'es-ES';
+    utterance.onend = () => setSpeakingError(false);
+    window.speechSynthesis.speak(utterance);
   };
 
   return (
@@ -740,7 +756,13 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
           <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-red-700 text-sm">
             <p className="font-semibold mb-1">Error al auditar</p>
             <p>{error}</p>
-            <button onClick={handleAudit} className="mt-3 text-xs underline text-red-600">Reintentar</button>
+            <div className="flex gap-2 mt-3">
+              <button onClick={handleAudit} className="text-xs underline text-red-600">Reintentar</button>
+              <button onClick={handleSpeakError} className="flex items-center gap-1.5 text-xs underline text-red-600 hover:text-red-700 transition-colors">
+                {speakingError ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                {speakingError ? 'Pausar' : 'Leer'}
+              </button>
+            </div>
           </div>
         )}
 
