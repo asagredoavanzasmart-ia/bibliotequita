@@ -602,6 +602,7 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
   const [copied, setCopied] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [speakingError, setSpeakingError] = useState(false);
+  const [speakingResult, setSpeakingResult] = useState(false);
 
   const fileName = item.source?.replace('/api/files/', '') ?? '';
 
@@ -671,6 +672,21 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
     const utterance = new SpeechSynthesisUtterance(error);
     utterance.lang = 'es-ES';
     utterance.onend = () => setSpeakingError(false);
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const handleSpeakResult = () => {
+    if (speakingResult) {
+      window.speechSynthesis.cancel();
+      setSpeakingResult(false);
+      return;
+    }
+    if (!result) return;
+    setSpeakingResult(true);
+    const text = result.veredicto_general || 'Resultado de auditoría disponible';
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'es-ES';
+    utterance.onend = () => setSpeakingResult(false);
     window.speechSynthesis.speak(utterance);
   };
 
@@ -769,9 +785,14 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
         {result && !loading && (
           <>
             {isV2(result) ? <AuditorV2Result result={result} /> : <AuditorLegacyResult result={result} />}
-            <button onClick={handleAudit} className="w-full py-3 text-sm text-slate-500 hover:text-[#00558F] border border-slate-200 hover:border-[#00558F]/30 rounded-xl transition-colors font-medium">
-              Volver a auditar
-            </button>
+            <div className="flex gap-2">
+              <button onClick={handleAudit} className="flex-1 py-3 text-sm text-slate-500 hover:text-[#00558F] border border-slate-200 hover:border-[#00558F]/30 rounded-xl transition-colors font-medium">
+                Volver a auditar
+              </button>
+              <button onClick={handleSpeakResult} className="px-4 py-3 text-sm text-slate-500 hover:text-[#00558F] border border-slate-200 hover:border-[#00558F]/30 rounded-xl transition-colors font-medium flex items-center gap-2 shrink-0" title="Leer veredicto">
+                {speakingResult ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+              </button>
+            </div>
           </>
         )}
       </div>
