@@ -699,6 +699,24 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
           <h2 className="font-bold text-slate-800 text-base">Auditoría Científica</h2>
         </div>
         <div className="flex items-center gap-2">
+          {/* Lector de voz del veredicto EN la botonera (como en los recursos
+              de texto: solo TTS, sin mecanismo de citas), no al pie del
+              resultado — pedido explícito del usuario. */}
+          {result && !loading && (
+            <button
+              onClick={handleSpeakResult}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg transition-colors shadow-sm",
+                speakingResult
+                  ? "border-[#00558F]/40 bg-[#00558F]/5 text-[#00558F]"
+                  : "border-slate-200 bg-white text-slate-600 hover:text-[#00558F] hover:border-[#00558F]/30"
+              )}
+              title="Leer veredicto en voz alta"
+            >
+              {speakingResult ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">{speakingResult ? 'Pausar' : 'Leer'}</span>
+            </button>
+          )}
           {canExport && (
             <button onClick={handleCopy} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 bg-white text-slate-600 hover:text-[#00558F] hover:border-[#00558F]/30 rounded-lg transition-colors shadow-sm" title="Copiar análisis">
               {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
@@ -785,14 +803,9 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
         {result && !loading && (
           <>
             {isV2(result) ? <AuditorV2Result result={result} /> : <AuditorLegacyResult result={result} />}
-            <div className="flex gap-2">
-              <button onClick={handleAudit} className="flex-1 py-3 text-sm text-slate-500 hover:text-[#00558F] border border-slate-200 hover:border-[#00558F]/30 rounded-xl transition-colors font-medium">
-                Volver a auditar
-              </button>
-              <button onClick={handleSpeakResult} className="px-4 py-3 text-sm text-slate-500 hover:text-[#00558F] border border-slate-200 hover:border-[#00558F]/30 rounded-xl transition-colors font-medium flex items-center gap-2 shrink-0" title="Leer veredicto">
-                {speakingResult ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-              </button>
-            </div>
+            <button onClick={handleAudit} className="w-full py-3 text-sm text-slate-500 hover:text-[#00558F] border border-slate-200 hover:border-[#00558F]/30 rounded-xl transition-colors font-medium">
+              Volver a auditar
+            </button>
           </>
         )}
       </div>

@@ -107,7 +107,7 @@ export function BookmarksMenu({ documentId, currentPage, onNavigate, isEpub = fa
       <button
         onClick={() => setOpen(v => !v)}
         className={cn(
-          'p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0',
+          'p-1.5 sm:p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0',
           open || list.length > 0
             ? 'bg-amber-500 text-white border-amber-500'
             : 'bg-white text-slate-600 hover:text-amber-500 border-slate-200 hover:border-amber-200',

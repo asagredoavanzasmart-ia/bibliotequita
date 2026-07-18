@@ -20,7 +20,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, Minimize2, ChevronLeft, ChevronRight, Volume1, Volume2, VolumeX, ClipboardPaste } from 'lucide-react';
+import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, Minimize2, ChevronLeft, ChevronRight, Volume1, Volume2, VolumeX, ClipboardPaste, GripVertical } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { uploadFile, getMaxUploadMb } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
@@ -530,7 +530,7 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
   // de otra categoría al volver a Videos.
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
   useEffect(() => { setPlayingVideoId(null); }, [activeKind]);
-  const [draggedVideoIndex, setDraggedVideoIndex] = useState<number | null>(null);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
   // Columnas video/notas SOLO en escritorio (pedido explícito): en móvil no
   // hay ancho de sobra para dos columnas, así que se apilan verticalmente
@@ -584,24 +584,26 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
   }, []);
 
   // Orden manual persistido (listIndex, mismo campo que usa la biblioteca
-  // principal para "Orden manual" en BookGrid). Se aplica a todos los tipos
-  // por consistencia; por ahora solo Videos ofrece arrastrar para reordenar.
+  // principal para "Orden manual" en BookGrid). TODOS los tipos se pueden
+  // reordenar arrastrando: los videos con la tarjeta entera; textos, audios
+  // e imágenes con su manija (la tarjeta entera interferiría con la barra de
+  // tiempo del reproductor y con el clic que abre el lector).
   const current = resources.filter((r) => r.kind === activeKind).sort((a, b) => (a.listIndex ?? 0) - (b.listIndex ?? 0));
   const activeMeta = KINDS.find((k) => k.id === activeKind)!;
   const playingResource = playingVideoId ? resources.find((r) => r.id === playingVideoId) ?? null : null;
 
-  const handleVideoDragStart = (e: React.DragEvent, index: number) => {
-    setDraggedVideoIndex(index);
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedIndex(index);
     e.dataTransfer.effectAllowed = 'move';
   };
-  const handleVideoDragOver = (e: React.DragEvent) => { e.preventDefault(); };
-  const handleVideoDrop = (index: number) => {
-    if (draggedVideoIndex === null || draggedVideoIndex === index) { setDraggedVideoIndex(null); return; }
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); };
+  const handleDrop = (index: number) => {
+    if (draggedIndex === null || draggedIndex === index) { setDraggedIndex(null); return; }
     const items = [...current];
-    const [moved] = items.splice(draggedVideoIndex, 1);
+    const [moved] = items.splice(draggedIndex, 1);
     items.splice(index, 0, moved);
     items.forEach((r, i) => { if ((r.listIndex ?? 0) !== i) updateResource(r.id, { listIndex: i }); });
-    setDraggedVideoIndex(null);
+    setDraggedIndex(null);
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -983,14 +985,14 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                   <div
                     key={r.id}
                     draggable
-                    onDragStart={(e) => handleVideoDragStart(e, index)}
-                    onDragOver={handleVideoDragOver}
-                    onDrop={() => handleVideoDrop(index)}
-                    onDragEnd={() => setDraggedVideoIndex(null)}
+                    onDragStart={(e) => handleDragStart(e, index)}
+                    onDragOver={handleDragOver}
+                    onDrop={() => handleDrop(index)}
+                    onDragEnd={() => setDraggedIndex(null)}
                     onClick={() => setPlayingVideoId(r.id)}
                     className={cn(
                       'group relative bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm cursor-pointer hover:shadow-md hover:border-[var(--primary)]/40 transition-all',
-                      draggedVideoIndex === index && 'opacity-40'
+                      draggedIndex === index && 'opacity-40'
                     )}
                     title="Arrastrar para reordenar · clic para reproducir"
                   >
@@ -1044,9 +1046,26 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
             No hay {activeMeta.label.toLowerCase()} todavía. Pulsa «Subir» para añadir.
           </div>
         ) : (
-          <div className={cn('grid gap-3', activeKind === 'image' ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4' : 'grid-cols-1')}>
-            {current.map((r) => (
-              <div key={r.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm flex flex-col">
+          // Galería: textos y audios también en grilla (no lista única) y
+          // reordenables por arrastre, igual que los videos. La manija vive en
+          // el pie de la tarjeta; la tarjeta completa es zona de soltar.
+          <div className={cn(
+            'grid gap-3',
+            activeKind === 'image' ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4'
+              : activeKind === 'audio' ? 'grid-cols-1 sm:grid-cols-2'
+              : activeKind === 'text' ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+              : 'grid-cols-1'
+          )}>
+            {current.map((r, index) => (
+              <div
+                key={r.id}
+                onDragOver={handleDragOver}
+                onDrop={() => handleDrop(index)}
+                className={cn(
+                  'bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm flex flex-col self-start',
+                  draggedIndex === index && 'opacity-40'
+                )}
+              >
                 {/* Vista/reproductor embebido por tipo */}
                 {(r.kind === 'video' || r.kind === 'audio') && (
                   <MediaPlayer
@@ -1078,8 +1097,19 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                   </button>
                 )}
 
-                {/* Pie: título editable + pantalla completa + notas + borrar */}
+                {/* Pie: manija de arrastre + título editable + notas + borrar */}
                 <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-100">
+                  {/* Manija (no la tarjeta entera): así el arrastre no pelea
+                      con la barra de tiempo del audio ni con el clic de abrir. */}
+                  <span
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, index)}
+                    onDragEnd={() => setDraggedIndex(null)}
+                    className="p-1 -ml-1.5 text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing shrink-0"
+                    title="Arrastrar para reordenar"
+                  >
+                    <GripVertical className="w-4 h-4" />
+                  </span>
                   {renamingId === r.id ? (
                     <input
                       autoFocus

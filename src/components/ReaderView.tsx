@@ -3401,7 +3401,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           mantiene siempre visible (no depende del auto-ocultado táctil que
           usa el lector digital en pantalla completa). */}
       {(isPhysicalOnly || !isFullscreen || showControls) && (
-        <header className="bg-white border-b border-slate-200 px-2 sm:px-4 h-14 flex flex-row items-center justify-between shrink-0 shadow-sm z-30 gap-2 w-full animate-in slide-in-from-top-4">
+        // min-h-14 (no h-14 fija): en móvil la botonera derecha puede pasar
+        // a una SEGUNDA fila (flex-wrap) en vez de recortar botones — antes
+        // las pestañas vivían en un overflow-x-auto sin scrollbar y el botón
+        // de Análisis (o el de Lectura) quedaba cortado sin pista alguna.
+        <header className="bg-white border-b border-slate-200 px-2 sm:px-4 min-h-14 py-1.5 sm:py-0 flex flex-row items-center justify-between shrink-0 shadow-sm z-30 gap-2 w-full animate-in slide-in-from-top-4">
             <div className="flex items-center gap-2 sm:gap-4 shrink-0">
             <button
                 onClick={() => {
@@ -3420,7 +3424,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                   if (isFullscreen) setIsFullscreen(false);
                   else onClose();
                 }}
-                className="flex items-center text-slate-500 hover:text-[var(--primary)] transition-colors shrink-0 bg-slate-100/50 hover:bg-slate-100 p-2 rounded-lg"
+                className="flex items-center text-slate-500 hover:text-[var(--primary)] transition-colors shrink-0 bg-slate-100/50 hover:bg-slate-100 p-1.5 sm:p-2 rounded-lg"
                 title={activeResource ? 'Volver a Recursos' : 'Volver'}
             >
                 <ChevronLeft className="w-5 h-5" />
@@ -3456,9 +3460,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
             )}
             </div>
 
-            <div className="flex items-center justify-end gap-2 flex-1 min-w-0">
-             <div className="flex items-center justify-end gap-2 overflow-x-auto no-scrollbar shrink">
-                 <div className="flex bg-slate-100 p-1 rounded-lg shrink-0 gap-1 items-center">
+            <div className="flex items-center justify-end gap-2 gap-y-1.5 flex-1 min-w-0 flex-wrap">
+             <div className="flex items-center justify-end shrink-0">
+                 <div className="flex bg-slate-100 p-0.5 sm:p-1 rounded-lg shrink-0 gap-0.5 sm:gap-1 items-center">
                      <button 
                          onClick={() => setActiveTab('reader')}
                          className={cn("p-1.5 sm:p-2 rounded-md transition-all", activeTab === 'reader' ? "bg-white text-[var(--primary)] shadow-sm scale-105" : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50")}
@@ -3513,14 +3517,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                  <div className="flex items-center gap-1 sm:gap-2 shrink-0">
                   <button
                       onClick={toggleFullscreen}
-                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
+                      className={cn("p-1.5 sm:p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                       title="Pantalla Completa"
                   >
                       {isFullscreen ? <Minimize className="w-4 h-4 sm:w-5 sm:h-5" /> : <Maximize className="w-4 h-4 sm:w-5 sm:h-5" />}
                   </button>
                    <button
                        onClick={() => setShowNotes(!showNotes)}
-                       className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showNotes ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
+                       className={cn("p-1.5 sm:p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showNotes ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                        title="Apuntes y Notas"
                    >
                        <MessageSquareQuote className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -3531,7 +3535,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                   {/* Lector de Voz (TTS ElevenLabs) */}
                   <button 
                       onClick={() => setShowTtsWidget(!showTtsWidget)} 
-                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showTtsWidget ? "bg-slate-100 text-[var(--primary)] border-slate-200" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
+                      className={cn("p-1.5 sm:p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showTtsWidget ? "bg-slate-100 text-[var(--primary)] border-slate-200" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                       title="Lector de Voz (TTS)"
                   >
                       <Volume2 className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -3540,7 +3544,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                   <div className="relative">
                      <button 
                          onClick={() => setShowBrightnessPopup(!showBrightnessPopup)} 
-                         className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showBrightnessPopup ? "bg-slate-100 text-[var(--primary)] border-slate-200" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
+                         className={cn("p-1.5 sm:p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showBrightnessPopup ? "bg-slate-100 text-[var(--primary)] border-slate-200" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                          title="Brillo"
                      >
                          <Sun className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -3577,14 +3581,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
                   <button
                       onClick={toggleFullscreen}
-                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
+                      className={cn("p-1.5 sm:p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", isFullscreen ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                       title="Pantalla Completa"
                   >
                       {isFullscreen ? <Minimize className="w-4 h-4 sm:w-5 sm:h-5" /> : <Maximize className="w-4 h-4 sm:w-5 sm:h-5" />}
                   </button>
                   <button 
                       onClick={() => setShowNotes(!showNotes)} 
-                      className={cn("p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showNotes ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
+                      className={cn("p-1.5 sm:p-2 rounded-lg flex items-center justify-center transition-colors shadow-sm border shrink-0", showNotes ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-600 hover:text-[var(--primary)] border-slate-200 hover:border-[var(--secondary)]")}
                       title="Apuntes y Notas"
                   >
                       <MessageSquareQuote className="w-4 h-4 sm:w-5 sm:h-5" />

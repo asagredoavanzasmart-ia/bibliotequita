@@ -722,6 +722,11 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
       setGeneratedSummary(text);
       setEditedSummary(text);
       setIsEditingSummary(false);
+      // El resumen recién generado queda AUTOMÁTICAMENTE en Recursos → Textos
+      // (galería) con título automático; no depende de que el usuario recuerde
+      // pulsar "guardar como recurso". Fire-and-forget: si falla, se loguea
+      // pero no rompe la generación (el botón manual sigue disponible).
+      saveSummaryAsResource(text);
     } catch (e: any) {
       console.error(e);
       setSummaryError(e.message || "Fallo inesperado al conectar con el motor de Inteligencia Artificial.");
@@ -776,16 +781,17 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
     }, 1500);
   };
 
-  // Guarda el resumen IA como un recurso de Texto (.txt) en la pestaña
-  // Recursos del libro, marcado isSummary:true. Solo disponible cuando
+  // Guarda un resumen IA como recurso de Texto (.txt) en la pestaña Recursos
+  // del libro, marcado isSummary:true y con título automático (tipo + fecha,
+  // para que varios resúmenes no se confundan en la galería). Solo cuando
   // documentId es el del libro (no el de un recurso ya existente).
-  const handleSaveSummaryAsResource = async () => {
-    if (!editedSummary || !isBookDocument) return;
+  const saveSummaryAsResource = async (text: string) => {
+    if (!text || !isBookDocument) return;
     setSavingSummaryResource(true);
     try {
       const typeLabel = summaryType === 'breve' ? 'Breve' : summaryType === 'descriptivo' ? 'Descriptivo' : 'Personalizado';
       const fileName = `Resumen-${typeLabel}-${Date.now()}.txt`;
-      const blob = new Blob([editedSummary], { type: 'text/plain;charset=utf-8' });
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
       const { url } = await uploadFile(blob, fileName);
 
       await fetch(`/api/books/${documentId}/resources`, {
@@ -794,7 +800,7 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           kind: 'text',
-          title: `Resumen IA (${typeLabel})`,
+          title: `Resumen IA (${typeLabel}) · ${new Date().toLocaleDateString('es-CL')}`,
           source: url,
           fileType: 'txt',
           isSummary: true,
@@ -810,6 +816,7 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
       setSavingSummaryResource(false);
     }
   };
+  const handleSaveSummaryAsResource = () => saveSummaryAsResource(editedSummary);
 
   const renderNoteRow = (note: CitationNote, index: number) => {
     const isDraggedNow = draggedIndex === index;
