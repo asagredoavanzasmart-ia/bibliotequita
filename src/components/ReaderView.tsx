@@ -2823,16 +2823,29 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
     setIsDragging(true);
   }, []);
 
-  // Handle controls disappearing when clicking the screen in fullscreen
-  const handleScreenClick = (e: React.MouseEvent) => {
+  // Botonera en pantalla completa: aparece/desaparece con DOBLE clic/tap
+  // (≤350 ms entre toques), el mismo gesto que ya usa el EPUB v2. Con el tap
+  // simple de antes, la botonera se alternaba sin querer al apoyar el dedo
+  // mientras se leía.
+  const lastScreenTapRef = useRef(0);
+  const handleScreenClick = () => {
      // EPUB v2 renderiza en el documento principal: sus clicks BURBUJEAN hasta
      // aquí (a diferencia del legacy en iframe). Si este handler también
-     // alternara, cada tap haría toggle doble (onContentTap + este) y el
-     // efecto neto sería nulo. El v2 gestiona sus controles con DOBLE tap
-     // dentro del lector.
+     // alternara, cada gesto haría toggle doble (onContentTap + este) y el
+     // efecto neto sería nulo. El v2 ya gestiona su propio doble tap dentro
+     // del lector.
      if (activeType === 'epub' && !epubV2Failed) return;
-     if (isFullscreen) {
+     if (!isFullscreen) return;
+     // El doble clic nativo selecciona una palabra: eso es una selección de
+     // texto (va a citas), no el gesto de mostrar los controles.
+     const sel = window.getSelection();
+     if (sel && !sel.isCollapsed) { lastScreenTapRef.current = 0; return; }
+     const now = Date.now();
+     if (now - lastScreenTapRef.current < 350) {
+        lastScreenTapRef.current = 0;
         setShowControls(prev => !prev);
+     } else {
+        lastScreenTapRef.current = now;
      }
   };
 
