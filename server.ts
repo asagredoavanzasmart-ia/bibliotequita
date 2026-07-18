@@ -3161,65 +3161,131 @@ sintesis_critica (declarativa, SIN recomendaciones):
       const conForma = (instruccion: string, forma: string) =>
         `${instruccion}\n\nFORMA EXACTA de la respuesta (mismas claves, mismo anidamiento; los valores son ejemplos ilustrativos, reemplázalos por tu análisis real):\n${forma}`;
 
-      const [responseA, responseB, responseC] = await Promise.all([
-        ai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: [{
-            role: "user",
-            parts: [
-              { text: conForma(
-                parte(1, 'las claves "identificacion_y_tipologia" y "coherencia_datos_conclusiones"',
-                  'Las reglas anti-complacencia 1, 2, 5 y 6 aplican de lleno aquí. Incluye entre 3 y 6 afirmaciones, marcando con "es_central": true las que sostienen la tesis principal.'),
-                SHAPE_A) },
-              pdfPart,
-            ],
-          }],
-          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json" },
-        }),
-        ai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: [{
-            role: "user",
-            parts: [
-              { text: conForma(
-                parte(2, 'las claves "titulo_del_estudio", "veredicto_general", "escrutinio_metodologico_y_estadistico", "transparencia_y_datos" y "sesgos_e_incentivos"'),
-                SHAPE_B) },
-              pdfPart,
-            ],
-          }],
-          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json" },
-        }),
-        ai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: [{
-            role: "user",
-            parts: [
-              { text: conForma(
-                parte(3, 'las claves "retorica_e_ideologia", "auditoria_bibliografica", "epistemologia", "criterios_del_diseno" y "sintesis_critica"',
-                  'Clasifica tú mismo el tipo de documento para elegir entre 4 y 8 criterios_del_diseno que le correspondan. Recuerda: si un criterio no se puede juzgar con lo que el documento aporta, su nivel es "gris", NO "verde".'),
-                SHAPE_C) },
-              pdfPart,
-            ],
-          }],
-          config: { systemInstruction: AUDIT_SYSTEM_INSTRUCTION, responseMimeType: "application/json" },
-        }),
-      ]);
+      const promptA = conForma(
+        parte(1, 'las claves "identificacion_y_tipologia" y "coherencia_datos_conclusiones"',
+          'Las reglas anti-complacencia 1, 2, 5 y 6 aplican de lleno aquí. Incluye entre 3 y 6 afirmaciones, marcando con "es_central": true las que sostienen la tesis principal.'),
+        SHAPE_A);
+      const promptB = conForma(
+        parte(2, 'las claves "titulo_del_estudio", "veredicto_general", "escrutinio_metodologico_y_estadistico", "transparencia_y_datos" y "sesgos_e_incentivos"'),
+        SHAPE_B);
+      const promptC = conForma(
+        parte(3, 'las claves "retorica_e_ideologia", "auditoria_bibliografica", "epistemologia", "criterios_del_diseno" y "sintesis_critica"',
+          'Clasifica tú mismo el tipo de documento para elegir entre 4 y 8 criterios_del_diseno que le correspondan. Recuerda: si un criterio no se puede juzgar con lo que el documento aporta, su nivel es "gris", NO "verde".'),
+        SHAPE_C);
 
-      const textA = responseA.text;
-      const textB = responseB.text;
-      const textC = responseC.text;
-      if (!textA || !textB || !textC) return res.status(500).json({ error: "Gemini no devolvió resultado." });
+      const llamadaAuditoria = (texto: string) => ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: texto }, pdfPart] }],
+        config: {
+          systemInstruction: AUDIT_SYSTEM_INSTRUCTION,
+          responseMimeType: "application/json",
+          // El modo JSON garantiza sintaxis válida SALVO si la generación se
+          // corta a medias — y el "thinking" de gemini-2.5-flash (activado por
+          // defecto) descuenta tokens de la MISMA bolsa de salida. Con la
+          // Parte C (18 criterios con cita textual) eso producía JSON truncado
+          // ("Respuesta de Gemini no es JSON válido"). Techo explícito de
+          // salida + thinking acotado: el razonamiento pesado ya está escrito
+          // en el systemInstruction, no hace falta que el modelo lo re-derive.
+          maxOutputTokens: 65536,
+          thinkingConfig: { thinkingBudget: 1024 },
+        },
+      });
+
+      const [responseA, responseB, responseC] = await Promise.all([
+        llamadaAuditoria(promptA),
+        llamadaAuditoria(promptB),
+        llamadaAuditoria(promptC),
+      ]);
 
       // responseMimeType JSON ya evita las vallas markdown, pero se limpian por
       // si acaso: un solo ```json de más tiraba la auditoría entera.
       const parseJson = (t: string) => JSON.parse(t.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
 
+      // Repara JSON TRUNCADO (el único modo en que el modo JSON produce algo
+      // no parseable): corta la string/propiedad que quedó a medias y cierra
+      // las llaves/corchetes pendientes. Lo que se pierde en el corte lo
+      // repone normalizeAudit como "gris" (no evaluable) — una auditoría
+      // honesta a medias en vez de un error total. Devuelve null si no hay
+      // forma de salvar el texto.
+      const repairJson = (raw: string): string | null => {
+        let t = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+        for (let intento = 0; intento < 300 && t.trim(); intento++) {
+          // Escaneo del prefijo completo: estado de string + pila de aperturas.
+          const stack: string[] = [];
+          let inStr = false, esc = false, strStart = -1;
+          for (let i = 0; i < t.length; i++) {
+            const c = t[i];
+            if (inStr) {
+              if (esc) esc = false;
+              else if (c === "\\") esc = true;
+              else if (c === '"') inStr = false;
+              continue;
+            }
+            if (c === '"') { inStr = true; strStart = i; }
+            else if (c === "{" || c === "[") stack.push(c);
+            else if (c === "}" || c === "]") stack.pop();
+          }
+          if (inStr) { t = t.slice(0, strStart); continue; } // string sin cerrar: fuera entera
+          // Cola incompleta: coma final o `"clave":` sin valor.
+          const antes = t;
+          t = t.replace(/[,\s]+$/, "").replace(/("(?:[^"\\]|\\.)*")\s*:\s*$/, "").replace(/[,\s]+$/, "");
+          if (t !== antes) continue; // re-escanear tras el recorte
+          let cerrado = t;
+          for (let i = stack.length - 1; i >= 0; i--) cerrado += stack[i] === "{" ? "}" : "]";
+          try { JSON.parse(cerrado); return cerrado; } catch {
+            // Token a medias (número/true/false/null): cortar un carácter y seguir.
+            t = t.replace(/\s*\S$/, "");
+          }
+        }
+        return null;
+      };
+
+      const finDe = (r: any): string => r?.candidates?.[0]?.finishReason ?? "desconocido";
+
+      // Parseo por parte con diagnóstico y UN reintento: si una parte llega
+      // truncada se repara; si ni así, se pide de nuevo SOLO esa parte; si
+      // vuelve a fallar, el error dice exactamente qué parte, cómo terminó y
+      // cuántos tokens gastó — la próxima captura del usuario es la causa.
+      const parsePart = async (nombre: string, prompt: string, primera: any): Promise<any> => {
+        const intentar = (r: any): any | null => {
+          const texto: string | undefined = r?.text;
+          if (!texto) return null;
+          try { return parseJson(texto); } catch { /* probar reparación */ }
+          const reparado = repairJson(texto);
+          if (reparado !== null) {
+            console.warn(`[Auditor] Parte ${nombre} truncada (finishReason=${finDe(r)}); JSON reparado.`);
+            try { return JSON.parse(reparado); } catch { return null; }
+          }
+          return null;
+        };
+        let r = primera;
+        let v = intentar(r);
+        if (v === null) {
+          console.warn(`[Auditor] Parte ${nombre} no parseable (finishReason=${finDe(r)}); reintentando una vez…`);
+          r = await llamadaAuditoria(prompt);
+          v = intentar(r);
+        }
+        if (v === null) {
+          const texto: string = r?.text ?? "";
+          const uso: any = r?.usageMetadata ?? {};
+          throw new Error(
+            `Parte ${nombre}: finishReason=${finDe(r)}, tokens de respuesta=${uso.candidatesTokenCount ?? "?"}, ` +
+            `thinking=${uso.thoughtsTokenCount ?? "?"}. Final del texto recibido: …${JSON.stringify(texto.slice(-200))}`
+          );
+        }
+        return v;
+      };
+
       let parsed: any;
       try {
-        parsed = normalizeAudit({ ...parseJson(textA), ...parseJson(textB), ...parseJson(textC) });
-      } catch (e) {
-        console.error("[Auditor] Respuesta no parseable:", e);
-        return res.status(500).json({ error: "Respuesta de Gemini no es JSON válido." });
+        const a = await parsePart("A", promptA, responseA);
+        const b = await parsePart("B", promptB, responseB);
+        const c = await parsePart("C", promptC, responseC);
+        parsed = normalizeAudit({ ...a, ...b, ...c });
+      } catch (e: any) {
+        const detalle = String(e?.message ?? e);
+        console.error("[Auditor] Respuesta no parseable:", detalle);
+        return res.status(500).json({ error: "Respuesta de Gemini no es JSON válido.", details: detalle });
       }
 
       // Reglas duras ANTES del veredicto: los niveles forzados deben entrar en
