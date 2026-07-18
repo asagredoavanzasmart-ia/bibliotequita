@@ -1,7 +1,7 @@
 # Biblioteca — Contexto Completo de Desarrollo
 
 > Documento de contexto para IAs y desarrolladores que continúen este proyecto.
-> Última actualización: 2026-07-18 | Commit: 357711a
+> Última actualización: 2026-07-18 | Commit: 53e53bd
 
 ---
 
@@ -41,7 +41,7 @@
 
 ---
 
-## 3. Sesión Actual: Features Implementadas (2026-07-15 a 2026-07-18)
+## 3. Sesiones Anteriores: Features Implementadas (2026-07-15 a 2026-07-18)
 
 ### 3.1 Auditor Científico — Fix JSON Truncado (ba80ff2)
 **Problema**: Gemini devolvía JSON cortado en la Parte C (18 criterios), error 400 previo eliminado.
@@ -137,6 +137,38 @@ Nueva categoría **"Presentaciones"** con lógica de galería:
 
 ---
 
+## 3.7 Ondas de Audio en Vivo + Velocidad 0.5×–2× (1fd518a)
+
+**Visualizador de ondas en tiempo real** (reproductor de audio en Recursos):
+- Web Audio API nativo (`AnalyserNode`): barras que se mueven con el sonido real
+- Conectado al MISMO `<audio>` que ya suena → cero descargas extra, cero RAM
+- Si el AudioContext falla, el audio sigue sonando normal (visualizador nunca es crítico)
+- Canvas de 64 barras (fluido y ligero)
+
+**Control de velocidad 0.5×, 1×, 1.25×, 1.5×, 2×**:
+- **MediaPlayer** (audio y video, incluye YouTube): botón único a la izquierda que recorre velocidades en ciclo
+- **TTS** (libros y recursos): fila de chips en la tuerca de opciones, persistida en localStorage
+- **YouTube**: via `postMessage` + `setPlaybackRate`; sin dependencias nuevas
+
+---
+
+## 3.8 Administrador de Citas con Pestañas por Fuente (53e53bd)
+
+**Menú de fuentes** (lado izquierdo en PC; fila móvil):
+- "Todas" — libro + recursos juntos
+- "Libro · [título]"
+- Una pestaña por cada recurso CON citas: "Video · Entrevista", "Audio · Clase 3", "Texto · Resumen IA…"
+
+**Comportamiento**:
+- Renombrar recurso → pestaña se actualiza sola (título fresco del listado)
+- "Todas" + agrupado por color: los grupos **mezclan** citas de todas las fuentes sin discriminar
+- "Todas" sin agrupar: libro primero, luego divisor "Citas de recursos" con cada recurso bajo su encabezado
+- Fuente concreta: solo sus citas; filtro de color y agrupación aplican igual que en libro
+- Recurso borrado → pestaña desaparece, vista vuelve a "Todas" sola
+- Editar/borrar/mover citas reutiliza mutaciones aisladas (`saveResourceNotes` y cia) — nunca se mezclan con notas del libro
+
+---
+
 ## 4. Cómo Cambios Logran Reconstruirse en Railway
 
 **Railway detecta automáticamente**:
@@ -172,6 +204,8 @@ Antes de cada feature importante, se crea rama `respaldo-pre-*`:
 - `respaldo-pre-dobletap-2026-07-18` (Doble tap)
 - `respaldo-pre-presentaciones-2026-07-18` (Presentaciones)
 - `respaldo-pre-wav2mp3-2026-07-18` (WAV→MP3)
+- `respaldo-pre-velocidad-ondas-2026-07-18` (Velocidad + ondas)
+- `respaldo-pre-citas-fuentes-2026-07-18` (Citas por fuente)
 
 **Por qué**: si hay problema, `git checkout respaldo-pre-*` revierte a estado previo sin merges complicados.
 
@@ -232,21 +266,34 @@ UPLOAD_DIR=/app/uploads        # En Docker
 
 ## 10. Estado Actual & Próximos Pasos
 
-### Verificado en vivo:
+### Verificado en vivo (Sesión anterior):
 ✅ UI de 4 cambios (botonera, TTS, galería, resumen)  
 ✅ Control Bluetooth (frase/página/cita gris)  
 ✅ Pantalla completa (doble-tap)  
 ✅ Presentaciones (galería arrastrable)  
 ✅ Compilación server (Auditor repair, WAV config)  
 
+### Esta sesión (2026-07-18, tras contexto):
+✅ Ondas de audio en vivo (AnalyserNode Web Audio API)  
+✅ Velocidad 0.5×–2× en MediaPlayer (audio, video, YouTube)  
+✅ Velocidad 0.5×–2× en TTS (tuerca de opciones, localStorage persistido)  
+✅ Administrador de citas con pestañas por fuente (libro + recursos)  
+✅ Renombrar recurso → pestaña se actualiza sola  
+✅ Agrupación por color: "Todas" mezcla recursos sin discriminar  
+✅ Compilación: `tsc --noEmit` + `npm run build` limpios  
+✅ Push a origin/main (Railway redeploy automático en ~2-5 min)  
+
 ### Pendiente en vivo:
-⏳ **Conversión WAV→MP3**: necesita ffmpeg en Docker (Railway redeploy automático)  
-⏳ **Auditor Repair**: ffmpeg disponible, pero lógica JSON sin probar contra Gemini real  
+⏳ **Conversión WAV→MP3**: en Railway (ffmpeg ya está, redeploy en progreso)  
+⏳ **Auditor Repair**: en Railway  
+⏳ **Ondas de audio**: en Railway (verifica que canvas se vea fluido)  
 
 ### Para siguiente sesión:
 1. **Probar WAV → MP3 en Railway** (subir un .wav, verificar que llegue .mp3)
 2. **Auditar un PDF** (verificar que repair funcione y diagnóstico sea útil)
 3. **Mando Bluetooth**: probar con tu control remoto (qué teclas envía)
+4. **Ondas de audio**: verifica que se vean al reproducir en Recursos
+5. **Velocidad**: prueba 0.5× / 2× en TTS, MediaPlayer y YouTube
 
 ---
 
@@ -281,6 +328,6 @@ Próxima IA o desarrollador: lean esto primero, miren los commits (son autoexpli
 
 ---
 
-**Generado**: 2026-07-18 23:00  
+**Última actualización**: 2026-07-18 (post-push)  
 **Por**: Claude Code + Usuario (avanzasmartgrowth)  
-**Rama**: main @ 357711a
+**Rama**: main @ 53e53bd (2 commits nuevos desde anterior actualización)
