@@ -239,6 +239,16 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   // --- Estados de Lector de Voz (TTS ElevenLabs) ------------------------------
   const [showTtsWidget, setShowTtsWidget] = useState(false);
+  // Velocidad de lectura del TTS (persistida entre sesiones). Se aplica al
+  // audio HTML (ElevenLabs/Google) vía playbackRate — incluso al que ya está
+  // sonando — y a la voz offline vía utter.rate (esa API no admite cambio a
+  // mitad de frase: toma efecto en la siguiente).
+  const TTS_RATES = [0.5, 1, 1.25, 1.5, 2];
+  const [ttsRate, setTtsRateState] = useState<number>(() => {
+    const v = Number(localStorage.getItem('tts-rate'));
+    return TTS_RATES.includes(v) ? v : 1;
+  });
+  const ttsRateRef = useRef(ttsRate);
   // El panel de configuración (modelo/voz/origen de lectura) queda colapsado
   // por defecto para que la barra inferior del reproductor sea compacta.
   const [showTtsSettings, setShowTtsSettings] = useState(false);
@@ -1646,6 +1656,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       null;
     if (chosenVoice) utter.voice = chosenVoice;
     utter.lang = chosenVoice?.lang || 'es-ES';
+    utter.rate = ttsRateRef.current;
 
     utter.onend = () => {
       if (browserUtterRef.current !== utter) return; // cancelada/reemplazada
@@ -1835,6 +1846,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         setTtsErrorMessage('Error al reproducir esta frase.');
       };
 
+      // Velocidad elegida por el usuario — cubre tanto el audio recién creado
+      // como el precargado (ambos pasan por aquí antes de sonar).
+      audio.playbackRate = ttsRateRef.current;
       setCurrentAudio(audio);
       audio.play().then(() => {
         setTtsStatus('playing');
@@ -3243,6 +3257,34 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                                <option value="chapter" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">Inicio del capítulo</option>
                                <option value="lastRead" className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100">Última lectura</option>
                             </select>
+                         </div>
+
+                         {/* Velocidad de lectura: cambia al instante el audio en
+                             curso; la voz offline la toma en la frase siguiente. */}
+                         <div className="flex items-center justify-between text-xs bg-[var(--bg-app)]/40 border border-[var(--border-card)] rounded-xl p-2.5 gap-2">
+                            <span className="text-[var(--text-muted)] font-semibold shrink-0">Velocidad:</span>
+                            <div className="flex gap-1 flex-wrap justify-end">
+                               {TTS_RATES.map((r) => (
+                                  <button
+                                    key={r}
+                                    onClick={() => {
+                                       ttsRateRef.current = r;
+                                       setTtsRateState(r);
+                                       try { localStorage.setItem('tts-rate', String(r)); } catch { /* modo privado */ }
+                                       if (currentAudio) currentAudio.playbackRate = r;
+                                    }}
+                                    className={cn(
+                                      "px-2 py-1 rounded-lg text-[11px] font-bold tabular-nums transition-colors border",
+                                      ttsRate === r
+                                        ? "bg-[var(--primary)] text-white border-[var(--primary)] shadow-sm"
+                                        : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-[var(--primary)]/40"
+                                    )}
+                                    title={`Leer a ${r}×`}
+                                  >
+                                    {r}×
+                                  </button>
+                               ))}
+                            </div>
                          </div>
 
                          {ttsStatus === 'error' && (

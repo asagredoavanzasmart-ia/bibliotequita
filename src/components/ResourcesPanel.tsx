@@ -173,20 +173,26 @@ export interface MediaApi {
   seekTo: (seconds: number) => void;
 }
 
+// Velocidades estándar de reproducción (mismas del TTS y de cualquier app de
+// podcasts). El botón de velocidad las recorre en ciclo.
+const PLAYBACK_RATES = [0.5, 1, 1.25, 1.5, 2];
+
 // -----------------------------------------------------------------------------
-// Controles de reproducción compartidos: [⏪] [play/pausa] [⏩] + tiempo.
+// Controles de reproducción compartidos: [vel] [⏪] [play/pausa] [⏩] + tiempo.
 // Un TAP en ⏪/⏩ salta 5s; DOBLE tap salta 10s (ventana de 260ms para
 // distinguirlos, como pidió el usuario — mismo patrón que la app de YouTube).
 // -----------------------------------------------------------------------------
-function MediaControls({ playing, timeSec, durationSec, volume, onToggle, onSeekBy, onScrub, onVolume }: {
+function MediaControls({ playing, timeSec, durationSec, volume, rate, onToggle, onSeekBy, onScrub, onVolume, onRate }: {
   playing: boolean;
   timeSec: number;
   durationSec: number;
   volume: number;
+  rate: number;
   onToggle: () => void;
   onSeekBy: (delta: number) => void;
   onScrub: (seconds: number) => void;
   onVolume: (v: number) => void;
+  onRate: () => void;
 }) {
   const tapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showVol, setShowVol] = useState(false);
@@ -226,8 +232,21 @@ function MediaControls({ playing, timeSec, durationSec, volume, onToggle, onSeek
         />
         <span className="text-[11px] font-mono tabular-nums text-white/50 min-w-[42px]">{dur > 0 ? formatTime(dur) : '--:--'}</span>
       </div>
-      {/* Controles: retroceso, play/pausa, avance + volumen. */}
+      {/* Controles: velocidad, retroceso, play/pausa, avance + volumen. */}
       <div className="flex items-center justify-center gap-2 relative">
+        {/* Velocidad: un botón que recorre 0.5×→1×→1.25×→1.5×→2× en ciclo
+            (patrón de apps de podcasts — un solo control, no rompe la fila). */}
+        <button
+          type="button"
+          onClick={onRate}
+          className={cn(
+            'absolute left-0 px-2 py-1.5 rounded-full hover:bg-white/15 active:scale-95 transition-all text-[11px] font-bold tabular-nums',
+            rate !== 1 && 'text-[var(--primary)] bg-white/10'
+          )}
+          title="Velocidad de reproducción (0.5× a 2×)"
+        >
+          {rate}×
+        </button>
         <button type="button" onClick={() => handleSeekTap(-1)} className="p-2 rounded-full hover:bg-white/15 active:scale-95 transition-all" title="Atrás: 1 tap = 5s · 2 taps = 10s">
           <Rewind className="w-5 h-5 fill-current" />
         </button>
@@ -285,7 +304,75 @@ function MediaPlayer({ resource, kind, onPlayingChange, apiRef, onTimeChange, ta
   const [timeSec, setTimeSec] = useState(0);
   const [durationSec, setDurationSec] = useState(0);
   const [volume, setVolumeState] = useState(1); // 0..1
+  const [rate, setRateState] = useState(1);
   const timeRef = useRef(0);
+
+  // --- Ondas de audio EN VIVO (solo kind 'audio') ---
+  // AnalyserNode conectado al MISMO <audio> que ya suena: cero descargas
+  // extra y cero decodificación completa en RAM (decodificar 1 h de MP3
+  // entero, como hace wavesurfer, serían ~600 MB — inviable en móvil).
+  // createMediaElementSource solo puede llamarse UNA vez por elemento, por
+  // eso el init es idempotente; y si algo falla, se marca y el audio sigue
+  // sonando por la vía normal (el analizador nunca es crítico).
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const vizFailedRef = useRef(false);
+  const rafRef = useRef(0);
+
+  const initAnalyser = useCallback(() => {
+    if (kind !== 'audio' || analyserRef.current || vizFailedRef.current || !mediaRef.current) return;
+    try {
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx: AudioContext = new Ctx();
+      const source = ctx.createMediaElementSource(mediaRef.current);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 128; // 64 barras: fluido y barato
+      source.connect(analyser);
+      analyser.connect(ctx.destination); // sin esta conexión el audio se silenciaría
+      audioCtxRef.current = ctx;
+      analyserRef.current = analyser;
+    } catch (e) {
+      vizFailedRef.current = true;
+      console.warn('Visualizador de ondas no disponible:', e);
+    }
+  }, [kind]);
+
+  // Bucle de dibujo mientras suena; línea central quieta cuando está en pausa.
+  useEffect(() => {
+    if (kind !== 'audio') return;
+    const canvas = canvasRef.current;
+    const g = canvas?.getContext('2d');
+    if (!canvas || !g) return;
+    if (!playing) {
+      g.clearRect(0, 0, canvas.width, canvas.height);
+      g.fillStyle = 'rgba(148, 163, 184, 0.45)';
+      g.fillRect(0, canvas.height / 2 - 1, canvas.width, 2);
+      return;
+    }
+    initAnalyser();
+    audioCtxRef.current?.resume().catch(() => { /* política de autoplay */ });
+    const analyser = analyserRef.current;
+    if (!analyser) return;
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const draw = () => {
+      rafRef.current = requestAnimationFrame(draw);
+      analyser.getByteFrequencyData(data);
+      const w = canvas.width, h = canvas.height;
+      g.clearRect(0, 0, w, h);
+      const barW = w / data.length;
+      for (let i = 0; i < data.length; i++) {
+        const v = data[i] / 255;
+        const barH = Math.max(2, v * h);
+        g.fillStyle = `rgba(56, 189, 248, ${0.35 + v * 0.65})`;
+        g.fillRect(i * barW + 1, (h - barH) / 2, Math.max(1, barW - 2), barH);
+      }
+    };
+    draw();
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [kind, playing, initAnalyser]);
+
+  useEffect(() => () => { audioCtxRef.current?.close().catch(() => { /* ya cerrado */ }); }, []);
 
   // Notificar reproducción (wake lock) solo en las TRANSICIONES reales.
   const prevPlayingRef = useRef(false);
@@ -385,6 +472,15 @@ function MediaPlayer({ resource, kind, onPlayingChange, apiRef, onTimeChange, ta
     setVolumeState(vol);
   }, [isYT, ytPost]);
 
+  // Velocidad en ciclo 0.5×→1×→1.25×→1.5×→2×. YouTube la acepta por el mismo
+  // protocolo postMessage; los archivos directos, por playbackRate nativo.
+  const cycleRate = useCallback(() => {
+    const next = PLAYBACK_RATES[(PLAYBACK_RATES.indexOf(rate) + 1) % PLAYBACK_RATES.length];
+    if (isYT) ytPost('setPlaybackRate', [next]);
+    else if (mediaRef.current) mediaRef.current.playbackRate = next;
+    setRateState(next);
+  }, [rate, isYT, ytPost]);
+
   useEffect(() => {
     if (!apiRef) return;
     apiRef.current = { getCurrentTime: () => timeRef.current, seekTo };
@@ -410,7 +506,7 @@ function MediaPlayer({ resource, kind, onPlayingChange, apiRef, onTimeChange, ta
           // Sin `controls` nativos: se usan SOLO nuestros controles (barra de
           // tiempo movible, volumen y saltos), igual que con YouTube.
           <video
-            ref={(el) => { mediaRef.current = el; if (el) el.volume = volume; }}
+            ref={(el) => { mediaRef.current = el; if (el) { el.volume = volume; el.playbackRate = rate; } }}
             src={resource.source}
             className={cn('w-full bg-black', tall ? 'max-h-[60dvh]' : 'max-h-72')}
             playsInline
@@ -424,18 +520,25 @@ function MediaPlayer({ resource, kind, onPlayingChange, apiRef, onTimeChange, ta
           />
         )
       ) : (
-        <audio
-          ref={(el) => { mediaRef.current = el; if (el) el.volume = volume; }}
-          src={resource.source}
-          className="w-full px-3 pt-3"
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onEnded={() => setPlaying(false)}
-          onTimeUpdate={(e) => setTimeThrottled((e.target as HTMLAudioElement).currentTime)}
-          onLoadedMetadata={(e) => setDurationSec((e.target as HTMLAudioElement).duration || 0)}
-          onDurationChange={(e) => setDurationSec((e.target as HTMLAudioElement).duration || 0)}
-          onVolumeChange={(e) => setVolumeState((e.target as HTMLAudioElement).volume)}
-        />
+        <>
+          {/* Ondas en vivo: barras que se mueven con el sonido real (línea
+              central quieta en pausa). El <audio> no tiene interfaz visible
+              (los controles son los propios de abajo), así que este canvas
+              es la "cara" del reproductor de audio. */}
+          <canvas ref={canvasRef} width={640} height={64} className="w-full h-16 px-3 pt-2" />
+          <audio
+            ref={(el) => { mediaRef.current = el; if (el) { el.volume = volume; el.playbackRate = rate; } }}
+            src={resource.source}
+            className="w-full px-3"
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onEnded={() => setPlaying(false)}
+            onTimeUpdate={(e) => setTimeThrottled((e.target as HTMLAudioElement).currentTime)}
+            onLoadedMetadata={(e) => setDurationSec((e.target as HTMLAudioElement).duration || 0)}
+            onDurationChange={(e) => setDurationSec((e.target as HTMLAudioElement).duration || 0)}
+            onVolumeChange={(e) => setVolumeState((e.target as HTMLAudioElement).volume)}
+          />
+        </>
       )}
       {/* Controles propios: funcionan igual para YouTube (postMessage) y
           archivos directos (refs). Vimeo no habla el protocolo de YouTube ni
@@ -446,10 +549,12 @@ function MediaPlayer({ resource, kind, onPlayingChange, apiRef, onTimeChange, ta
           timeSec={timeSec}
           durationSec={durationSec}
           volume={volume}
+          rate={rate}
           onToggle={toggle}
           onSeekBy={seekBy}
           onScrub={scrubTo}
           onVolume={setVolume}
+          onRate={cycleRate}
         />
       )}
     </div>
