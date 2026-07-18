@@ -76,19 +76,30 @@ export async function uploadFile(
   });
 }
 
-// Límite de subida del servidor (MB), cacheado tras la primera consulta.
-// null = no se pudo consultar (no bloquear la subida por eso).
-let _maxUploadMb: number | null | undefined = undefined;
-export async function getMaxUploadMb(): Promise<number | null> {
-  if (_maxUploadMb !== undefined) return _maxUploadMb;
+// Límites de subida del servidor (MB), cacheados tras la primera consulta.
+// null = no se pudo consultar (no bloquear la subida por eso). Los .wav
+// tienen tope propio, más alto, porque el servidor los comprime a MP3 al
+// recibirlos.
+let _uploadLimits: { maxUploadMb: number | null; maxWavUploadMb: number | null } | undefined = undefined;
+async function getUploadLimits() {
+  if (_uploadLimits !== undefined) return _uploadLimits;
   try {
     const res = await fetch("/api/config");
     const data = res.ok ? await res.json() : {};
-    _maxUploadMb = typeof data.maxUploadMb === "number" && data.maxUploadMb > 0 ? data.maxUploadMb : null;
+    const num = (v: unknown) => (typeof v === "number" && v > 0 ? v : null);
+    _uploadLimits = { maxUploadMb: num(data.maxUploadMb), maxWavUploadMb: num(data.maxWavUploadMb) };
   } catch {
-    _maxUploadMb = null;
+    _uploadLimits = { maxUploadMb: null, maxWavUploadMb: null };
   }
-  return _maxUploadMb;
+  return _uploadLimits;
+}
+export async function getMaxUploadMb(): Promise<number | null> {
+  return (await getUploadLimits()).maxUploadMb;
+}
+export async function getMaxWavUploadMb(): Promise<number | null> {
+  const { maxUploadMb, maxWavUploadMb } = await getUploadLimits();
+  // Servidor viejo sin el campo: cae al tope general, nunca a "sin límite".
+  return maxWavUploadMb ?? maxUploadMb;
 }
 
 // Token interno para DELETE — se obtiene del servidor al primer uso y se cachea.

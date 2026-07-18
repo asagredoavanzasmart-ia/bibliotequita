@@ -17,8 +17,9 @@ FROM node:22-alpine AS runtime
 
 WORKDIR /app
 
-# Solo las libs nativas de runtime (canvas, sharp)
-RUN apk add --no-cache cairo pango jpeg giflib librsvg
+# Solo las libs nativas de runtime (canvas, sharp) + ffmpeg (compresión de
+# audios WAV a MP3 al subirlos — ver convertWavToMp3 en server.ts)
+RUN apk add --no-cache cairo pango jpeg giflib librsvg ffmpeg
 
 # Copiar solo lo necesario
 COPY --from=builder /app/dist ./dist

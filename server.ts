@@ -53,6 +53,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import path from "path";
 import fs from "fs";
+import { execFile } from "child_process";
 import dns from "dns/promises";
 import net from "net";
 import multer from "multer";
@@ -82,6 +83,10 @@ const IS_PROD = NODE_ENV === "production";
 
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || "./uploads");
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 200);
+// Tope especial para .wav: pueden viajar mucho más grandes porque al llegar
+// se COMPRIMEN a MP3 con ffmpeg (1 h de WAV ≈ 600 MB → ≈ 55 MB), así que lo
+// que queda en disco es chico. El resto de tipos mantiene MAX_UPLOAD_MB.
+const MAX_WAV_UPLOAD_MB = Number(process.env.MAX_WAV_UPLOAD_MB || 800);
 
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 if (IS_PROD && CORS_ORIGIN === "*") {
@@ -198,7 +203,11 @@ const upload = multer({
     destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
     filename: (_req, file, cb) => cb(null, randomUUID() + safeExt(file.originalname)),
   }),
-  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
+  // El techo de multer es el MAYOR de los dos topes porque el filtro corre
+  // ANTES de conocer el tamaño. Para los tipos que no son .wav, el tope real
+  // (MAX_UPLOAD_MB) se aplica en el endpoint apenas termina la subida — el
+  // archivo excedente se borra al instante, no queda en disco.
+  limits: { fileSize: Math.max(MAX_UPLOAD_MB, MAX_WAV_UPLOAD_MB) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ext = safeExt(file.originalname);
     const allowedMimes = ALLOWED_UPLOAD_TYPES[ext];
@@ -215,6 +224,33 @@ const upload = multer({
     cb(null, true);
   },
 });
+
+// Convierte un WAV recién subido a MP3 con ffmpeg (instalado en la imagen
+// Docker; en dev local puede no estar). Devuelve el nombre del .mp3 o null
+// si no se pudo convertir — en ese caso el WAV original queda tal cual y
+// nada se rompe. execFile con array de argumentos: sin shell, sin inyección
+// (además el nombre es un UUID generado por el servidor, no del usuario).
+const convertWavToMp3 = (wavName: string): Promise<string | null> =>
+  new Promise((resolve) => {
+    const inPath = path.join(UPLOAD_DIR, wavName);
+    const outName = wavName.replace(/\.wav$/i, ".mp3");
+    const outPath = path.join(UPLOAD_DIR, outName);
+    execFile(
+      "ffmpeg",
+      ["-y", "-i", inPath, "-codec:a", "libmp3lame", "-b:a", "128k", outPath],
+      { timeout: 15 * 60 * 1000 },
+      (err) => {
+        if (err) {
+          try { fs.unlinkSync(outPath); } catch { /* puede no haberse creado */ }
+          console.warn(`[upload] No se pudo convertir ${wavName} a MP3 (¿ffmpeg instalado?):`, (err as any).code ?? err.message);
+          resolve(null);
+          return;
+        }
+        try { fs.unlinkSync(inPath); } catch { /* el original ya no hace falta */ }
+        resolve(outName);
+      },
+    );
+  });
 
 // -----------------------------------------------------------------------------
 // Helpers de validación y sanitización
@@ -1596,6 +1632,8 @@ async function startServer() {
       // El cliente lo usa para rechazar archivos demasiado grandes ANTES de
       // subirlos (con mensaje claro), en vez de fallar tras minutos de espera.
       maxUploadMb: MAX_UPLOAD_MB,
+      // Tope aparte para .wav (se comprimen a MP3 al llegar al servidor).
+      maxWavUploadMb: MAX_WAV_UPLOAD_MB,
     });
   });
 
@@ -1742,10 +1780,19 @@ async function startServer() {
       return res.status(400).json({ error: "No se recibió archivo" });
     }
 
+    // El techo de multer se elevó SOLO para que los .wav grandes alcancen a
+    // llegar y comprimirse; para el resto el tope sigue siendo MAX_UPLOAD_MB
+    // y se aplica aquí mismo (el cliente ya pre-rechaza antes de subir; esto
+    // cubre a cualquier cliente que se salte esa comprobación).
+    const ext = path.extname(req.file.filename).toLowerCase();
+    if (ext !== ".wav" && req.file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      try { fs.unlinkSync(path.join(UPLOAD_DIR, req.file.filename)); } catch { /* ignore */ }
+      return res.status(413).json({ error: `Archivo demasiado grande (máx ${MAX_UPLOAD_MB} MB)` });
+    }
+
     // Para archivos de contenido (PDF/EPUB/TXT), aplicar el límite que el
     // admin haya asignado al usuario (user_limits.max_uploads). El admin no
     // tiene límite.
-    const ext = path.extname(req.file.filename).toLowerCase();
     const isContent = ext === ".pdf" || ext === ".epub" || ext === ".txt";
     if (isContent && supabase && req.user?.role !== "admin") {
       const { data: limits } = await supabase
@@ -1763,12 +1810,28 @@ async function startServer() {
       }
     }
 
+    // WAV → MP3 al llegar: lo que queda en disco (y lo que el cliente
+    // referencia) es el MP3. Si ffmpeg falta o falla, el WAV se sirve tal
+    // cual, como siempre. La conversión corre dentro del request: el cliente
+    // ve la barra al 100 % y espera unos segundos más la respuesta.
+    let servedName = req.file.filename;
+    let servedMime = req.file.mimetype;
+    let servedSize = req.file.size;
+    if (ext === ".wav") {
+      const mp3Name = await convertWavToMp3(req.file.filename);
+      if (mp3Name) {
+        servedName = mp3Name;
+        servedMime = "audio/mpeg";
+        try { servedSize = fs.statSync(path.join(UPLOAD_DIR, mp3Name)).size; } catch { /* solo informativo */ }
+      }
+    }
+
     res.json({
-      url: `/api/files/${req.file.filename}`,
-      name: req.file.filename,
+      url: `/api/files/${servedName}`,
+      name: servedName,
       originalName: req.file.originalname,
-      size: req.file.size,
-      mimeType: req.file.mimetype,
+      size: servedSize,
+      mimeType: servedMime,
     });
   });
 
@@ -3439,7 +3502,7 @@ sintesis_critica (declarativa, SIN recomendaciones):
   // Manejador global de errores (último middleware).
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     if (err && err.code === "LIMIT_FILE_SIZE") {
-      return res.status(413).json({ error: `Archivo demasiado grande (máx ${MAX_UPLOAD_MB} MB)` });
+      return res.status(413).json({ error: `Archivo demasiado grande (máx ${MAX_UPLOAD_MB} MB; los .wav pueden pesar hasta ${MAX_WAV_UPLOAD_MB} MB porque se comprimen a MP3 al subir)` });
     }
     // Rechazo del fileFilter de multer: tipo/extensión no permitidos. Antes
     // caía al 500 genérico ("error de servidor") y el usuario no sabía que
