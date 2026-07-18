@@ -34,7 +34,10 @@ export type NavSectionId = 'favoritos' | 'leidos' | 'porleer' | 'destacados' | '
 export type ResourceType = 'pdf' | 'epub' | 'txt' | 'externa';
 
 // Tipo de recurso adicional adjunto a un libro (pestaña "Recursos").
-export type ResourceKind = 'video' | 'audio' | 'text' | 'image';
+// 'slides': presentaciones (PDF se abre con el lector propio; PPT/PPTX/ODP
+// se guardan y descargan para abrirse con la app de presentaciones local —
+// nunca con visores externos, para que el archivo no salga del servidor).
+export type ResourceKind = 'video' | 'audio' | 'text' | 'image' | 'slides';
 
 // Recurso complementario de un libro: video, audio, texto o imagen.
 // Los recursos de texto reutilizan el motor de lectura/citas; su identidad de

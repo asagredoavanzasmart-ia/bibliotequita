@@ -20,7 +20,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, Minimize2, ChevronLeft, ChevronRight, Volume1, Volume2, VolumeX, ClipboardPaste, GripVertical } from 'lucide-react';
+import { Video, Music, FileText, Image as ImageIcon, UploadCloud, Trash2, Play, Pause, Rewind, FastForward, Loader2, BookOpen, Link as LinkIcon, MessageSquareQuote, X, Download, Maximize2, Minimize2, ChevronLeft, ChevronRight, Volume1, Volume2, VolumeX, ClipboardPaste, GripVertical, Presentation } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { uploadFile, getMaxUploadMb } from '../lib/uploadFile';
 import { useResources } from '../hooks/useResources';
@@ -43,6 +43,10 @@ const KINDS: { id: ResourceKind; label: string; Icon: any; accept: string }[] = 
   { id: 'audio', label: 'Audios', Icon: Music, accept: 'audio/*' },
   { id: 'text', label: 'Textos', Icon: FileText, accept: '.pdf,.epub,.txt,.docx' },
   { id: 'image', label: 'Imágenes', Icon: ImageIcon, accept: 'image/*' },
+  // Presentaciones: PDF se abre con el lector propio; el resto se guarda y
+  // descarga para abrirse con la app de presentaciones del dispositivo (sin
+  // visores externos: el archivo nunca sale del servidor).
+  { id: 'slides', label: 'Presentaciones', Icon: Presentation, accept: '.pdf,.ppt,.pptx,.pps,.ppsx,.odp,.key' },
 ];
 
 function fileTypeFromName(name: string): ResourceType {
@@ -656,7 +660,13 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
     }
     try {
       const { url, mimeType } = await uploadFile(file, undefined, setUploadProgress);
-      const fileType = activeKind === 'text' ? fileTypeFromName(file.name) : undefined;
+      // Presentaciones: SOLO el PDF lleva fileType (abre con el lector
+      // propio); un .pptx con fileType 'txt' abriría el lector de texto
+      // sobre un binario. Los demás formatos quedan sin fileType y su
+      // tarjeta los descarga para abrirlos con la app local.
+      const fileType = activeKind === 'text' ? fileTypeFromName(file.name)
+        : activeKind === 'slides' && file.name.toLowerCase().endsWith('.pdf') ? 'pdf' as const
+        : undefined;
       // Portada best-effort para PDF/EPUB (no bloquea la subida si falla).
       const thumbnailUrl = fileType === 'pdf' || fileType === 'epub'
         ? await extractCoverForResource(file, fileType)
@@ -1053,7 +1063,7 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
             'grid gap-3',
             activeKind === 'image' ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4'
               : activeKind === 'audio' ? 'grid-cols-1 sm:grid-cols-2'
-              : activeKind === 'text' ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+              : (activeKind === 'text' || activeKind === 'slides') ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
               : 'grid-cols-1'
           )}>
             {current.map((r, index) => (
@@ -1092,6 +1102,31 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                     )}
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-bold text-slate-800 truncate">{r.title}{r.isSummary && <span className="ml-2 text-[9px] uppercase font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">Resumen</span>}</p>
+                    </div>
+                    <Play className="w-4 h-4 text-slate-400 shrink-0" />
+                  </button>
+                )}
+                {r.kind === 'slides' && (
+                  // Entrar: PDF abre con el lector propio (zoom, pantalla
+                  // completa, citas); PPT/PPTX/ODP se descargan y el sistema
+                  // los abre con la app de presentaciones instalada — nunca
+                  // un visor externo (el archivo no sale del servidor).
+                  <button
+                    onClick={() => { if (r.fileType === 'pdf') onOpenTextResource(r); else window.open(r.source, '_blank', 'noopener'); }}
+                    className="flex items-center gap-3 p-3 hover:bg-slate-50 transition-colors text-left"
+                  >
+                    {r.thumbnailUrl ? (
+                      <img src={r.thumbnailUrl} alt={r.title} className="w-10 h-14 rounded-md object-cover shrink-0 border border-slate-200" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-lg bg-[var(--primary)]/10 flex items-center justify-center shrink-0">
+                        <Presentation className="w-5 h-5 text-[var(--primary)]" />
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-bold text-slate-800 truncate">{r.title}</p>
+                      <p className="text-[10px] text-slate-400">
+                        {r.fileType === 'pdf' ? 'Se abre con el lector' : 'Se abre con tu app de presentaciones'}
+                      </p>
                     </div>
                     <Play className="w-4 h-4 text-slate-400 shrink-0" />
                   </button>

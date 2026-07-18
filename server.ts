@@ -182,6 +182,15 @@ const ALLOWED_UPLOAD_TYPES: Record<string, Set<string>> = {
   ".m4v": new Set(["video/mp4", "video/x-m4v", "application/octet-stream"]),
   ".webm": new Set(["video/webm", "audio/webm", "application/octet-stream"]),
   ".mov": new Set(["video/quicktime", "application/octet-stream"]),
+  // Presentaciones: binarios INERTES (el navegador no los ejecuta ni los
+  // renderiza inline; con nosniff se descargan con su Content-Type real),
+  // así que no abren superficie de XSS como sí lo harían .html/.svg.
+  ".ppt": new Set(["application/vnd.ms-powerpoint", "application/octet-stream"]),
+  ".pptx": new Set(["application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/octet-stream"]),
+  ".pps": new Set(["application/vnd.ms-powerpoint", "application/octet-stream"]),
+  ".ppsx": new Set(["application/vnd.openxmlformats-officedocument.presentationml.slideshow", "application/octet-stream"]),
+  ".odp": new Set(["application/vnd.oasis.opendocument.presentation", "application/octet-stream"]),
+  ".key": new Set(["application/vnd.apple.keynote", "application/x-iwork-keynote-sffkey", "application/zip", "application/octet-stream"]),
 };
 
 const upload = multer({
@@ -194,7 +203,7 @@ const upload = multer({
     const ext = safeExt(file.originalname);
     const allowedMimes = ALLOWED_UPLOAD_TYPES[ext];
     if (!allowedMimes) {
-      const err: any = new Error(`Tipo de archivo no permitido: ${ext || "(sin extensión)"}. Formatos aceptados: PDF, EPUB, TXT, imágenes, audio y video.`);
+      const err: any = new Error(`Tipo de archivo no permitido: ${ext || "(sin extensión)"}. Formatos aceptados: PDF, EPUB, TXT, imágenes, audio, video y presentaciones (PPT/PPTX/ODP).`);
       err.code = "UNSUPPORTED_FILE_TYPE";
       return cb(err);
     }
