@@ -639,6 +639,17 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
   // de otra categoría al volver a Videos.
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
   useEffect(() => { setPlayingVideoId(null); }, [activeKind]);
+  // Imagen abierta a pantalla de estudio (imagen grande + notas) y, dentro de
+  // ella, la "mesa de luz": overlay a pantalla completa con la imagen sola.
+  const [viewingImageId, setViewingImageId] = useState<string | null>(null);
+  useEffect(() => { setViewingImageId(null); }, [activeKind]);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!lightboxUrl) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightboxUrl(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightboxUrl]);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
   // Columnas video/notas SOLO en escritorio (pedido explícito): en móvil no
@@ -700,6 +711,10 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
   const current = resources.filter((r) => r.kind === activeKind).sort((a, b) => (a.listIndex ?? 0) - (b.listIndex ?? 0));
   const activeMeta = KINDS.find((k) => k.id === activeKind)!;
   const playingResource = playingVideoId ? resources.find((r) => r.id === playingVideoId) ?? null : null;
+  const viewingImageResource = viewingImageId ? resources.find((r) => r.id === viewingImageId) ?? null : null;
+  // Cualquier vista de "detalle" (video en reproducción o imagen en estudio)
+  // ocupa todo el alto sin scroll de página; la galería sí scrollea.
+  const detailMode = !!playingResource || !!viewingImageResource;
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
     setDraggedIndex(index);
@@ -802,9 +817,17 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
     const url = linkValue.trim();
     if (!url) return;
     try {
-      // El NOMBRE lo pone el usuario (pedido explícito). Si lo deja vacío, se
-      // usa un título legible por defecto; la URL cruda nunca se muestra.
+      // El NOMBRE lo pone el usuario si quiere. Si lo deja vacío, se intenta
+      // el título REAL del video vía oEmbed (proxy del servidor); si no se
+      // consigue, un título legible por defecto. La URL cruda nunca se muestra.
       let title = linkName.trim();
+      if (!title) {
+        try {
+          const r = await fetch(`/api/oembed?url=${encodeURIComponent(url)}`, { credentials: 'include' });
+          const d = await r.json();
+          if (d && typeof d.title === 'string' && d.title.trim()) title = d.title.trim();
+        } catch { /* sin red / proveedor caído: se usa el título por defecto */ }
+      }
       if (!title) {
         title = 'Video';
         try { title = `Video de ${new URL(url).hostname.replace(/^www\./, '')}`; } catch { /* URL rara: título genérico */ }
@@ -890,8 +913,74 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
       </button>
 
       {/* Contenido de la categoría activa */}
-      <div className={cn('flex-1', playingResource ? 'overflow-hidden flex flex-col' : 'overflow-y-auto p-4 custom-scrollbar')}>
-        {activeKind === 'video' && playingResource ? (
+      <div className={cn('flex-1', detailMode ? 'overflow-hidden flex flex-col' : 'overflow-y-auto p-4 custom-scrollbar')}>
+        {activeKind === 'image' && viewingImageResource ? (
+          // ---------------------------------------------------------------
+          // MODO ESTUDIO DE IMAGEN: imagen grande a un lado y notas al otro
+          // (mismo patrón que el video). Un clic en la imagen abre la mesa
+          // de luz. La imagen NUNCA sale de la app (antes: enlace externo).
+          // ---------------------------------------------------------------
+          <>
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-200 bg-white shrink-0">
+              <button
+                onClick={() => setViewingImageId(null)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors shrink-0"
+              >
+                <ChevronLeft className="w-4 h-4" /> Galería
+              </button>
+              <span className="flex-1 min-w-0 truncate text-sm font-bold text-slate-800" title={viewingImageResource.title}>
+                {viewingImageResource.title}
+              </span>
+              <button
+                onClick={() => setPanelFullscreen(v => !v)}
+                className={cn('p-1.5 rounded-lg border transition-colors shrink-0', panelFullscreen ? 'bg-[var(--primary)] text-white border-[var(--primary)]' : 'bg-white text-slate-500 border-slate-200 hover:text-[var(--primary)] hover:border-[var(--primary)]/40')}
+                title={panelFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'}
+              >
+                {panelFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              </button>
+              <button onClick={() => { if (confirm('¿Eliminar esta imagen?')) { deleteResource(viewingImageResource.id); setViewingImageId(null); } }} className="p-1.5 text-slate-400 hover:text-rose-500 shrink-0" title="Eliminar">
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+            <div
+              ref={splitContainerRef}
+              className={cn('flex-1 min-h-0 overflow-hidden flex', isDesktopSplit ? 'flex-row' : 'flex-col')}
+            >
+              <div
+                className={cn('flex flex-col min-h-0', isDesktopSplit ? 'shrink-0' : 'flex-1')}
+                style={isDesktopSplit ? { width: `${videoSplitRatio}%` } : undefined}
+              >
+                {/* Imagen entera dentro del espacio disponible (object-contain);
+                    clic → mesa de luz a pantalla completa. */}
+                <button
+                  onClick={() => setLightboxUrl(viewingImageResource.source)}
+                  className="flex-1 min-h-0 bg-slate-900 flex items-center justify-center overflow-hidden cursor-zoom-in"
+                  title="Ampliar (mesa de luz)"
+                >
+                  <img src={viewingImageResource.source} alt={viewingImageResource.title} className="max-w-full max-h-full object-contain" />
+                </button>
+              </div>
+              {isDesktopSplit && (
+                <div
+                  onPointerDown={handleSplitPointerDown}
+                  className="w-1.5 shrink-0 cursor-col-resize bg-slate-200 hover:bg-[var(--primary)] active:bg-[var(--primary)] transition-colors touch-none flex items-center justify-center"
+                  title="Arrastrar para ajustar el ancho"
+                >
+                  <div className="w-0.5 h-8 rounded-full bg-white/60" />
+                </div>
+              )}
+              <div className={cn('flex flex-col min-h-0', isDesktopSplit ? 'flex-1 h-full border-l border-slate-200' : 'flex-1 border-t border-slate-200')}>
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border-b border-slate-100 shrink-0">
+                  <MessageSquareQuote className="w-3.5 h-3.5 text-[var(--primary)]" />
+                  <span className="text-[10px] font-bold uppercase text-slate-500">Notas</span>
+                </div>
+                <div className="flex-1 min-h-0 overflow-hidden">
+                  <ResourceNotesPanel documentId={`${bookId}::res::${viewingImageResource.id}`} />
+                </div>
+              </div>
+            </div>
+          </>
+        ) : activeKind === 'video' && playingResource ? (
           // ---------------------------------------------------------------
           // MODO REPRODUCCIÓN: video + notas para estudiar. En escritorio,
           // columnas lado a lado con divisor arrastrable; en móvil, apiladas
@@ -908,6 +997,15 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
               <span className="flex-1 min-w-0 truncate text-sm font-bold text-slate-800" title={playingResource.title}>
                 {/^https?:\/\//i.test(playingResource.title) ? 'Video' : playingResource.title}
               </span>
+              {/* Pantalla completa del panel: da todo el alto a video + notas
+                  (el menú superior del lector se oculta bajo el portal). */}
+              <button
+                onClick={() => setPanelFullscreen(v => !v)}
+                className={cn('p-1.5 rounded-lg border transition-colors shrink-0', panelFullscreen ? 'bg-[var(--primary)] text-white border-[var(--primary)]' : 'bg-white text-slate-500 border-slate-200 hover:text-[var(--primary)] hover:border-[var(--primary)]/40')}
+                title={panelFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'}
+              >
+                {panelFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              </button>
               <button onClick={() => { if (confirm('¿Eliminar este video?')) { deleteResource(playingResource.id); setPlayingVideoId(null); } }} className="p-1.5 text-slate-400 hover:text-rose-500 shrink-0" title="Eliminar">
                 <Trash2 className="w-4 h-4" />
               </button>
@@ -962,43 +1060,37 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
         ) : (
         <>
         <div className="flex items-center justify-between mb-4 gap-2">
-          <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
-            <activeMeta.Icon className="w-5 h-5 text-[var(--primary)]" /> {activeMeta.label}
+          <h3 className="text-base font-bold text-slate-800 flex items-center gap-2 min-w-0">
+            <activeMeta.Icon className="w-5 h-5 text-[var(--primary)] shrink-0" /> <span className="truncate">{activeMeta.label}</span>
           </h3>
-          <div className="flex items-center gap-2">
+          {/* El botón de pantalla completa ya NO vive aquí: para recuperar
+              espacio (Pegar/Subir caben en una sola fila), el fullscreen se
+              ofrece dentro de cada vista de contenido (video e imagen). */}
+          <div className="flex items-center gap-2 shrink-0">
             {activeKind === 'video' && (
               <button
                 onClick={() => setShowLinkInput((v) => !v)}
-                className={cn('flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors', showLinkInput ? 'bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30' : 'bg-white text-slate-600 border-slate-200 hover:border-[var(--primary)]/40')}
+                className={cn('flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border transition-colors whitespace-nowrap shrink-0', showLinkInput ? 'bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30' : 'bg-white text-slate-600 border-slate-200 hover:border-[var(--primary)]/40')}
               >
-                <LinkIcon className="w-4 h-4" /> Enlace
+                <LinkIcon className="w-4 h-4 shrink-0" /> Enlace
               </button>
             )}
             {activeKind === 'text' && (
               <button
                 onClick={() => setShowPasteText((v) => !v)}
-                className={cn('flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors', showPasteText ? 'bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30' : 'bg-white text-slate-600 border-slate-200 hover:border-[var(--primary)]/40')}
+                className={cn('flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border transition-colors whitespace-nowrap shrink-0', showPasteText ? 'bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30' : 'bg-white text-slate-600 border-slate-200 hover:border-[var(--primary)]/40')}
+                title="Pegar texto copiado"
               >
-                <ClipboardPaste className="w-4 h-4" /> Pegar texto
+                <ClipboardPaste className="w-4 h-4 shrink-0" /> Pegar
               </button>
             )}
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] disabled:opacity-60 transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
             >
-              {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
+              {uploading ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <UploadCloud className="w-4 h-4 shrink-0" />}
               {uploading ? 'Subiendo…' : 'Subir'}
-            </button>
-            {/* Pantalla completa del panel (mismo botón ⛶ del resto de la app):
-                oculta el menú superior del lector; el lateral se colapsa con
-                su manija. */}
-            <button
-              onClick={() => setPanelFullscreen(v => !v)}
-              className={cn('p-2 rounded-lg border transition-colors shrink-0', panelFullscreen ? 'bg-[var(--primary)] text-white border-[var(--primary)]' : 'bg-white text-slate-600 border-slate-200 hover:text-[var(--primary)] hover:border-[var(--primary)]/40')}
-              title={panelFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'}
-            >
-              {panelFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
             </button>
           </div>
           <input ref={fileInputRef} type="file" accept={activeMeta.accept} className="hidden" onChange={handleUpload} />
@@ -1093,7 +1185,7 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
           // reordenar (persistido en listIndex). Clic → modo reproducción.
           // -----------------------------------------------------------------
           current.length === 0 ? (
-            <div className="text-center text-sm text-slate-400 py-16 border-2 border-dashed border-slate-200 rounded-xl">
+            <div className="text-center text-sm text-slate-400 py-10">
               No hay videos todavía. Pulsa «Subir» o «Enlace» para añadir.
             </div>
           ) : (
@@ -1161,7 +1253,7 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
             </div>
           )
         ) : current.length === 0 ? (
-          <div className="text-center text-sm text-slate-400 py-16 border-2 border-dashed border-slate-200 rounded-xl">
+          <div className="text-center text-sm text-slate-400 py-10">
             No hay {activeMeta.label.toLowerCase()} todavía. Pulsa «Subir» para añadir.
           </div>
         ) : (
@@ -1196,9 +1288,11 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
                   />
                 )}
                 {r.kind === 'image' && (
-                  <a href={r.source} target="_blank" rel="noreferrer" className="block aspect-square bg-slate-100">
+                  // Abre la vista de estudio (imagen grande + notas + mesa de
+                  // luz) dentro de la app — nunca un enlace externo.
+                  <button onClick={() => setViewingImageId(r.id)} className="block aspect-square bg-slate-100 w-full cursor-zoom-in" title="Abrir imagen">
                     <img src={r.source} alt={r.title} className="w-full h-full object-cover" />
-                  </a>
+                  </button>
                 )}
                 {r.kind === 'text' && (
                   <button onClick={() => onOpenTextResource(r)} className="flex items-center gap-3 p-3 hover:bg-slate-50 transition-colors text-left">
@@ -1333,5 +1427,36 @@ export function ResourcesPanel({ bookId, onOpenTextResource }: ResourcesPanelPro
     </div>
   );
 
-  return panelFullscreen ? createPortal(panel, document.body) : panel;
+  // Mesa de luz: la imagen sola, centrada sobre un fondo oscuro, ocupando
+  // toda la pantalla. Se cierra tocando el fondo, la ⨯ o Escape. Va por
+  // portal a body con z altísimo para quedar sobre TODO (incluido el panel
+  // en pantalla completa, que también es un portal).
+  const lightbox = lightboxUrl ? createPortal(
+    <div
+      onClick={() => setLightboxUrl(null)}
+      className="fixed inset-0 z-[10000] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150 cursor-zoom-out"
+    >
+      <button
+        onClick={(e) => { e.stopPropagation(); setLightboxUrl(null); }}
+        className="absolute top-4 right-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+        title="Cerrar (Esc)"
+      >
+        <X className="w-5 h-5" />
+      </button>
+      <img
+        src={lightboxUrl}
+        alt=""
+        onClick={(e) => e.stopPropagation()}
+        className="max-w-full max-h-full object-contain select-none shadow-2xl cursor-default"
+      />
+    </div>,
+    document.body
+  ) : null;
+
+  return (
+    <>
+      {panelFullscreen ? createPortal(panel, document.body) : panel}
+      {lightbox}
+    </>
+  );
 }

@@ -1637,6 +1637,36 @@ async function startServer() {
     });
   });
 
+  // Título real de un video de YouTube/Vimeo vía oEmbed. Se hace en el
+  // servidor (no en el cliente) para no ampliar el connect-src del CSP a
+  // dominios externos: el navegador solo habla con nuestro propio backend.
+  // Best-effort: si el proveedor no responde o la URL no es de un host
+  // conocido, devuelve title:null y el cliente usa su título por defecto.
+  app.get("/api/oembed", async (req, res) => {
+    const raw = String(req.query.url ?? "").trim();
+    let host = "";
+    try { host = new URL(raw).hostname.replace(/^www\./, ""); } catch { /* URL inválida */ }
+    const endpoint =
+      host === "youtube.com" || host === "youtu.be" || host === "m.youtube.com"
+        ? `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(raw)}`
+        : host === "vimeo.com" || host === "player.vimeo.com"
+        ? `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(raw)}`
+        : null;
+    if (!endpoint) { res.json({ title: null }); return; }
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 6000);
+      const r = await fetch(endpoint, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (!r.ok) { res.json({ title: null }); return; }
+      const data: any = await r.json();
+      const title = typeof data?.title === "string" ? data.title.trim() : null;
+      res.json({ title: title || null });
+    } catch {
+      res.json({ title: null });
+    }
+  });
+
   // -------------------------------------------------------------------------
   // Files: upload / download / delete
   // -------------------------------------------------------------------------

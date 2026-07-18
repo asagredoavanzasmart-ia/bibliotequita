@@ -2177,9 +2177,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Control remoto Bluetooth
   //   · 1 pulsación adelante/atrás → frase siguiente/anterior (TTS activo);
   //     sin TTS activo, cambia la página directamente.
-  //   · 2 pulsaciones seguidas     → página siguiente/anterior.
-  //   · mantener presionado        → cita de la frase actual en GRIS; si la
-  //     paleta no tiene gris, en ROJO; si tampoco, el primer color.
+  //   · 2 pulsaciones seguidas     → cita de la frase actual con el PRIMER
+  //     color de la paleta (gesto principal de cita; el más fiable en mandos
+  //     que no emiten "mantener presionado").
+  //   · mantener presionado        → misma cita con el primer color (respaldo
+  //     para los mandos que sí repiten tecla al sostenerla).
   // Entradas: mandos BT que emiten teclado (flechas, RePág/AvPág) y botones
   // de auriculares vía Media Session (previoustrack/nexttrack).
   // ==========================================================================
@@ -2195,6 +2197,14 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       const destino = cur + d;
       if (destino >= 1 && (!totalPages || destino <= totalPages)) setTargetPage({ page: destino, t: Date.now() });
     };
+    // Cita de la frase actual con el PRIMER color de la paleta (lo que pidió el
+    // usuario para el mando: doble pulsación = citar). Sin frase activa no hay
+    // nada que citar.
+    const citarPrimerColor = () => {
+      if (currentPhraseIndex < 0 || phrases.length === 0) return;
+      const c = activePalette[0];
+      if (c) createNoteFromCurrentPhrase(c.color, c.hex);
+    };
     remoteActionsRef.current = {
       // Solo con el lector a la vista y con texto digital: en las pestañas de
       // overlay (citas/recursos/auditoría) las flechas no deben pasar páginas.
@@ -2206,26 +2216,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         if (d === -1 && currentPhraseIndex <= 0) { cambiarPagina(-1); return; }
         if (d === 1) handleTtsNext(); else handleTtsPrevious();
       },
-      double: cambiarPagina,
-      long: () => {
-        if (currentPhraseIndex < 0 || phrases.length === 0) return; // sin frase activa no hay qué citar
-        const baja = (s?: string) => (s ?? '').toLowerCase();
-        const rgb = (hex?: string) => {
-          const m = /^#?([0-9a-f]{6})$/i.exec((hex ?? '').trim());
-          if (!m) return null;
-          const n = parseInt(m[1], 16);
-          return [(n >> 16) & 255, (n >> 8) & 255, n & 255] as const;
-        };
-        const nombreDe = (c: any) => `${baja(c.name)} ${baja(c.id)} ${baja(c.color)}`;
-        // Gris por nombre/id o por hex desaturado; rojo por nombre/id o por
-        // hex con canal rojo dominante (cubre paletas personalizadas).
-        const esGris = (c: any) => /gris|gray|grey|slate|zinc|neutral|stone/.test(nombreDe(c))
-          || (() => { const v = rgb(c.hex); return !!v && Math.max(...v) - Math.min(...v) <= 24; })();
-        const esRojo = (c: any) => /rojo|red|rose|crimson/.test(nombreDe(c))
-          || (() => { const v = rgb(c.hex); return !!v && v[0] - Math.max(v[1], v[2]) >= 50; })();
-        const elegido = activePalette.find(esGris) ?? activePalette.find(esRojo) ?? activePalette[0];
-        if (elegido) createNoteFromCurrentPhrase(elegido.color, elegido.hex);
-      },
+      double: () => citarPrimerColor(),
+      long: () => citarPrimerColor(),
     };
   });
 
@@ -3324,9 +3316,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                        quedaba "escondido" a un slide de distancia). */}
                    <div className={cn(
                      "flex items-center justify-start sm:justify-center gap-1 sm:gap-2 overflow-x-auto no-scrollbar px-1 py-0.5 shrink-0 [&>button]:shrink-0",
-                     // En horizontal, la columna lateral de colores (w-16, absolute
+                     // En horizontal, la columna lateral de colores (w-20, absolute
                      // left-0) tapa el inicio de esta fila: se reserva su ancho.
-                     isMobileLandscape && "pl-16"
+                     isMobileLandscape && "pl-20"
                    )}>
 
                       {/* En horizontal (tablet/desktop) el slot de paginación/zoom
@@ -3448,19 +3440,30 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           {/* Móvil horizontal: columna lateral fija de colores a la izquierda,
               fuera del recuadro del widget (como en la maqueta), para no robar
               ancho a la fila de controles cuando hay poco alto disponible. */}
-          {/* Ancho fijo w-16 (64px): la fila de controles del widget lleva
-              pl-16 en horizontal para empezar justo después de la columna,
-              sin que los círculos tapen la paginación. Los círculos (máx. 5)
-              se reparten el alto disponible con tamaño flexible (clamp). */}
-          {showTtsWidget && isMobileLandscape && !activeResource && (
-             <div onClick={(e) => e.stopPropagation()} className="absolute top-0 left-0 bottom-0 z-40 w-16 flex flex-col items-center justify-evenly gap-2 py-2 px-2 bg-[var(--bg-card)]/95 backdrop-blur-md border-r border-[var(--border-card)]">
+          {/* Ancho w-20 (80px): la fila de controles del widget lleva pl-20 en
+              horizontal para empezar justo después de la columna. Los círculos
+              (máx. 5) se reparten el alto disponible con `justify-evenly` +
+              `shrink`, y crecen hasta casi el ancho de la columna (max-w-full
+              deja un par de píxeles de aire). Cuando el header superior está
+              visible, la columna arranca bajo él (top-14) y, al haber menos
+              alto, los círculos se encogen solos para quedar contenidos; en
+              pantalla completa sin header (top-0) crecen al máximo. Con el
+              índice del PDF abierto se oculta para no taparlo. */}
+          {showTtsWidget && isMobileLandscape && !activeResource && !pdfOutlineOpen && (
+             <div
+               onClick={(e) => e.stopPropagation()}
+               className={cn(
+                 "absolute left-0 bottom-0 z-40 w-20 flex flex-col items-center justify-evenly gap-1.5 py-2 px-1 bg-[var(--bg-card)]/95 backdrop-blur-md border-r border-[var(--border-card)]",
+                 (isPhysicalOnly || !isFullscreen || showControls) ? "top-14" : "top-0"
+               )}
+             >
                 {activePalette.slice(0, 5).map((colorItem) => (
                    <button
                      key={colorItem.id}
                      disabled={currentPhraseIndex < 0 || phrases.length === 0}
                      onClick={(e) => { e.stopPropagation(); createNoteFromCurrentPhrase(colorItem.color, colorItem.hex); }}
                      style={{ backgroundColor: colorItem.hex }}
-                     className="h-[clamp(1.75rem,10vh,3rem)] w-[clamp(1.75rem,10vh,3rem)] rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-md cursor-pointer shrink"
+                     className="h-[clamp(2rem,14vh,4.25rem)] w-[clamp(2rem,14vh,4.25rem)] max-w-full rounded-full hover:scale-110 active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[var(--border-card)] disabled:opacity-30 disabled:pointer-events-none shadow-md cursor-pointer shrink"
                      title={`Resaltar y anotar (${colorItem.name})`}
                    />
                 ))}
@@ -3593,8 +3596,8 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
         // a una SEGUNDA fila (flex-wrap) en vez de recortar botones — antes
         // las pestañas vivían en un overflow-x-auto sin scrollbar y el botón
         // de Análisis (o el de Lectura) quedaba cortado sin pista alguna.
-        <header className="bg-white border-b border-slate-200 px-2 sm:px-4 min-h-14 py-1.5 sm:py-0 flex flex-row items-center justify-between shrink-0 shadow-sm z-30 gap-2 w-full animate-in slide-in-from-top-4">
-            <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+        <header className="bg-white border-b border-slate-200 px-2 sm:px-4 h-14 flex flex-row items-center justify-between shrink-0 shadow-sm z-30 gap-2 w-full animate-in slide-in-from-top-4">
+            <div className="flex items-center gap-1 sm:gap-4 min-w-0 flex-1">
             <button
                 onClick={() => {
                   // Con un recurso de texto abierto, "Volver" regresa a la
@@ -3648,7 +3651,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
             )}
             </div>
 
-            <div className="flex items-center justify-end gap-2 gap-y-1.5 flex-1 min-w-0 flex-wrap">
+            <div className="flex items-center justify-end gap-1 sm:gap-2 shrink-0">
              <div className="flex items-center justify-end shrink-0">
                  <div className="flex bg-slate-100 p-0.5 sm:p-1 rounded-lg shrink-0 gap-0.5 sm:gap-1 items-center">
                      <button 
