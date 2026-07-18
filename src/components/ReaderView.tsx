@@ -3912,6 +3912,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           {activeTab === 'citations' && (
              <CitationsManager
                documentId={activeDocId}
+               bookTitle={item.title}
                notes={documentNotes}
                activePalette={activePalette}
                savePalette={savePalette}

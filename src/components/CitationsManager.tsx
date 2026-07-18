@@ -52,6 +52,8 @@ interface CitationsManagerProps {
   // Resuelve una referencia para MOSTRARLA (EPUB: ancla "sN:oM" → nº de
   // página real). Sin ella, la referencia se muestra cruda.
   resolvePageLabel?: (ref: number | string) => string;
+  // Título del libro para la pestaña "Libro · <título>" del menú de fuentes.
+  bookTitle?: string;
 }
 
 const ALL_POSSIBLE_COLORS: ColorDefinition[] = [
@@ -77,6 +79,12 @@ const LOADING_MESSAGES = [
   "Sintetizando ideas, fechas, autores y definiciones clave...",
   "Generando el documento de resumen definitivo..."
 ];
+
+// Prefijo legible del tipo de recurso para las pestañas de fuente del menú
+// izquierdo ("Video · Entrevista", "Audio · Clase 3", …).
+const KIND_LABELS: Record<string, string> = {
+  video: 'Video', audio: 'Audio', text: 'Texto', image: 'Imagen', slides: 'Present.',
+};
 
 // Si documentId no es de un libro sino ya de un recurso (sufijo "::res::"),
 // no se cargan/anidan citas de recursos (evita recursión recurso-de-recurso).
@@ -109,7 +117,7 @@ function sortByPageAndTimestamp(list: CitationNote[]): CitationNote[] {
   });
 }
 
-export function CitationsManager({ documentId, notes, activePalette, savePalette, flushPaletteNow, saveNotes, onClose, onNavigateToPage, onNavigateToCitation, currentPage, resolvePageLabel }: CitationsManagerProps) {
+export function CitationsManager({ documentId, notes, activePalette, savePalette, flushPaletteNow, saveNotes, onClose, onNavigateToPage, onNavigateToCitation, currentPage, resolvePageLabel, bookTitle }: CitationsManagerProps) {
   // Cerrar el modal de colores confirmando el guardado inmediato de la paleta.
   const closeConfigModal = () => { setShowConfigModal(false); flushPaletteNow?.(); };
   // Etiqueta de página a mostrar: resuelta (EPUB) o cruda. Oculta las anclas
@@ -127,7 +135,10 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
 
   // --- Citas de recursos de texto del libro (separadas de `notes`) ---
   const isBookDocument = isBookDocumentId(documentId);
-  const [textResources, setTextResources] = useState<{ id: string; title: string; docId: string }[]>([]);
+  const [textResources, setTextResources] = useState<{ id: string; title: string; kind: string; docId: string }[]>([]);
+  // Fuente activa del listado: 'all' (todas juntas), 'book' (solo el libro) o
+  // el docId de un recurso concreto (solo sus citas).
+  const [activeSource, setActiveSource] = useState<string>('all');
   const [resourceCitations, setResourceCitations] = useState<Record<string, CitationNote[]>>({});
   const [editPage, setEditPage] = useState<string | number>('');
   
@@ -271,7 +282,7 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
       const res = await fetch(`/api/books/${documentId}/resources`, { credentials: 'include' });
       const d = await res.json();
       const allResources = (d.resources ?? []);
-      const mapped = allResources.map((r: any) => ({ id: r.id, title: r.title, docId: `${documentId}::res::${r.id}` }));
+      const mapped = allResources.map((r: any) => ({ id: r.id, title: r.title, kind: r.kind ?? 'text', docId: `${documentId}::res::${r.id}` }));
       setTextResources(mapped);
 
       const entries = await Promise.all(mapped.map(async (r: { id: string; title: string; docId: string }) => {
@@ -293,6 +304,7 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
 
   useEffect(() => {
     groupByColorLoadedRef.current = false;
+    setActiveSource('all');
     loadSummaries();
     loadResourceCitations();
   }, [documentId]);
@@ -1098,6 +1110,26 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
     return map;
   }, [sortedCitations]);
 
+  // ---- Fuentes de citas (menú izquierdo): libro + recursos con citas ----
+  // Solo aparecen los recursos que TIENEN al menos una cita; el título de la
+  // pestaña sale del listado fresco de recursos, así que renombrar el recurso
+  // actualiza la pestaña sola.
+  const resourceCount = (docId: string) => (resourceCitations[docId] ?? []).filter(n => n.type !== 'bookmark').length;
+  const sourcesWithCitations = isBookDocument ? textResources.filter(r => resourceCount(r.docId) > 0) : [];
+  // Si la fuente activa desapareció (se borró el recurso o sus citas), se
+  // vuelve a "Todas" en vez de mostrar un listado vacío sin explicación.
+  const effectiveSource = activeSource === 'all' || activeSource === 'book' || sourcesWithCitations.some(r => r.docId === activeSource)
+    ? activeSource : 'all';
+  const showBook = effectiveSource === 'all' || effectiveSource === 'book';
+  const visibleResources = effectiveSource === 'all' ? sourcesWithCitations : sourcesWithCitations.filter(r => r.docId === effectiveSource);
+  // Lista visible de un recurso: mismo filtro de color que el libro, para que
+  // los filtros de la izquierda apliquen parejo a todas las fuentes.
+  const resourceVisibleList = (docId: string) => sortByPageAndTimestamp(
+    (resourceCitations[docId] ?? []).filter(n => n.type !== 'bookmark' && (selectedColorFilter === 'all' || n.color === selectedColorFilter))
+  );
+  const nothingVisible = (showBook ? sortedCitations.length === 0 : true)
+    && visibleResources.every(r => resourceVisibleList(r.docId).length === 0);
+
   return (
     <div className="absolute inset-0 z-50 bg-slate-50 flex flex-col overflow-hidden animate-in fade-in duration-200">
       
@@ -1579,7 +1611,42 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
          ) : (
             <>
                {/* Desktop Left Controls/Filters Panel - Hidden on Mobile */}
-               <aside className="hidden md:flex w-64 bg-white border-r border-slate-200 p-4 shrink-0 flex-col gap-4">
+               <aside className="hidden md:flex w-64 bg-white border-r border-slate-200 p-4 shrink-0 flex-col gap-4 overflow-y-auto custom-scrollbar">
+                  {/* Fuente de citas: libro + cada recurso con citas. Las citas
+                      hechas en recursos (video/audio/texto/imagen) se administran
+                      aquí mismo, filtrando por su pestaña. */}
+                  {sourcesWithCitations.length > 0 && (
+                     <div>
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2.5">Fuente de Citas</h4>
+                        <div className="flex flex-col gap-1.5">
+                           {[
+                             { id: 'all', label: 'Todas', count: notes.filter(n => n.type !== 'bookmark').length + sourcesWithCitations.reduce((acc, r) => acc + resourceCount(r.docId), 0) },
+                             { id: 'book', label: `Libro · ${bookTitle || 'este libro'}`, count: notes.filter(n => n.type !== 'bookmark').length },
+                             ...sourcesWithCitations.map(r => ({
+                               id: r.docId,
+                               label: `${KIND_LABELS[r.kind] ?? 'Recurso'} · ${r.title}`,
+                               count: resourceCount(r.docId),
+                             })),
+                           ].map(src => (
+                              <button
+                                key={src.id}
+                                onClick={() => setActiveSource(src.id)}
+                                className={cn(
+                                  "text-left text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-2 w-full transition-all border",
+                                  effectiveSource === src.id
+                                    ? "bg-[#00558F]/5 text-[#00558F] border-[#00558F]/20 shadow-sm"
+                                    : "bg-transparent text-slate-600 hover:bg-slate-50 border-transparent"
+                                )}
+                                title={src.label}
+                              >
+                                 <span className="flex-1 truncate">{src.label}</span>
+                                 <span className="text-[10px] opacity-60 shrink-0">({src.count})</span>
+                              </button>
+                           ))}
+                        </div>
+                     </div>
+                  )}
+                  {sourcesWithCitations.length > 0 && <div className="h-px bg-slate-100" />}
                   <div>
                      <div className="flex items-center justify-between mb-2.5">
                         <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Filtrar por Color</h4>
@@ -1679,6 +1746,30 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
                   </div>
                </aside>
 
+               {/* Móvil: fila de fuentes (Todas / Libro / cada recurso con citas) */}
+               {sourcesWithCitations.length > 0 && (
+                  <div className="flex md:hidden w-full bg-white border-b border-slate-100 px-3.5 py-1.5 items-center gap-1.5 shrink-0 overflow-x-auto no-scrollbar select-none">
+                     {[
+                       { id: 'all', label: 'Todas' },
+                       { id: 'book', label: `Libro · ${bookTitle || 'este libro'}` },
+                       ...sourcesWithCitations.map(r => ({ id: r.docId, label: `${KIND_LABELS[r.kind] ?? 'Recurso'} · ${r.title}` })),
+                     ].map(src => (
+                        <button
+                          key={src.id}
+                          onClick={() => setActiveSource(src.id)}
+                          className={cn(
+                            "text-[10px] font-extrabold px-2.5 py-1 rounded-full border transition-all shrink-0 cursor-pointer max-w-[180px] truncate",
+                            effectiveSource === src.id
+                              ? "bg-[#00558F] text-white border-transparent shadow-xs"
+                              : "bg-slate-100 text-slate-600 border-transparent"
+                          )}
+                        >
+                           {src.label}
+                        </button>
+                     ))}
+                  </div>
+               )}
+
                {/* Mobile/Tablet Compact Filters Header Line */}
                <div className="flex md:hidden w-full bg-white border-b border-slate-200 px-3.5 py-2 items-center justify-between gap-3 shrink-0 overflow-hidden">
                   {/* Horizontally scrollable color pill bar */}
@@ -1743,95 +1834,89 @@ export function CitationsManager({ documentId, notes, activePalette, savePalette
 
                {/* Content Area / List of citations */}
                <main className="flex-1 overflow-y-auto px-3.5 py-4 sm:px-6 md:px-8 space-y-3 sm:space-y-4">
-            {sortedCitations.length === 0 ? (
+            {nothingVisible ? (
                <div className="bg-white border rounded-2xl p-12 text-center shadow-sm max-w-xl mx-auto mt-8">
                   <AlertCircle className="w-10 h-10 text-slate-300 mx-auto mb-3" />
                   <h3 className="font-bold text-slate-700 text-sm mb-1">Sin elementos</h3>
                   <p className="text-xs text-slate-500 leading-relaxed">No se encontraron citas o apuntes con los filtros seleccionados actualmente.</p>
                </div>
             ) : isGroupedByColor ? (
-               <div className="max-w-4xl mx-auto space-y-6">
-                 {activePalette.map(color => {
-                   const colorCitations = sortedCitations.filter(n => n.color === color.id);
-                   if (colorCitations.length === 0) return null;
-
-                   return (
-                     <div key={color.id} className="space-y-2 animate-in fade-in duration-200">
-                       {/* Color Group Header */}
-                       <div className="flex items-center gap-2 pb-1 border-b border-slate-100 mt-4 select-none">
-                         <div className="w-3 h-3 rounded-full border border-black/10 shadow-xs" style={{ backgroundColor: color.hex }} />
-                         <h3 className="text-xs font-extrabold text-slate-700 tracking-wider uppercase">
-                           {color.name} <span className="text-[10px] text-slate-400 font-semibold lowercase">({colorCitations.length} {colorCitations.length === 1 ? 'cita' : 'citas'})</span>
-                         </h3>
-                       </div>
-
-                       <div className="space-y-3 sm:space-y-3">
-                         {colorCitations.map((note) => {
-                           const noteIndex = sortedCitationIndexById.get(note.id) ?? 0;
-                           return renderNoteRow(note, noteIndex);
-                         })}
-                       </div>
-                     </div>
-                   );
-                 })}
-
-                 {/* Uncolored notes group if any exist */}
-                 {(() => {
-                   const noColorCitations = sortedCitations.filter(n => !n.color || !activePalette.some(ap => ap.id === n.color));
-                   if (noColorCitations.length === 0) return null;
-
-                   return (
-                     <div className="space-y-2 animate-in fade-in duration-200">
-                       <div className="flex items-center gap-2 pb-1 border-b border-slate-100 mt-4 select-none">
-                         <div className="w-3 h-3 rounded-full border border-black/10 bg-slate-200 shadow-xs" />
-                         <h3 className="text-xs font-extrabold text-slate-700 tracking-wider uppercase">
-                           Sin Color <span className="text-[10px] text-slate-400 font-semibold lowercase">({noColorCitations.length})</span>
-                         </h3>
-                       </div>
-
-                       <div className="space-y-3 sm:space-y-3">
-                         {noColorCitations.map((note) => {
-                           const noteIndex = sortedCitationIndexById.get(note.id) ?? 0;
-                           return renderNoteRow(note, noteIndex);
-                         })}
-                       </div>
-                     </div>
-                   );
-                 })()}
-               </div>
+               // Agrupado por color sobre TODO lo visible: con "Todas" activa,
+               // los grupos MEZCLAN libro y recursos sin discriminar la fuente
+               // (pedido explícito); con una fuente concreta, solo sus citas.
+               (() => {
+                  const items: { note: CitationNote; resDocId: string | null }[] = [
+                    ...(showBook ? sortedCitations.map(n => ({ note: n, resDocId: null as string | null })) : []),
+                    ...visibleResources.flatMap(r => resourceVisibleList(r.docId).map(note => ({ note, resDocId: r.docId as string | null }))),
+                  ];
+                  const renderRow = (it: { note: CitationNote; resDocId: string | null }) => {
+                    if (!it.resDocId) return renderNoteRow(it.note, sortedCitationIndexById.get(it.note.id) ?? 0);
+                    // El índice de la cita dentro de SU recurso (para que los
+                    // botones de mover sigan operando sobre la lista correcta).
+                    const full = resourceCitations[it.resDocId] ?? [];
+                    const idx = Math.max(0, full.findIndex(n => n.id === it.note.id));
+                    return renderResourceNoteRow(it.resDocId, it.note, idx, full.length);
+                  };
+                  const groups = [
+                    ...activePalette.map(c => ({ key: c.id, name: c.name, hex: c.hex, list: items.filter(it => it.note.color === c.id) })),
+                    { key: '__sin_color__', name: 'Sin Color', hex: '#e2e8f0', list: items.filter(it => !it.note.color || !activePalette.some(ap => ap.id === it.note.color)) },
+                  ];
+                  return (
+                    <div className="max-w-4xl mx-auto space-y-6">
+                      {groups.map(g => g.list.length === 0 ? null : (
+                        <div key={g.key} className="space-y-2 animate-in fade-in duration-200">
+                          <div className="flex items-center gap-2 pb-1 border-b border-slate-100 mt-4 select-none">
+                            <div className="w-3 h-3 rounded-full border border-black/10 shadow-xs" style={{ backgroundColor: g.hex }} />
+                            <h3 className="text-xs font-extrabold text-slate-700 tracking-wider uppercase">
+                              {g.name} <span className="text-[10px] text-slate-400 font-semibold lowercase">({g.list.length} {g.list.length === 1 ? 'cita' : 'citas'})</span>
+                            </h3>
+                          </div>
+                          <div className="space-y-3 sm:space-y-3">
+                            {g.list.map(it => renderRow(it))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+               })()
             ) : (
-               <div className="max-w-4xl mx-auto space-y-3 sm:space-y-3">
-                  {sortedCitations.map((note, index) => renderNoteRow(note, index))}
-               </div>
-            )}
+               <>
+                  {showBook && sortedCitations.length > 0 && (
+                     <div className="max-w-4xl mx-auto space-y-3 sm:space-y-3">
+                        {sortedCitations.map((note, index) => renderNoteRow(note, index))}
+                     </div>
+                  )}
 
-            {/* Citas de recursos de texto del libro, separadas por una línea
-                divisoria. Solo se muestra si al menos un recurso tiene citas. */}
-            {isBookDocument && textResources.some(r => (resourceCitations[r.docId] ?? []).length > 0) && (
-               <div className="max-w-4xl mx-auto">
-                  <div className="flex items-center gap-3 my-6">
-                     <div className="h-px bg-slate-200 flex-1" />
-                     <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Citas de recursos</span>
-                     <div className="h-px bg-slate-200 flex-1" />
-                  </div>
+                  {/* Citas de recursos: con "Todas" van tras un divisor, cada
+                      recurso con su encabezado "Tipo · nombre"; con un recurso
+                      concreto seleccionado se muestra solo su sección. */}
+                  {visibleResources.length > 0 && (
+                     <div className="max-w-4xl mx-auto">
+                        {effectiveSource === 'all' && showBook && sortedCitations.length > 0 && (
+                           <div className="flex items-center gap-3 my-6">
+                              <div className="h-px bg-slate-200 flex-1" />
+                              <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Citas de recursos</span>
+                              <div className="h-px bg-slate-200 flex-1" />
+                           </div>
+                        )}
 
-                  {textResources.map(r => {
-                     const list = sortByPageAndTimestamp(
-                       (resourceCitations[r.docId] ?? []).filter(n => n.type !== 'bookmark')
-                     );
-                     if (list.length === 0) return null;
-                     return (
-                       <div key={r.docId} className="space-y-2 mb-6">
-                         <h3 className="text-xs font-extrabold text-slate-700 tracking-wide">
-                           Citas del recurso: {r.title} <span className="text-[10px] text-slate-400 font-semibold">({list.length})</span>
-                         </h3>
-                         <div className="space-y-3 sm:space-y-3">
-                           {list.map((note, idx) => renderResourceNoteRow(r.docId, note, idx, list.length))}
-                         </div>
-                       </div>
-                     );
-                  })}
-               </div>
+                        {visibleResources.map(r => {
+                           const list = resourceVisibleList(r.docId);
+                           if (list.length === 0) return null;
+                           return (
+                             <div key={r.docId} className="space-y-2 mb-6">
+                               <h3 className="text-xs font-extrabold text-slate-700 tracking-wide">
+                                 {KIND_LABELS[r.kind] ?? 'Recurso'} · {r.title} <span className="text-[10px] text-slate-400 font-semibold">({list.length})</span>
+                               </h3>
+                               <div className="space-y-3 sm:space-y-3">
+                                 {list.map((note, idx) => renderResourceNoteRow(r.docId, note, idx, list.length))}
+                               </div>
+                             </div>
+                           );
+                        })}
+                     </div>
+                  )}
+               </>
             )}
          </main>
          </>
