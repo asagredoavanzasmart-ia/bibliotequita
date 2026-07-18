@@ -496,6 +496,16 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
   // Ref estable a "avanzar página y seguir leyendo" para encadenar al terminar
   // la página actual sin que la lectura se detenga (lectura continua).
   const handleTtsNextPageRef = useRef<((auto?: boolean) => void | Promise<void>) | null>(null);
+
+  // --- Control remoto Bluetooth (mando pasa-páginas / botones de auriculares) ---
+  // remotePendingRef: pulsación simple en espera (350 ms) por si llega la doble.
+  // remotePulsarRef: entrada única al dispatcher, compartida por el teclado BT
+  // y por Media Session. remoteActionsRef: closures frescos de cada render.
+  const remotePendingRef = useRef<{ dir: 1 | -1; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const remotePulsarRef = useRef<((dir: 1 | -1) => void) | null>(null);
+  const remoteActionsRef = useRef<{ enabled: boolean; single: (d: 1 | -1) => void; double: (d: 1 | -1) => void; long: () => void }>({
+    enabled: false, single: () => {}, double: () => {}, long: () => {},
+  });
   // true mientras hay una sesión de lectura activa: distingue "se acabó la
   // página" (debe avanzar a la siguiente) de "el usuario detuvo" (no avanza).
   const ttsActiveRef = useRef(false);
@@ -1906,15 +1916,16 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           navigator.mediaSession.playbackState = 'paused';
         });
         
+        // Los botones del mando/auriculares pasan por el dispatcher común:
+        // 1 pulsación = frase, 2 seguidas = página (mismas reglas que el
+        // teclado Bluetooth). Fallback directo a frase si aún no montó.
         navigator.mediaSession.setActionHandler('previoustrack', () => {
-          if (index > 0) {
-            playPhrase(index - 1, phraseList);
-          }
+          if (remotePulsarRef.current) { remotePulsarRef.current(-1); return; }
+          if (index > 0) playPhrase(index - 1, phraseList);
         });
         navigator.mediaSession.setActionHandler('nexttrack', () => {
-          if (index < phraseList.length - 1) {
-            playPhrase(index + 1, phraseList);
-          }
+          if (remotePulsarRef.current) { remotePulsarRef.current(1); return; }
+          if (index < phraseList.length - 1) playPhrase(index + 1, phraseList);
         });
       }
     } catch (error: any) {
@@ -2147,6 +2158,128 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
 
   // Ref estable para encadenar el avance de página desde onended sin closures stale.
   handleTtsNextPageRef.current = handleTtsNextPage;
+
+  // ==========================================================================
+  // Control remoto Bluetooth
+  //   · 1 pulsación adelante/atrás → frase siguiente/anterior (TTS activo);
+  //     sin TTS activo, cambia la página directamente.
+  //   · 2 pulsaciones seguidas     → página siguiente/anterior.
+  //   · mantener presionado        → cita de la frase actual en GRIS; si la
+  //     paleta no tiene gris, en ROJO; si tampoco, el primer color.
+  // Entradas: mandos BT que emiten teclado (flechas, RePág/AvPág) y botones
+  // de auriculares vía Media Session (previoustrack/nexttrack).
+  // ==========================================================================
+
+  // Closures frescos en cada render: el dispatcher (montado una sola vez)
+  // siempre ejecuta contra el estado actual, sin closures stale.
+  useEffect(() => {
+    const ttsActive = ttsStatus === 'playing' || ttsStatus === 'paused' || ttsStatus === 'loading';
+    const cambiarPagina = (d: 1 | -1) => {
+      if (ttsActive) { if (d === 1) handleTtsNextPage(); else handleTtsPrevPage(); return; }
+      if (activeType === 'epub') { epubReaderRef.current?.pageBy(d); return; }
+      const cur = typeof currentPage === 'number' ? currentPage : parseInt(String(currentPage), 10) || 1;
+      const destino = cur + d;
+      if (destino >= 1 && (!totalPages || destino <= totalPages)) setTargetPage({ page: destino, t: Date.now() });
+    };
+    remoteActionsRef.current = {
+      // Solo con el lector a la vista y con texto digital: en las pestañas de
+      // overlay (citas/recursos/auditoría) las flechas no deben pasar páginas.
+      enabled: activeTab === 'reader' && (!isPhysicalOnly || !!activeResource),
+      single: (d) => {
+        if (!ttsActive || phrases.length === 0) { cambiarPagina(d); return; }
+        // En los bordes de la página, avanzar/retroceder frase = cambiar página.
+        if (d === 1 && currentPhraseIndex >= phrases.length - 1) { cambiarPagina(1); return; }
+        if (d === -1 && currentPhraseIndex <= 0) { cambiarPagina(-1); return; }
+        if (d === 1) handleTtsNext(); else handleTtsPrevious();
+      },
+      double: cambiarPagina,
+      long: () => {
+        if (currentPhraseIndex < 0 || phrases.length === 0) return; // sin frase activa no hay qué citar
+        const baja = (s?: string) => (s ?? '').toLowerCase();
+        const rgb = (hex?: string) => {
+          const m = /^#?([0-9a-f]{6})$/i.exec((hex ?? '').trim());
+          if (!m) return null;
+          const n = parseInt(m[1], 16);
+          return [(n >> 16) & 255, (n >> 8) & 255, n & 255] as const;
+        };
+        const nombreDe = (c: any) => `${baja(c.name)} ${baja(c.id)} ${baja(c.color)}`;
+        // Gris por nombre/id o por hex desaturado; rojo por nombre/id o por
+        // hex con canal rojo dominante (cubre paletas personalizadas).
+        const esGris = (c: any) => /gris|gray|grey|slate|zinc|neutral|stone/.test(nombreDe(c))
+          || (() => { const v = rgb(c.hex); return !!v && Math.max(...v) - Math.min(...v) <= 24; })();
+        const esRojo = (c: any) => /rojo|red|rose|crimson/.test(nombreDe(c))
+          || (() => { const v = rgb(c.hex); return !!v && v[0] - Math.max(v[1], v[2]) >= 50; })();
+        const elegido = activePalette.find(esGris) ?? activePalette.find(esRojo) ?? activePalette[0];
+        if (elegido) createNoteFromCurrentPhrase(elegido.color, elegido.hex);
+      },
+    };
+  });
+
+  // Dispatcher + teclado BT: montado UNA vez. La pulsación simple espera
+  // 350 ms por si llega la segunda (doble = página); mantener presionada la
+  // tecla ≥600 ms dispara la cita (por auto-repeat mientras se sostiene, o
+  // al soltar en mandos que no repiten).
+  useEffect(() => {
+    const DOBLE_MS = 350, LARGA_MS = 600;
+    const dirDe = (k: string): 1 | -1 | null =>
+      (k === 'ArrowRight' || k === 'ArrowDown' || k === 'PageDown' || k === 'MediaTrackNext') ? 1
+        : (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp' || k === 'MediaTrackPrevious') ? -1
+        : null;
+    const escribiendo = (t: EventTarget | null) =>
+      t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+    const pressedAt = new Map<string, number>();
+    const largaDisparada = new Set<string>();
+
+    const pulsar = (dir: 1 | -1) => {
+      const pend = remotePendingRef.current;
+      if (pend && pend.dir === dir) {
+        clearTimeout(pend.timer);
+        remotePendingRef.current = null;
+        remoteActionsRef.current.double(dir);
+        return;
+      }
+      // Dirección distinta pendiente: se despacha la simple sin esperar más.
+      if (pend) { clearTimeout(pend.timer); remotePendingRef.current = null; remoteActionsRef.current.single(pend.dir); }
+      remotePendingRef.current = {
+        dir,
+        timer: setTimeout(() => { remotePendingRef.current = null; remoteActionsRef.current.single(dir); }, DOBLE_MS),
+      };
+    };
+    remotePulsarRef.current = pulsar;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const dir = dirDe(e.key);
+      if (dir === null || escribiendo(e.target) || !remoteActionsRef.current.enabled) return;
+      e.preventDefault(); // sin esto la flecha además haría scroll nativo
+      const t0 = pressedAt.get(e.key);
+      if (t0 === undefined) { pressedAt.set(e.key, Date.now()); return; }
+      // e.repeat mientras se mantiene: al cruzar el umbral la cita se dispara
+      // UNA sola vez, sin esperar a que se suelte el botón.
+      if (!largaDisparada.has(e.key) && Date.now() - t0 >= LARGA_MS) {
+        largaDisparada.add(e.key);
+        remoteActionsRef.current.long();
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      const dir = dirDe(e.key);
+      if (dir === null) return;
+      const t0 = pressedAt.get(e.key);
+      pressedAt.delete(e.key);
+      if (largaDisparada.has(e.key)) { largaDisparada.delete(e.key); return; } // la larga ya citó
+      if (t0 === undefined || !remoteActionsRef.current.enabled) return;
+      // Mandos sin auto-repeat de tecla: la larga se decide al soltar.
+      if (Date.now() - t0 >= LARGA_MS) { remoteActionsRef.current.long(); return; }
+      pulsar(dir);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      if (remotePendingRef.current) { clearTimeout(remotePendingRef.current.timer); remotePendingRef.current = null; }
+      remotePulsarRef.current = null;
+    };
+  }, []);
 
   // Play / Pausa general
   const handleTtsPlayPause = async () => {
