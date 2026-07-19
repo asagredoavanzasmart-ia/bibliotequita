@@ -464,6 +464,20 @@ export function applyHardRules(parsed: any): string[] {
   return aplicadas;
 }
 
+// Segundos que faltan para la medianoche en hora del Pacífico (America/
+// Los_Angeles): ahí se reinician las cuotas diarias gratuitas de Gemini.
+// El cliente usa este número para mostrar una cuenta regresiva.
+function secondsUntilPacificMidnight(): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    hourCycle: "h23",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(new Date());
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  const elapsed = get("hour") * 3600 + get("minute") * 60 + get("second");
+  return Math.max(1, 86400 - elapsed);
+}
+
 async function generateContentWithRetry(options: any, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -3497,6 +3511,17 @@ sintesis_critica (declarativa, SIN recomendaciones):
       res.json({ result: parsed });
     } catch (error: any) {
       console.error("[Auditor] Error:", error);
+      // Cuota diaria de Gemini agotada (429 RESOURCE_EXHAUSTED): en vez del
+      // JSON crudo ilegible, un mensaje claro + cuándo se reinicia la cuota
+      // (medianoche del Pacífico) para la cuenta regresiva del cliente.
+      const msg = String(error?.message ?? "");
+      if (error?.status === 429 || /RESOURCE_EXHAUSTED|exceeded your current quota/i.test(msg)) {
+        return res.status(429).json({
+          error: "Se alcanzó el límite diario de auditorías con IA.",
+          code: "GEMINI_QUOTA",
+          resetInSeconds: secondsUntilPacificMidnight(),
+        });
+      }
       res.status(500).json({ error: "Error al auditar el documento.", details: error.message });
     }
   });

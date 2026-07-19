@@ -603,6 +603,17 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [speakingError, setSpeakingError] = useState(false);
   const [speakingResult, setSpeakingResult] = useState(false);
+  // Límite diario de Gemini alcanzado: instante (epoch ms) en que se reinicia
+  // la cuota. Mientras exista, el error se muestra con una cuenta regresiva.
+  const [quotaResetAt, setQuotaResetAt] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  // Tic de 1 segundo para la cuenta regresiva (solo mientras hace falta).
+  useEffect(() => {
+    if (!quotaResetAt) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [quotaResetAt]);
 
   const fileName = item.source?.replace('/api/files/', '') ?? '';
 
@@ -626,7 +637,7 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
   };
 
   const handleAudit = async () => {
-    setLoading(true); setError(null); setResult(null);
+    setLoading(true); setError(null); setResult(null); setQuotaResetAt(null);
     try {
       const res = await fetch('/api/audit-resource', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -635,15 +646,32 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
       const text = await res.text();
       let data: any;
       try { data = JSON.parse(text); } catch { throw new Error(`Respuesta inesperada del servidor: ${text.slice(0, 200)}`); }
-      // El servidor manda `details` con el mensaje real (p.ej. el error crudo
-      // de la API de Gemini) además de `error` (genérico, para mostrar en la
-      // UI); antes se descartaba `details` y el usuario nunca veía la causa.
-      if (!res.ok) throw new Error(data.details ? `${data.error} — ${data.details}` : (data.error || `Error ${res.status}`));
+      if (!res.ok) {
+        // Cuota diaria de la IA agotada: mensaje claro + cuenta regresiva
+        // hasta el reinicio (el servidor manda los segundos restantes).
+        if (data.code === 'GEMINI_QUOTA' && typeof data.resetInSeconds === 'number') {
+          setQuotaResetAt(Date.now() + data.resetInSeconds * 1000);
+          setNowMs(Date.now());
+          throw new Error(data.error || 'Se alcanzó el límite diario de auditorías con IA.');
+        }
+        // El servidor manda `details` con el mensaje real (p.ej. el error crudo
+        // de la API de Gemini) además de `error` (genérico, para mostrar en la
+        // UI); antes se descartaba `details` y el usuario nunca veía la causa.
+        throw new Error(data.details ? `${data.error} — ${data.details}` : (data.error || `Error ${res.status}`));
+      }
       setResult(data.result);
       saveAuditResult(data.result);
     } catch (e: any) {
       setError(e.message || 'Error desconocido.');
     } finally { setLoading(false); }
+  };
+
+  // Cuenta regresiva H:MM:SS hasta el reinicio de la cuota diaria.
+  const quotaRemainingMs = quotaResetAt ? Math.max(0, quotaResetAt - nowMs) : 0;
+  const formatCountdown = (ms: number) => {
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
   };
 
   const canExport = result && isV2(result);
@@ -787,6 +815,33 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
         )}
 
         {error && !loading && (
+          quotaResetAt ? (
+            // Límite diario de la IA: aviso amable + cuenta regresiva en vivo
+            // hasta el reinicio de la cuota (medianoche del Pacífico).
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-amber-800 text-sm">
+              <p className="font-semibold mb-1">Límite diario alcanzado</p>
+              <p>Se alcanzó el límite diario de auditorías con IA.</p>
+              {quotaRemainingMs > 0 ? (
+                <p className="mt-2 flex items-center gap-2 flex-wrap">
+                  <span>El límite se reinicia en</span>
+                  <span className="font-mono font-bold tabular-nums bg-amber-100 border border-amber-200 px-2.5 py-1 rounded-lg text-base">
+                    {formatCountdown(quotaRemainingMs)}
+                  </span>
+                </p>
+              ) : (
+                <p className="mt-2 font-semibold">El límite ya se reinició — puedes volver a auditar.</p>
+              )}
+              <div className="flex gap-2 mt-3">
+                {quotaRemainingMs <= 0 && (
+                  <button onClick={handleAudit} className="text-xs underline text-amber-700">Reintentar</button>
+                )}
+                <button onClick={handleSpeakError} className="flex items-center gap-1.5 text-xs underline text-amber-700 hover:text-amber-800 transition-colors">
+                  {speakingError ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                  {speakingError ? 'Pausar' : 'Leer'}
+                </button>
+              </div>
+            </div>
+          ) : (
           <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-red-700 text-sm">
             <p className="font-semibold mb-1">Error al auditar</p>
             <p>{error}</p>
@@ -798,6 +853,7 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
               </button>
             </div>
           </div>
+          )
         )}
 
         {result && !loading && (
