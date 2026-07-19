@@ -194,15 +194,22 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   };
 
   const addItem = (item: Omit<BookItem, 'id' | 'timestamp'>) => {
-    const payload = { ...item, timestamp: Date.now(), listIndex: 0 };
+    const now = Date.now();
+    const payload = { ...item, timestamp: now, lastActivityAt: now, listIndex: 0 };
     apiFetch('/api/library/items', { method: 'POST', body: JSON.stringify(payload) })
       .then((data) => setItems((prev) => [data.item, ...prev]))
       .catch((err) => console.error('No se pudo crear el item:', err));
   };
 
+  // lastActivityAt se pisa SIEMPRE aquí, nunca a mano desde un componente:
+  // updateItem es el único camino por el que pasa cualquier interacción real
+  // con un libro (leer, editar, calificar, mover de columna en el Tablero…),
+  // así que es el punto correcto para registrar "actividad reciente" sin que
+  // cada llamador tenga que acordarse de hacerlo.
   const updateItem = (id: string, updates: Partial<BookItem>) => {
-    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...updates } : item)));
-    apiFetch(`/api/library/items/${id}`, { method: 'PUT', body: JSON.stringify(updates) })
+    const stamped = { ...updates, lastActivityAt: Date.now() };
+    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...stamped } : item)));
+    apiFetch(`/api/library/items/${id}`, { method: 'PUT', body: JSON.stringify(stamped) })
       .catch((err) => console.error('No se pudo actualizar el item:', err));
   };
 

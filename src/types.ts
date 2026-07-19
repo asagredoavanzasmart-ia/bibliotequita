@@ -94,6 +94,12 @@ export interface BookItem {
   epubSource?: string;          // EPUB del libro (coexiste con pdfSource)
   thumbnailUrl?: string;        // Portada (URL, blob: o data: base64)
   timestamp: number;            // Fecha de creación (sirve para "Más recientes" y velocidad de lectura)
+  // Última vez que el item tuvo CUALQUIER actividad (leer, editar, calificar,
+  // mover de columna en el Tablero...). Se pisa sola en cada updateItem()
+  // (ver useLibrary.tsx) — nunca se escribe a mano desde un componente.
+  // undefined en items creados antes de este campo: quien la lea debe caer a
+  // `timestamp` (fecha de creación) como respaldo.
+  lastActivityAt?: number;
   folderIds: string[];          // Listas/playlists a las que pertenece
   stageIds: string[];           // Etapas históricas asignadas
   listIndex?: number;           // Posición manual para drag & drop

@@ -32,19 +32,33 @@ export function KanbanSelectorModal({ targetCol, columnTitle, items, columnOf, c
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // Siempre por actividad más reciente (leer, editar, calificar, mover de
+  // columna…), nunca por fecha de creación sola: lastActivityAt es lo que
+  // realmente indica "en qué libro estuve últimamente". Fallback a
+  // `timestamp` para items creados antes de que existiera este campo.
+  const byRecentActivity = (a: BookItem, b: BookItem) =>
+    (b.lastActivityAt ?? b.timestamp ?? 0) - (a.lastActivityAt ?? a.timestamp ?? 0);
+
   const results = useMemo(() => {
     const available = items.filter((i) => !i.deletedAt);
     const q = normalize(query.trim());
     if (!q) {
-      return [...available].sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0)).slice(0, 50);
+      return [...available].sort(byRecentActivity).slice(0, 50);
     }
-    return available.filter((i) => normalize(i.title).includes(q) || normalize(i.author ?? '').includes(q)).slice(0, 100);
+    return available
+      .filter((i) => normalize(i.title).includes(q) || normalize(i.author ?? '').includes(q))
+      .sort(byRecentActivity)
+      .slice(0, 100);
   }, [items, query]);
 
   return (
     <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150" onClick={onClose}>
+      {/* --bg-card es semitransparente por diseño (rgba, efecto vidrio de las
+          tarjetas) y sobre el overlay oscuro de este modal se veía como un
+          gris turbio. --bg-app es sólido en los 5 temas (mismo patrón que
+          EditBookModal/AddManualModal para paneles sobre fondo oscuro). */}
       <div
-        className="bg-[var(--bg-card)] backdrop-blur-xl rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col border border-[var(--border-card)] animate-in zoom-in-95 duration-200 max-h-[80vh]"
+        className="bg-[var(--bg-app)] rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col border border-[var(--border-card)] animate-in zoom-in-95 duration-200 max-h-[80vh]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="p-4 border-b border-[var(--border-card)] flex items-center justify-between gap-2 shrink-0">
@@ -62,7 +76,7 @@ export function KanbanSelectorModal({ targetCol, columnTitle, items, columnOf, c
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Buscar por título o autor…"
-              className="w-full pl-9 pr-3 py-2 text-sm bg-[var(--bg-app)] border border-[var(--border-card)] rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)]"
+              className="w-full pl-9 pr-3 py-2 text-sm bg-[var(--bg-card)] border border-[var(--border-card)] rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--primary)] text-[var(--text-main)]"
             />
           </div>
         </div>
@@ -78,7 +92,9 @@ export function KanbanSelectorModal({ targetCol, columnTitle, items, columnOf, c
                   key={item.id}
                   onClick={() => onPick(item)}
                   className={cn(
-                    'w-full flex items-center gap-3 p-2 rounded-xl text-left transition-colors hover:bg-[var(--bg-app)]',
+                    // El panel ya es --bg-app (sólido): el hover necesita un
+                    // tono distinto para notarse, no el mismo del fondo.
+                    'w-full flex items-center gap-3 p-2 rounded-xl text-left transition-colors hover:bg-[var(--bg-card)]',
                     existingCol !== null && existingCol !== targetCol && 'opacity-60'
                   )}
                 >
