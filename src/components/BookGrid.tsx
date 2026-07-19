@@ -382,12 +382,18 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
                )}
             </div>
           )}
+          {/* Renglón final SOLO cuando el rating vive aquí (grilla normal).
+              En la vista compacta el rating comparte la línea de la barra de
+              progreso y este renglón quedaba VACÍO: los botones de editar/
+              eliminar son invisibles hasta el hover (opacity-0) pero igual
+              reservaban su alto — era la franja en blanco al pie de todas
+              las tarjetas. Sin rating aquí, los botones pasan a un overlay
+              absoluto que no ocupa espacio. */}
+          {cardSettings.showRating && !(viewMode === 'grid-compact' && cardSettings.showProgress) ? (
           <div className={cn("flex items-end justify-between", cardSettings.showProgress ? "mt-1" : "mt-2")}>
-            {cardSettings.showRating && !(viewMode === 'grid-compact' && cardSettings.showProgress) ? (
-              <div onPointerDown={(e) => e.stopPropagation()}>
-                <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" compact={viewMode === 'grid-compact'} />
-              </div>
-            ) : <div />}
+            <div onPointerDown={(e) => e.stopPropagation()}>
+              <StarRating value={item.rating || 0} onChange={(v) => updateItem(item.id, { rating: v })} size="sm" compact={viewMode === 'grid-compact'} />
+            </div>
             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all z-20 relative bg-[var(--bg-app)]/80 p-0.5 rounded shadow-sm backdrop-blur-sm border border-slate-200/50">
                <button onClick={(e) => { e.stopPropagation(); onEdit(); }} className="p-1 text-slate-500 hover:text-[var(--primary)] hover:bg-[var(--bg-app)] rounded transition-colors" title="Editar">
                  <Edit className="w-4 h-4" />
@@ -397,6 +403,19 @@ const SortableItem: FC<{ item: BookItem, viewMode: 'covers'|'grid'|'grid-compact
                </button>
             </div>
           </div>
+          ) : (
+          // Sin renglón propio: editar/eliminar flotan sobre la esquina
+          // inferior derecha (visibles solo al pasar el mouse) y la tarjeta
+          // termina justo después de la barra de progreso.
+          <div className="absolute bottom-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all z-20 bg-[var(--bg-app)]/80 p-0.5 rounded shadow-sm backdrop-blur-sm border border-slate-200/50">
+             <button onClick={(e) => { e.stopPropagation(); onEdit(); }} className="p-1 text-slate-500 hover:text-[var(--primary)] hover:bg-[var(--bg-app)] rounded transition-colors" title="Editar">
+               <Edit className="w-4 h-4" />
+             </button>
+             <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-1 text-slate-500 hover:text-rose-500 hover:bg-[var(--bg-app)] rounded transition-colors" title="Eliminar">
+               <Trash2 className="w-4 h-4" />
+             </button>
+          </div>
+          )}
        </div>
     </div>
     </>
