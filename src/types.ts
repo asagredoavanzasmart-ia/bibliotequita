@@ -122,7 +122,16 @@ export interface BookItem {
   // páginas). Se genera una vez y se reutiliza; null si se intentó generar
   // y no se encontró ninguna tabla de contenidos en el texto.
   generatedToc?: { title: string; page: number }[] | null;
+  // Columna del Tablero Kanban de progreso de lectura (null/undefined = el
+  // libro NO está en el tablero; solo se entra al añadirlo explícitamente
+  // desde ahí). OJO: read === true manda sobre este valor al renderizar el
+  // tablero (ver columnOf() en KanbanBoard.tsx) — evita que un libro marcado
+  // leído desde otra parte de la app quede "atascado" en una columna vieja.
+  kanbanStatus?: KanbanStatus | null;
 }
+
+// Columnas fijas del Tablero Kanban (ver SPEC-TABLERO-KANBAN.md).
+export type KanbanStatus = 'por_leer' | 'pendiente' | 'en_curso' | 'detenido' | 'leido';
 
 export interface PlaylistData {
   id: string;

@@ -15,7 +15,7 @@
 // (ver DroppablePlaylist y Dashboard.handleDragEnd).
 // =============================================================================
 
-import { Library, Folder, Plus, Edit2, Trash2, X, Check, ChevronDown, ChevronRight, Pin, BarChart2, LayoutGrid, GalleryVerticalEnd, List, Settings, BookOpen, Newspaper, FileText, Book, Laptop, Layers, ShieldCheck, ArrowDownUp, LogOut, Star, Hourglass, CheckCheck } from 'lucide-react';
+import { Library, Folder, Plus, Edit2, Trash2, X, Check, ChevronDown, ChevronRight, Pin, BarChart2, LayoutGrid, GalleryVerticalEnd, List, Settings, BookOpen, Newspaper, FileText, Book, Laptop, Layers, ShieldCheck, ArrowDownUp, LogOut, Star, Hourglass, CheckCheck, SquareKanban } from 'lucide-react';
 import { useLibrary } from '../hooks/useLibrary';
 import { useState, FormEvent } from 'react';
 import { cn, colorSwatchProps, getOrderedNavSections } from '../lib/utils';
@@ -563,6 +563,20 @@ export function Sidebar({ activeTab, setActiveTab, activePlaylist, setActivePlay
           </select>
         </label>
       )}
+      {/* Tablero Kanban de progreso de lectura */}
+      <button
+        onClick={() => { setActiveTab('kanban'); setActivePlaylist(null); setActiveStage(null); }}
+        className={cn(
+          "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors w-full",
+          collapsed ? "justify-center" : "",
+          activeTab === 'kanban' ? "bg-white/10 text-white font-medium" : "text-white/80 hover:bg-white/5 hover:text-white font-medium"
+        )}
+        title={collapsed ? "Tablero" : undefined}
+      >
+        <SquareKanban className="w-5 h-5 opacity-80 shrink-0" />
+        {!collapsed && <span className="truncate text-sm">Tablero</span>}
+      </button>
+
       {/* Análisis (movido a la zona inferior, cerca de Papelera/Ajustes) */}
       <button
         onClick={() => { setActiveTab('analytics'); setActivePlaylist(null); setActiveStage(null); }}

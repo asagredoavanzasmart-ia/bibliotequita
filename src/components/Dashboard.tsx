@@ -26,6 +26,7 @@ import { SettingsModal } from './SettingsModal';
 import { AddManualModal } from './AddManualModal';
 import { AdminPanel } from './AdminPanel';
 import { TrashPanel } from './TrashPanel';
+import { KanbanBoard } from './KanbanBoard';
 import { useBackClose } from '../hooks/useBackClose';
 
 interface DemoQuota {
@@ -188,7 +189,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
           if (deltaX > 60 && Math.abs(deltaX) > Math.abs(deltaY) * 1.5) setSidebarOpen(true);
         }}
       >
-        {activeTab !== 'trash' && activeTab !== 'analytics' && (
+        {activeTab !== 'trash' && activeTab !== 'analytics' && activeTab !== 'kanban' && (
           <button
              onClick={() => !demoQuota || demoQuota.current < demoQuota.max ? setShowManualAdd(true) : null}
              disabled={!!demoQuota && demoQuota.current >= demoQuota.max}
@@ -241,6 +242,8 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
           <div className="flex-1 mt-2 overflow-y-auto no-scrollbar pr-2 pb-24 lg:pb-20">
             {activeTab === 'analytics' ? (
                 <AnalyticsDashboard />
+            ) : activeTab === 'kanban' ? (
+                <KanbanBoard onOpenBook={onOpenBook} />
             ) : activeTab === 'trash' ? (
                 <TrashPanel />
             ) : (
