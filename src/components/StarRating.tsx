@@ -131,10 +131,14 @@ export function StarRating({ value, onChange, size = 'sm', readOnly = false, com
   );
 
   if (compact) {
+    // La estrella única toma el MISMO color por tramo que el número
+    // (ratingColor: rojo/naranjo/amarillo) — antes quedaba fija en ámbar sin
+    // importar la nota, contradiciendo el propio propósito de esta vista
+    // compacta ("mismo color por tramo").
     return (
       <div className={cn("flex items-center", gap)} onClick={(e) => e.stopPropagation()}>
         <svg
-          className={cn(starSize, "shrink-0", value > 0 ? "text-amber-400 fill-amber-400" : "text-slate-400")}
+          className={cn(starSize, "shrink-0", value > 0 ? cn(ratingColor(value), "fill-current") : "text-slate-400")}
           viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
           fill={value > 0 ? undefined : "none"}
         >

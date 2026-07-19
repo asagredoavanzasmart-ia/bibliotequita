@@ -49,6 +49,8 @@ export function KanbanCard({
   const menuBtnRef = useRef<HTMLButtonElement>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const itemTags = settings.showTags ? (item.tags ?? []).map((id) => tags.find((t) => t.id === id)).filter((t): t is TagData => !!t) : [];
+  const hasTags = itemTags.length > 0;
+  const showFormatPill = settings.showFormat && item.type !== 'externa';
   const hasCover = settings.showCover && !!item.thumbnailUrl;
   const otherColumns = KANBAN_ORDER.filter((c) => c !== currentCol);
   const MENU_WIDTH = 208; // w-52
@@ -152,38 +154,49 @@ export function KanbanCard({
             </p>
           )}
 
-          {settings.showFormat && item.type !== 'externa' && (
-            <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase text-[var(--text-muted)] w-fit">
-              <FileText className="w-3 h-3" /> {item.type}
-            </span>
-          )}
-
-          {settings.showTags && itemTags.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {itemTags.map((tag) => (
-                <span
-                  key={tag.id}
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[var(--bg-app)] border border-[var(--border-card)] text-[9px] font-bold text-[var(--text-muted)]"
-                >
-                  <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', colorSwatchProps(tag.color).className)} style={colorSwatchProps(tag.color).style} />
-                  {tag.name}
-                </span>
-              ))}
-            </div>
-          )}
-
-          {settings.showProgress && (
-            <div className="flex items-center gap-1.5 mt-0.5" title={`Progreso: ${item.progress ?? 0}%`}>
-              <div className="flex-1 h-1.5 rounded-full bg-slate-200/60 dark:bg-slate-700/60 overflow-hidden">
-                <div className="h-full rounded-full bg-[var(--primary)] transition-all" style={{ width: `${item.progress ?? 0}%` }} />
+          {/* Fila de metadatos: etiquetas a la izquierda, formato a la
+              derecha — solo se renderiza si hay algo que mostrar en ella
+              (nada de renglones vacíos reservando espacio). */}
+          {(hasTags || showFormatPill) && (
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-1 min-w-0">
+                {hasTags && itemTags.map((tag) => (
+                  <span
+                    key={tag.id}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[var(--bg-app)] border border-[var(--border-card)] text-[9px] font-bold text-[var(--text-muted)]"
+                  >
+                    <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', colorSwatchProps(tag.color).className)} style={colorSwatchProps(tag.color).style} />
+                    {tag.name}
+                  </span>
+                ))}
               </div>
-              <span className="text-[10px] font-bold text-[var(--text-muted)] shrink-0">{item.progress ?? 0}%</span>
+              {showFormatPill && (
+                <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase text-[var(--text-muted)] shrink-0">
+                  <FileText className="w-3 h-3" /> {item.type}
+                </span>
+              )}
             </div>
           )}
 
-          {settings.showRating && (
-            <div onPointerDown={(e) => e.stopPropagation()} className="mt-0.5">
-              <StarRating value={item.rating || 0} onChange={() => { /* solo lectura en la tarjeta: editar desde el libro */ }} size="sm" compact readOnly />
+          {/* Fila de progreso: valoración (una estrella, color por tramo) a
+              la izquierda, barra de progreso al centro y el porcentaje a la
+              derecha. Cualquiera de las dos partes puede faltar según los
+              switches — solo se renderiza si al menos una está activa. */}
+          {(settings.showProgress || settings.showRating) && (
+            <div className="flex items-center gap-1.5 mt-0.5">
+              {settings.showRating && (
+                <div onPointerDown={(e) => e.stopPropagation()} className="shrink-0">
+                  <StarRating value={item.rating || 0} onChange={() => { /* solo lectura en la tarjeta: editar desde el libro */ }} size="sm" compact readOnly />
+                </div>
+              )}
+              {settings.showProgress && (
+                <>
+                  <div className="flex-1 h-1.5 rounded-full bg-slate-200/60 dark:bg-slate-700/60 overflow-hidden" title={`Progreso: ${item.progress ?? 0}%`}>
+                    <div className="h-full rounded-full bg-[var(--primary)] transition-all" style={{ width: `${item.progress ?? 0}%` }} />
+                  </div>
+                  <span className="text-[10px] font-bold text-[var(--text-muted)] shrink-0">{item.progress ?? 0}%</span>
+                </>
+              )}
             </div>
           )}
         </div>
