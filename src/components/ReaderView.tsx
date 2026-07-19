@@ -19,7 +19,7 @@
 // =============================================================================
 
 import { useLibrary } from '../hooks/useLibrary';
-import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, Book as BookIcon, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, FolderOpen } from 'lucide-react';
+import { ChevronLeft, Maximize, View, Columns, Check, Edit2, MessageSquareQuote, ArrowRightLeft, ArrowUpDown, Minimize, Hand, Type, Sun, BookOpen, Book as BookIcon, ClipboardList, Info, Volume2, Play, Pause, Square, Loader2, SkipBack, SkipForward, Rewind, FastForward, FlaskConical, X, Settings, FolderOpen, ExternalLink } from 'lucide-react';
 import { useState, useRef, FormEvent, ChangeEvent, useEffect, useCallback, useMemo } from 'react';
 import type { Rendition } from 'epubjs';
 import { cn, getBookSources, resolvePrimarySource } from '../lib/utils';
@@ -3060,8 +3060,18 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           {activeType === 'txt' && <TxtReader key={activeSource} url={activeSource} />}
           {activeType === 'externa' && (
             <div className="w-full h-full flex flex-col pointer-events-auto">
-              <div className="bg-[#FFA300]/10 text-[#FFA300] p-3 text-sm font-medium text-center shadow-inner">
-                 Estás viendo contenido externo. Algunas funciones pueden estar limitadas.
+              <div className="bg-[#FFA300]/10 text-[#FFA300] px-3 py-2 text-xs sm:text-sm font-medium flex items-center justify-center gap-2 flex-wrap shadow-inner">
+                 <span>Contenido externo (enlace). Algunas funciones pueden estar limitadas.</span>
+                 {/* Muchos sitios prohíben incrustarse en un iframe (quedan en
+                     blanco): este botón siempre abre la página en el navegador. */}
+                 <a
+                   href={activeSource}
+                   target="_blank"
+                   rel="noreferrer"
+                   className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#FFA300] text-white font-bold hover:brightness-95 transition-all shrink-0"
+                 >
+                   <ExternalLink className="w-3.5 h-3.5" /> Abrir en el navegador
+                 </a>
               </div>
               <iframe src={activeSource} className="w-full flex-1 border-0" sandbox="allow-scripts allow-same-origin bg-white" />
             </div>
@@ -3590,8 +3600,11 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
       {/* Header */}
       {/* Libro solo físico: no hay texto que tape el header, así que se
           mantiene siempre visible (no depende del auto-ocultado táctil que
-          usa el lector digital en pantalla completa). */}
-      {(isPhysicalOnly || !isFullscreen || showControls) && (
+          usa el lector digital en pantalla completa).
+          Contenido externo ('externa'): el iframe se traga los toques, así que
+          el doble-tap para recuperar la botonera NUNCA llega — sin este forzado
+          el usuario quedaba atrapado sin forma de volver ni editar. */}
+      {(isPhysicalOnly || activeType === 'externa' || !isFullscreen || showControls) && (
         // min-h-14 (no h-14 fija): en móvil la botonera derecha puede pasar
         // a una SEGUNDA fila (flex-wrap) en vez de recortar botones — antes
         // las pestañas vivían en un overflow-x-auto sin scrollbar y el botón
