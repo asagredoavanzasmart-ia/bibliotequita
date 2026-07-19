@@ -14,11 +14,13 @@ import {
   X, FlaskConical, BookOpen, Lightbulb, Microscope, Target, Activity,
   ShieldAlert, Shield, EyeOff, Search, ScrollText, Scale, Quote, ListChecks,
   Copy, Check, Download, FileSpreadsheet, Printer, AlertTriangle, MinusCircle, HelpCircle,
-  Volume2, VolumeX,
+  Volume2, VolumeX, Loader2,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import type { BookItem } from '../types';
+import type { BookItem, ResourceItem } from '../types';
 import { exportToDocx, exportToPrintPdf } from '../utils/exportUtils';
+import { useResources } from '../hooks/useResources';
+import { uploadFile, deleteUploadedFile } from '../lib/uploadFile';
 
 // ---------------------------------------------------------------------------
 // Tipos v2
@@ -586,23 +588,80 @@ function buildMarkdownV2(r: AuditResultV2): string {
   return lines.join('\n');
 }
 
+// Versión en TEXTO PLANO del resultado (sin markdown ni emojis): es la que se
+// abre en el lector para escucharla con el motor TTS REAL de la app (frases
+// resaltadas, barra de citas, velocidad) — no con la voz básica del navegador.
+// Los niveles del semáforo se dicen en palabras ("Problema", "Cautela"…).
+function buildSpeechTextV2(r: AuditResultV2): string {
+  const nivelTxt = (n?: NivelCriterio) => (n && NIVEL_META[n] ? NIVEL_META[n].label : 'Sin dato');
+  const crit = (m: CriterioMap | undefined, key: string, label: string) => {
+    const c = m?.[key];
+    if (!c) return `${label}: sin dato.`;
+    return `${label} — ${nivelTxt(c.nivel)}. ${c.analisis || ''}${c.evidencia ? ` Evidencia: ${c.evidencia}` : ''}`;
+  };
+  const ver = r.veredicto_calculado;
+  const p: string[] = [];
+  p.push(`Auditoría Científica: ${r.titulo_del_estudio || ''}.`);
+  if (ver) p.push(`Veredicto: ${VEREDICTO_META[ver.nivel]?.label ?? ver.nivel}.`);
+  p.push(r.veredicto_general || '');
+  const t = r.identificacion_y_tipologia;
+  p.push(`Identificación. Tipo de documento: ${t?.tipo_de_documento || 'sin dato'}. Pregunta central: ${t?.pregunta_o_afirmacion_central || 'sin dato'}. Población y muestra: ${t?.poblacion_y_muestra || 'sin dato'}.`);
+  p.push(crit({ x: t?.adecuacion_del_diseno } as any, 'x', 'Adecuación del diseño'));
+  p.push('¿Los datos soportan las conclusiones?');
+  for (const a of r.coherencia_datos_conclusiones?.afirmaciones || []) {
+    p.push(`${a.es_central ? 'Afirmación central: ' : 'Afirmación: '}${a.afirmacion} — ${nivelTxt(a.nivel as NivelCriterio)}. Soporte: ${a.soporte_en_los_datos}`);
+  }
+  p.push(crit(r.coherencia_datos_conclusiones as any, 'coherencia_global_datos_conclusiones', 'Coherencia global'));
+  p.push(crit(r.coherencia_datos_conclusiones as any, 'spin_y_enfasis', 'Spin y énfasis'));
+  for (const def of AUDIT_SECTIONS) {
+    p.push(`${def.titulo}.`);
+    for (const c of def.criterios) p.push(crit(r[def.key] as CriterioMap, c.key, c.label));
+  }
+  if (r.criterios_del_diseno?.length) {
+    p.push('Criterios propios de este diseño.');
+    for (const c of r.criterios_del_diseno) {
+      p.push(`${c.nombre} — ${nivelTxt(c.nivel)}. ${c.analisis || ''}${c.evidencia ? ` Evidencia: ${c.evidencia}` : ''}`);
+    }
+  }
+  const s = r.sintesis_critica;
+  p.push('Síntesis crítica.');
+  p.push(`Lo que dicen los datos: ${s?.lo_que_dicen_los_datos || 'sin dato'}`);
+  p.push(`Lo que el estudio sí soporta: ${s?.lo_que_el_estudio_si_soporta || 'sin dato'}`);
+  p.push(`Lo que el estudio no soporta: ${s?.lo_que_el_estudio_no_soporta || 'sin dato'}`);
+  p.push(`Precauciones de lectura: ${s?.precauciones_de_lectura || 'sin dato'}`);
+  p.push(`Incertidumbres abiertas: ${s?.incertidumbres_abiertas || 'sin dato'}`);
+  p.push(`Conceptos para profundizar: ${s?.conceptos_para_profundizar || 'sin dato'}`);
+  p.push(`Preguntas para el lector: ${s?.preguntas_para_el_lector || 'sin dato'}`);
+  return p.filter(Boolean).join('\n\n');
+}
+
 // ---------------------------------------------------------------------------
 // Panel
 // ---------------------------------------------------------------------------
-interface AuditorPanelProps { item: BookItem; onClose: () => void }
+interface AuditorPanelProps {
+  item: BookItem;
+  onClose: () => void;
+  // Abre un recurso de texto en el lector principal (mismo flujo que la
+  // galería de Recursos): así el análisis se escucha con el motor TTS real.
+  onOpenTextResource?: (r: ResourceItem) => void;
+}
 
 function isV2(r: any): r is AuditResultV2 {
   return !!r && r.schema_version === 2;
 }
 
-export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
+export function AuditorPanel({ item, onClose, onOpenTextResource }: AuditorPanelProps) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [speakingError, setSpeakingError] = useState(false);
-  const [speakingResult, setSpeakingResult] = useState(false);
+  // Preparando la lectura con el motor TTS real (subida del .txt del análisis).
+  const [preparingRead, setPreparingRead] = useState(false);
+  // Recursos del libro: la lectura del análisis se guarda/reutiliza como un
+  // recurso de texto más (mismo id entre re-lecturas → conserva sus citas).
+  const { resources, addResource, updateResource } = useResources(item.id);
   // Límite diario de Gemini alcanzado: instante (epoch ms) en que se reinicia
   // la cuota. Mientras exista, el error se muestra con una cuenta regresiva.
   const [quotaResetAt, setQuotaResetAt] = useState<number | null>(null);
@@ -703,19 +762,40 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
     window.speechSynthesis.speak(utterance);
   };
 
-  const handleSpeakResult = () => {
-    if (speakingResult) {
-      window.speechSynthesis.cancel();
-      setSpeakingResult(false);
-      return;
+  // Leer el análisis con el motor TTS REAL de la app (no la voz básica del
+  // navegador): el resultado se convierte a texto plano, se guarda como
+  // recurso de texto del libro y se abre en el lector — con frases
+  // resaltadas, barra de citas y control de velocidad, igual que cualquier
+  // texto. Entre re-lecturas se REUTILIZA el mismo recurso (mismo id →
+  // conserva las citas que hayas hecho sobre el análisis).
+  const AUDIT_READ_TITLE = 'Auditoría Científica (lectura)';
+  const handleReadWithTts = async () => {
+    if (!result || !onOpenTextResource || preparingRead) return;
+    setPreparingRead(true);
+    try {
+      const text = isV2(result)
+        ? buildSpeechTextV2(result)
+        : String(result.veredicto_general || 'Resultado de auditoría disponible.');
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const { url } = await uploadFile(blob, `Auditoria-lectura-${Date.now()}.txt`);
+      const existing = resources.find((r) => r.kind === 'text' && r.title === AUDIT_READ_TITLE);
+      let resource: ResourceItem;
+      if (existing) {
+        const oldUrl = existing.source;
+        await updateResource(existing.id, { source: url });
+        resource = { ...existing, source: url };
+        if (oldUrl && oldUrl !== url) deleteUploadedFile(oldUrl); // best-effort: no bloquea la lectura
+      } else {
+        const created = await addResource({ kind: 'text', title: AUDIT_READ_TITLE, source: url, fileType: 'txt' });
+        if (!created) throw new Error('No se pudo crear el recurso de lectura.');
+        resource = created;
+      }
+      onOpenTextResource(resource);
+    } catch (e) {
+      console.error('No se pudo preparar la lectura de la auditoría:', e);
+    } finally {
+      setPreparingRead(false);
     }
-    if (!result) return;
-    setSpeakingResult(true);
-    const text = result.veredicto_general || 'Resultado de auditoría disponible';
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'es-ES';
-    utterance.onend = () => setSpeakingResult(false);
-    window.speechSynthesis.speak(utterance);
   };
 
   return (
@@ -727,22 +807,23 @@ export function AuditorPanel({ item, onClose }: AuditorPanelProps) {
           <h2 className="font-bold text-slate-800 text-base">Auditoría Científica</h2>
         </div>
         <div className="flex items-center gap-2">
-          {/* Lector de voz del veredicto EN la botonera (como en los recursos
-              de texto: solo TTS, sin mecanismo de citas), no al pie del
-              resultado — pedido explícito del usuario. */}
-          {result && !loading && (
+          {/* Leer el análisis con el motor TTS real de la app: abre el
+              resultado como recurso de texto en el lector (frases resaltadas,
+              barra de citas, velocidad), igual que cualquier texto normal. */}
+          {result && !loading && onOpenTextResource && (
             <button
-              onClick={handleSpeakResult}
+              onClick={handleReadWithTts}
+              disabled={preparingRead}
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg transition-colors shadow-sm",
-                speakingResult
-                  ? "border-[#00558F]/40 bg-[#00558F]/5 text-[#00558F]"
+                preparingRead
+                  ? "border-[#00558F]/40 bg-[#00558F]/5 text-[#00558F] opacity-70"
                   : "border-slate-200 bg-white text-slate-600 hover:text-[#00558F] hover:border-[#00558F]/30"
               )}
-              title="Leer veredicto en voz alta"
+              title="Leer el análisis con el lector de voz"
             >
-              {speakingResult ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">{speakingResult ? 'Pausar' : 'Leer'}</span>
+              {preparingRead ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Volume2 className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">{preparingRead ? 'Preparando…' : 'Leer'}</span>
             </button>
           )}
           {canExport && (

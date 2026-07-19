@@ -3302,8 +3302,9 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
                        shrink-0: nunca se comprime ni queda oculta por el panel de config.
                        En móvil horizontal se oculta aquí: se muestra como columna lateral
                        fija a la izquierda de la pantalla (ver bloque tras el widget).
-                       En un RECURSO no se muestran los colores: es solo lector + voz. */}
-                   {!isMobileLandscape && !activeResource && (
+                       También en RECURSOS de texto: sus citas van al documentId
+                       propio del recurso (pestaña propia en el administrador). */}
+                   {!isMobileLandscape && (
                       <div className="flex items-center justify-center gap-3 mb-2 shrink-0">
                          {activePalette.slice(0, 5).map((colorItem) => (
                             <button
@@ -3459,7 +3460,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               alto, los círculos se encogen solos para quedar contenidos; en
               pantalla completa sin header (top-0) crecen al máximo. Con el
               índice del PDF abierto se oculta para no taparlo. */}
-          {showTtsWidget && isMobileLandscape && !activeResource && !pdfOutlineOpen && (
+          {showTtsWidget && isMobileLandscape && !pdfOutlineOpen && (
              <div
                onClick={(e) => e.stopPropagation()}
                className={cn(
@@ -3809,10 +3810,12 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
          ref={containerRef}
          className={cn("flex-1 relative overflow-hidden flex", isPortrait ? "flex-col" : "flex-row", (isFullscreen && !showControls) ? "bg-[#e2e8f0]" : "bg-[#e2e8f0]")}
       >
-         {/* En un RECURSO no se ofrecen colores de cita (solo lector + voz):
-             la barra únicamente aparece si hay al menos una acción disponible
-             (colores en libros, o "leer en voz alta" cuando el TTS está libre). */}
-         {selectionRect && selectedText && (!activeResource || ttsStatus === 'idle' || ttsStatus === 'error') && (
+         {/* Barra de citas al seleccionar texto: colores + "leer en voz alta".
+             También en RECURSOS de texto (sus citas van al documentId propio
+             del recurso y aparecen en el administrador bajo su pestaña) —
+             antes los recursos eran solo lectura+voz, pero desde que el
+             administrador agrupa citas por fuente, citar recursos es útil. */}
+         {selectionRect && selectedText && (
             <div
               className="fixed z-[1000] bg-slate-800 text-white rounded-lg shadow-2xl flex items-center overflow-hidden animate-in fade-in zoom-in-95 duration-100"
               style={{
@@ -3824,7 +3827,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
               onMouseDown={e => e.preventDefault()}
             >
                <div className="flex px-4 py-2.5 gap-3 items-center">
-                  {!activeResource && activePalette.map((colorItem) => (
+                  {activePalette.map((colorItem) => (
                      <button
                        key={colorItem.id}
                        onClick={() => {
@@ -3913,7 +3916,7 @@ export function ReaderView({ bookId, onClose }: ReaderViewProps) {
           {/* Auditoría Científica */}
           {activeTab === 'auditor' && (
             <div className="absolute inset-0 z-40 bg-white/95 backdrop-blur-md animate-in fade-in slide-in-from-bottom-5 duration-300 overflow-y-auto shadow-2xl">
-              <AuditorPanel item={item} onClose={() => setActiveTab('reader')} />
+              <AuditorPanel item={item} onClose={() => setActiveTab('reader')} onOpenTextResource={handleOpenTextResource} />
             </div>
           )}
 
