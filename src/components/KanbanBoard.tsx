@@ -13,7 +13,7 @@
 // =============================================================================
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Plus, Settings2, LayoutGrid, X } from 'lucide-react';
+import { Plus, LayoutGrid } from 'lucide-react';
 import { useLibrary } from '../hooks/useLibrary';
 import type { BookItem, KanbanStatus } from '../types';
 import { cn } from '../lib/utils';
@@ -22,6 +22,9 @@ import { KanbanSelectorModal } from './KanbanSelectorModal';
 
 interface KanbanBoardProps {
   onOpenBook: (id: string) => void;
+  // El panel de configuración de tarjetas vive en la botonera superior
+  // (Toolbar.tsx), no aquí — este componente solo APLICA los switches.
+  cardSettings: KanbanCardSettings;
 }
 
 const KANBAN_COLUMNS: { id: KanbanStatus; title: string; accent: string }[] = [
@@ -66,6 +69,18 @@ function loadCardSettings(): KanbanCardSettings {
   }
 }
 
+// Estado + persistencia de la configuración de tarjetas, compartido entre el
+// botón/panel de la botonera superior (Toolbar.tsx) y el tablero que
+// consume los switches para renderizar cada tarjeta. Un solo hook evita
+// duplicar la lógica de localStorage en dos componentes.
+export function useKanbanCardSettings(): [KanbanCardSettings, (updater: (prev: KanbanCardSettings) => KanbanCardSettings) => void] {
+  const [settings, setSettings] = useState<KanbanCardSettings>(loadCardSettings);
+  useEffect(() => {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* modo privado */ }
+  }, [settings]);
+  return [settings, setSettings];
+}
+
 // read manda sobre kanbanStatus: un libro leído SIEMPRE se muestra en
 // "Leído" aunque su kanbanStatus guardado diga otra cosa (quedó viejo porque
 // se marcó leído desde la grilla, no arrastrándolo). Al moverlo desde el
@@ -76,20 +91,10 @@ function columnOf(item: BookItem): KanbanStatus | null {
   return item.kanbanStatus;
 }
 
-export function KanbanBoard({ onOpenBook }: KanbanBoardProps) {
+export function KanbanBoard({ onOpenBook, cardSettings }: KanbanBoardProps) {
   const { items, tags, updateItem } = useLibrary();
-  const [cardSettings, setCardSettings] = useState<KanbanCardSettings>(loadCardSettings);
-  const [showSettings, setShowSettings] = useState(false);
   const [selectorCol, setSelectorCol] = useState<KanbanStatus | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
-
-  useEffect(() => {
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(cardSettings)); } catch { /* modo privado */ }
-  }, [cardSettings]);
-
-  const toggleSetting = (key: keyof KanbanCardSettings) => {
-    setCardSettings((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
 
   // Única función que escribe en el libro al cambiar de columna (drag o
   // menú ⋯): mantiene read/toRead/progress coherentes con la columna.
@@ -141,56 +146,12 @@ export function KanbanBoard({ onOpenBook }: KanbanBoardProps) {
 
   return (
     <div className="h-full flex flex-col min-h-0">
-      {/* Cabecera: título + contador + engranaje. Altura fija, no scrollea. */}
-      <div className="flex items-center justify-between gap-2 pb-3 shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <LayoutGrid className="w-5 h-5 text-[var(--primary)] shrink-0" />
-          <h2 className="text-base font-bold text-[var(--text-main)] truncate">Tablero de Lectura</h2>
-          <span className="text-xs font-bold text-[var(--text-muted)] shrink-0">({totalCount})</span>
-        </div>
-        <div className="relative shrink-0">
-          <button
-            onClick={() => setShowSettings((v) => !v)}
-            className={cn(
-              'p-2 rounded-lg border transition-colors',
-              showSettings
-                ? 'bg-[var(--primary)] text-white border-[var(--primary)]'
-                : 'bg-[var(--bg-card)] text-[var(--text-muted)] border-[var(--border-card)] hover:text-[var(--primary)] hover:border-[var(--primary)]/40'
-            )}
-            title="Configurar tarjetas"
-          >
-            <Settings2 className="w-4 h-4" />
-          </button>
-          {showSettings && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setShowSettings(false)} />
-              {/* --bg-card es semitransparente por diseño (efecto vidrio de
-                  las tarjetas, ver index.css); backdrop-blur-xl es lo que la
-                  vuelve legible como panel flotante, igual que BookGrid. */}
-              <div className="absolute right-0 top-11 z-50 w-72 bg-[var(--bg-card)] backdrop-blur-xl border border-[var(--border-card)] rounded-2xl shadow-2xl p-3 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-150">
-                <div className="flex items-center justify-between px-1 pb-1">
-                  <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wide">Tarjetas</span>
-                  <button onClick={() => setShowSettings(false)} className="p-1 text-[var(--text-muted)] hover:text-[var(--text-main)]">
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-                <SettingRow label="Mostrar portada" checked={cardSettings.showCover} onChange={() => toggleSetting('showCover')} />
-                <SettingRow
-                  label="Portada grande"
-                  checked={cardSettings.coverLarge}
-                  onChange={() => toggleSetting('coverLarge')}
-                  disabled={!cardSettings.showCover}
-                />
-                <SettingRow label="Mostrar autor" checked={cardSettings.showAuthor} onChange={() => toggleSetting('showAuthor')} />
-                <SettingRow label="Mostrar año" checked={cardSettings.showYear} onChange={() => toggleSetting('showYear')} />
-                <SettingRow label="Mostrar formato" checked={cardSettings.showFormat} onChange={() => toggleSetting('showFormat')} />
-                <SettingRow label="Mostrar progreso" checked={cardSettings.showProgress} onChange={() => toggleSetting('showProgress')} />
-                <SettingRow label="Mostrar etiquetas" checked={cardSettings.showTags} onChange={() => toggleSetting('showTags')} />
-                <SettingRow label="Mostrar valoración" checked={cardSettings.showRating} onChange={() => toggleSetting('showRating')} />
-              </div>
-            </>
-          )}
-        </div>
+      {/* Cabecera: título + contador. El panel de configuración de tarjetas
+          vive en la botonera superior (Toolbar.tsx) — ver useKanbanCardSettings. */}
+      <div className="flex items-center gap-2 pb-3 shrink-0">
+        <LayoutGrid className="w-5 h-5 text-[var(--primary)] shrink-0" />
+        <h2 className="text-base font-bold text-[var(--text-main)] truncate">Tablero de Lectura</h2>
+        <span className="text-xs font-bold text-[var(--text-muted)] shrink-0">({totalCount})</span>
       </div>
 
       {/* Columnas: móvil = una por pantalla con snap táctil nativo (solo
@@ -239,7 +200,9 @@ export function KanbanBoard({ onOpenBook }: KanbanBoardProps) {
   );
 }
 
-function SettingRow({ label, checked, onChange, disabled }: { label: string; checked: boolean; onChange: () => void; disabled?: boolean }) {
+// Exportado: lo reutiliza el panel de configuración de tarjetas que vive en
+// la botonera superior (Toolbar.tsx).
+export function SettingRow({ label, checked, onChange, disabled }: { label: string; checked: boolean; onChange: () => void; disabled?: boolean }) {
   return (
     <button
       type="button"

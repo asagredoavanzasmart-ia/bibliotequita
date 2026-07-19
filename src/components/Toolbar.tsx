@@ -1,9 +1,10 @@
-import { Book, Globe, UploadCloud, Link as LinkIcon, LayoutGrid, Grid3x3, GalleryVerticalEnd, List as ListIcon, Save, Search, Settings, Menu, LogOut, Maximize, Minimize } from 'lucide-react';
+import { Book, Globe, UploadCloud, Link as LinkIcon, LayoutGrid, Grid3x3, GalleryVerticalEnd, List as ListIcon, Save, Search, Settings, Settings2, X, Menu, LogOut, Maximize, Minimize } from 'lucide-react';
 import React, { useState, useEffect, useCallback } from 'react';
 import { useLibrary } from '../hooks/useLibrary';
 import { cn } from '../lib/utils';
 import { AddManualModal } from './AddManualModal';
 import { SettingsModal } from './SettingsModal';
+import { SettingRow, type KanbanCardSettings } from './KanbanBoard';
 
 interface ToolbarProps {
   onOpenSidebar?: () => void;
@@ -19,12 +20,22 @@ interface ToolbarProps {
   setSearchQuery: (q: string) => void;
   onOpenAddManual: () => void;
   user?: { name: string; email: string; photo: string };
+  // Configuración de tarjetas del Tablero Kanban: el botón/panel vive aquí
+  // (botonera superior), pero el estado en sí lo posee Dashboard (lo
+  // consume también KanbanBoard). Solo se muestra con activeTab==='kanban'.
+  kanbanCardSettings?: KanbanCardSettings;
+  setKanbanCardSettings?: (updater: (prev: KanbanCardSettings) => KanbanCardSettings) => void;
 }
 
-export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setViewMode, sortBy, setSortBy, filters, setFilters, searchQuery, setSearchQuery, onOpenAddManual, user }: ToolbarProps) {
+export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setViewMode, sortBy, setSortBy, filters, setFilters, searchQuery, setSearchQuery, onOpenAddManual, user, kanbanCardSettings, setKanbanCardSettings }: ToolbarProps) {
   const [showSettings, setShowSettings] = useState(false);
+  const [showKanbanSettings, setShowKanbanSettings] = useState(false);
   const [isAppFullscreen, setIsAppFullscreen] = useState(false);
   const { addItem, items } = useLibrary();
+
+  const toggleKanbanSetting = (key: keyof KanbanCardSettings) => {
+    setKanbanCardSettings?.((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
   // Pantalla completa REAL del navegador (Fullscreen API) para toda la app.
   // Debe dispararse desde un gesto del usuario (click).
@@ -97,6 +108,28 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
                  {isAppFullscreen ? <Minimize className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
                </button>
              </div>
+             {/* Configurar tarjetas del Tablero Kanban: solo en esa pestaña.
+                 En móvil real (< sm) no hay otro lugar donde vivía antes esto
+                 vivía dentro del propio tablero; ahora vive aquí, en la
+                 botonera superior, junto al resto de los controles. */}
+             {activeTab === 'kanban' && kanbanCardSettings && setKanbanCardSettings && (
+               <div className="sm:hidden shrink-0 relative">
+                 <button
+                   onClick={() => setShowKanbanSettings((v) => !v)}
+                   title="Configurar tarjetas"
+                   className={cn("p-2.5 rounded-lg transition-colors", showKanbanSettings ? "bg-white/15 text-white" : "text-white/70 hover:bg-white/10")}
+                 >
+                   <Settings2 className="w-6 h-6" />
+                 </button>
+                 {showKanbanSettings && (
+                   <KanbanSettingsPopover
+                     settings={kanbanCardSettings}
+                     onToggle={toggleKanbanSetting}
+                     onClose={() => setShowKanbanSettings(false)}
+                   />
+                 )}
+               </div>
+             )}
           </div>
 
           <div className="hidden sm:flex flex-wrap items-center justify-end gap-3 w-full md:w-auto shrink-0">
@@ -167,6 +200,27 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
                  {isAppFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
               </button>
 
+              {/* Configurar tarjetas del Tablero Kanban: solo con esa pestaña
+                  activa (antes vivía dentro del propio tablero). */}
+              {activeTab === 'kanban' && kanbanCardSettings && setKanbanCardSettings && (
+                <div className="relative">
+                  <button
+                    onClick={() => setShowKanbanSettings((v) => !v)}
+                    title="Configurar tarjetas"
+                    className={cn("p-2.5 border rounded-xl transition-all shadow-sm", showKanbanSettings ? "bg-white/20 lg:bg-[var(--primary)]/10 text-white lg:text-[var(--primary)] border-white/30 lg:border-[var(--primary)]/50" : "text-white/70 lg:text-slate-500 hover:text-white lg:hover:text-[var(--primary)] bg-white/10 lg:bg-[var(--bg-card)] border-white/15 lg:border-slate-200/50 hover:border-white/30 lg:hover:border-[var(--primary)]/50")}
+                  >
+                    <Settings2 className="w-5 h-5" />
+                  </button>
+                  {showKanbanSettings && (
+                    <KanbanSettingsPopover
+                      settings={kanbanCardSettings}
+                      onToggle={toggleKanbanSetting}
+                      onClose={() => setShowKanbanSettings(false)}
+                    />
+                  )}
+                </div>
+              )}
+
               <button onClick={() => setShowSettings(true)} className="p-2.5 text-white/70 lg:text-slate-500 hover:text-white lg:hover:text-[var(--primary)] bg-white/10 lg:bg-[var(--bg-card)] border border-white/15 lg:border-slate-200/50 hover:border-white/30 lg:hover:border-[var(--primary)]/50 rounded-xl transition-all shadow-sm">
                  <Settings className="w-5 h-5" />
               </button>
@@ -194,6 +248,42 @@ export function Toolbar({ onOpenSidebar, activeTab, setActiveTab, viewMode, setV
       </div>
       
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+    </>
+  );
+}
+
+// Panel de configuración de las tarjetas del Tablero Kanban: vive en la
+// botonera superior (antes vivía dentro del propio KanbanBoard). El Toolbar
+// tiene posición sticky cerca de la raíz del DOM, así que un popover
+// absoluto normal (sin portal) no corre riesgo de recortarse contra ningún
+// contenedor con scroll, a diferencia del menú "⋯" de cada tarjeta.
+function KanbanSettingsPopover({ settings, onToggle, onClose }: {
+  settings: KanbanCardSettings;
+  onToggle: (key: keyof KanbanCardSettings) => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      {/* --bg-card es semitransparente por diseño (efecto vidrio, ver
+          index.css); backdrop-blur-xl es lo que lo vuelve legible como
+          panel flotante, igual que las tarjetas de BookGrid. */}
+      <div className="absolute right-0 top-12 z-50 w-72 bg-[var(--bg-card)] backdrop-blur-xl border border-[var(--border-card)] rounded-2xl shadow-2xl p-3 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-150 text-left">
+        <div className="flex items-center justify-between px-1 pb-1">
+          <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wide">Tarjetas del tablero</span>
+          <button onClick={onClose} className="p-1 text-[var(--text-muted)] hover:text-[var(--text-main)]">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <SettingRow label="Mostrar portada" checked={settings.showCover} onChange={() => onToggle('showCover')} />
+        <SettingRow label="Portada grande" checked={settings.coverLarge} onChange={() => onToggle('coverLarge')} disabled={!settings.showCover} />
+        <SettingRow label="Mostrar autor" checked={settings.showAuthor} onChange={() => onToggle('showAuthor')} />
+        <SettingRow label="Mostrar año" checked={settings.showYear} onChange={() => onToggle('showYear')} />
+        <SettingRow label="Mostrar formato" checked={settings.showFormat} onChange={() => onToggle('showFormat')} />
+        <SettingRow label="Mostrar progreso" checked={settings.showProgress} onChange={() => onToggle('showProgress')} />
+        <SettingRow label="Mostrar etiquetas" checked={settings.showTags} onChange={() => onToggle('showTags')} />
+        <SettingRow label="Mostrar valoración" checked={settings.showRating} onChange={() => onToggle('showRating')} />
+      </div>
     </>
   );
 }

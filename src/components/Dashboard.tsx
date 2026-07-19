@@ -26,7 +26,7 @@ import { SettingsModal } from './SettingsModal';
 import { AddManualModal } from './AddManualModal';
 import { AdminPanel } from './AdminPanel';
 import { TrashPanel } from './TrashPanel';
-import { KanbanBoard } from './KanbanBoard';
+import { KanbanBoard, useKanbanCardSettings } from './KanbanBoard';
 import { useBackClose } from '../hooks/useBackClose';
 
 interface DemoQuota {
@@ -55,6 +55,10 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [demoQuota, setDemoQuota] = useState<DemoQuota | null>(null);
   const { updateItem, reorderItems, items, addItem, playlists, viewMode, setViewMode, sortBy, setSortBy } = useLibrary();
+  // Configuración de tarjetas del Tablero Kanban: el botón/panel vive en la
+  // botonera superior (Toolbar), pero los switches los CONSUME el tablero —
+  // el estado compartido vive aquí, un nivel arriba de ambos.
+  const [kanbanCardSettings, setKanbanCardSettings] = useKanbanCardSettings();
 
   const refreshQuota = useCallback(() => {
     fetch('/api/upload-quota', { credentials: 'include' })
@@ -220,6 +224,8 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
             setSearchQuery={setSearchQuery}
             onOpenAddManual={() => setShowManualAdd(true)}
             user={user}
+            kanbanCardSettings={kanbanCardSettings}
+            setKanbanCardSettings={setKanbanCardSettings}
           />
           <div className="flex-1 flex flex-col px-4 md:px-6 lg:px-8 pb-4 md:pb-6 lg:pb-8 overflow-hidden">
           {/* Banner de cuota de contenidos */}
@@ -252,7 +258,7 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
             {activeTab === 'analytics' ? (
                 <AnalyticsDashboard />
             ) : activeTab === 'kanban' ? (
-                <KanbanBoard onOpenBook={onOpenBook} />
+                <KanbanBoard onOpenBook={onOpenBook} cardSettings={kanbanCardSettings} />
             ) : activeTab === 'trash' ? (
                 <TrashPanel />
             ) : (
