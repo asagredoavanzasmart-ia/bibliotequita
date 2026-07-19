@@ -164,7 +164,10 @@ export function KanbanBoard({ onOpenBook }: KanbanBoardProps) {
           {showSettings && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setShowSettings(false)} />
-              <div className="absolute right-0 top-11 z-50 w-72 bg-[var(--bg-card)] border border-[var(--border-card)] rounded-2xl shadow-2xl p-3 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-150">
+              {/* --bg-card es semitransparente por diseño (efecto vidrio de
+                  las tarjetas, ver index.css); backdrop-blur-xl es lo que la
+                  vuelve legible como panel flotante, igual que BookGrid. */}
+              <div className="absolute right-0 top-11 z-50 w-72 bg-[var(--bg-card)] backdrop-blur-xl border border-[var(--border-card)] rounded-2xl shadow-2xl p-3 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-150">
                 <div className="flex items-center justify-between px-1 pb-1">
                   <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wide">Tarjetas</span>
                   <button onClick={() => setShowSettings(false)} className="p-1 text-[var(--text-muted)] hover:text-[var(--text-main)]">

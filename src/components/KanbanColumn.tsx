@@ -38,7 +38,11 @@ export function KanbanColumn({
     <div
       className={cn(
         'w-[85vw] max-w-sm shrink-0 snap-center lg:w-auto lg:max-w-none',
-        'flex flex-col min-h-0 rounded-2xl bg-[var(--bg-card)]/60 border transition-colors',
+        // Nota: --bg-card ya trae su propia transparencia (rgba en index.css);
+        // un modificador /NN de Tailwind sobre un color ya-rgba() no aplica,
+        // así que backdrop-blur-xl es lo que realmente vuelve legible el
+        // fondo de la columna (mismo patrón que las tarjetas de BookGrid).
+        'flex flex-col min-h-0 rounded-2xl bg-[var(--bg-card)] backdrop-blur-xl border transition-colors',
         isDragOver ? 'border-[var(--primary)]/60 bg-[var(--primary)]/5' : 'border-[var(--border-card)]'
       )}
       onDragOver={(e) => { e.preventDefault(); }}
@@ -71,7 +75,7 @@ export function KanbanColumn({
           />
         ))}
         {items.length === 0 && (
-          <p className="text-xs text-[var(--text-muted)] text-center py-6">Sin tarjetas</p>
+          <p className="text-xs text-[var(--text-muted)] text-center py-6">Sin recursos</p>
         )}
       </div>
 
@@ -80,7 +84,7 @@ export function KanbanColumn({
         onClick={onAdd}
         className="shrink-0 flex items-center gap-1.5 px-3 py-2.5 text-xs font-bold text-[var(--text-muted)] hover:text-[var(--primary)] transition-colors"
       >
-        <Plus className="w-4 h-4" /> Añadir tarjeta
+        <Plus className="w-4 h-4" /> Añadir recurso
       </button>
     </div>
   );

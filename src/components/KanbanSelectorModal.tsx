@@ -44,7 +44,7 @@ export function KanbanSelectorModal({ targetCol, columnTitle, items, columnOf, c
   return (
     <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150" onClick={onClose}>
       <div
-        className="bg-[var(--bg-card)] rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col border border-[var(--border-card)] animate-in zoom-in-95 duration-200 max-h-[80vh]"
+        className="bg-[var(--bg-card)] backdrop-blur-xl rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col border border-[var(--border-card)] animate-in zoom-in-95 duration-200 max-h-[80vh]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="p-4 border-b border-[var(--border-card)] flex items-center justify-between gap-2 shrink-0">

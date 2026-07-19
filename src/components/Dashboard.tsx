@@ -239,7 +239,16 @@ export function Dashboard({ onOpenBook, user }: DashboardProps) {
             </div>
           )}
 
-          <div className="flex-1 mt-2 overflow-y-auto no-scrollbar pr-2 pb-24 lg:pb-20">
+          {/* pb-24/lg:pb-20 reserva espacio para el FAB flotante y la barra de
+              acciones masivas de la grilla normal — el tablero Kanban no usa
+              ninguno de los dos (tiene su propio FAB) y gestiona TODO su
+              scroll internamente (cada columna con el suyo, cabecera fija),
+              así que aquí se le quita el padding y el scroll de página: sin
+              esto perdía ~80-96px de alto de columna sin ningún propósito. */}
+          <div className={cn(
+            "flex-1 mt-2 pr-2",
+            activeTab === 'kanban' ? "overflow-hidden" : "overflow-y-auto no-scrollbar pb-24 lg:pb-20"
+          )}>
             {activeTab === 'analytics' ? (
                 <AnalyticsDashboard />
             ) : activeTab === 'kanban' ? (

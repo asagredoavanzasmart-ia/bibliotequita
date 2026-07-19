@@ -73,7 +73,7 @@ export function KanbanCard({
       onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; onDragStart(); }}
       onDragEnd={onDragEnd}
       className={cn(
-        'bg-[var(--bg-card)] rounded-xl border border-[var(--border-card)] shadow-sm overflow-hidden',
+        'bg-[var(--bg-card)] backdrop-blur-xl rounded-xl border border-[var(--border-card)] shadow-sm overflow-hidden',
         'transition-all duration-200 animate-in fade-in cursor-grab active:cursor-grabbing relative',
         isDragged && 'opacity-40'
       )}
@@ -98,7 +98,7 @@ export function KanbanCard({
         <>
           <div className="fixed inset-0 z-[90]" onClick={() => setMenuOpen(false)} />
           <div
-            className="fixed z-[91] w-52 bg-[var(--bg-card)] border border-[var(--border-card)] rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-150"
+            className="fixed z-[91] w-52 bg-[var(--bg-card)] backdrop-blur-xl border border-[var(--border-card)] rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-150"
             style={{ top: menuPos.top, left: menuPos.left }}
           >
             <button
